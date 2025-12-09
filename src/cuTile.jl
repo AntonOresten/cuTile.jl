@@ -6,36 +6,9 @@ include("bytecode/encodings.jl")
 # Compiler infrastructure
 include("compiler/codegen.jl")
 
-# Re-export bytecode components for direct use
-export TypeTable, TypeId, CodeBuilder, BytecodeWriter, Value
-export I1, I8, I16, I32, I64, F16, BF16, F32, F64, Token
-export tile_type!, pointer_type!, tensor_view_type!, partition_view_type!, function_type!
-export julia_to_tile_dtype!
-export write_bytecode!, add_function!, finalize_function!
-export encode_ConstantOp!, encode_GetTileBlockIdOp!, encode_ReturnOp!
-export encode_AddFOp!, encode_AddIOp!, encode_SubFOp!, encode_MulFOp!, encode_MulIOp!
-export encode_MakeTensorViewOp!, encode_MakePartitionViewOp!
-export encode_LoadViewTkoOp!, encode_StoreViewTkoOp!
-export RoundingMode, IntegerOverflow, MemoryOrderingSemantics, MemoryScope
-export PaddingValue, PaddingMissing, PaddingZero
-
-# Compiler exports
-export compile_kernel, compile_to_cubin, compile_kernel_to_cubin, TileTarget, get_typed_ir
-
-# API exports
-export Tile, tile_shape
-
-# Register intrinsics with the compiler after module initialization
-function __init__()
-    register_intrinsic!(:bid, bid)
-    register_intrinsic!(:num_blocks, num_blocks)
-    register_intrinsic!(:load, load)
-    register_intrinsic!(:store, store)
-    register_intrinsic!(:tile_add, tile_add)
-    register_intrinsic!(:tile_sub, tile_sub)
-    register_intrinsic!(:tile_mul, tile_mul)
-    register_intrinsic!(:transpose, transpose)
-end
+# Public API
+export emit_tileir, compile
+export Tile
 
 #=============================================================================
  API Types
@@ -126,22 +99,13 @@ end
 # allowing other optimizations. This lets us use optimized IR.
 # If these reach runtime (not compiled), they error with a clear message.
 
-# Marker for intrinsics that should be compiled to Tile IR.
-# Uses inferencebarrier to prevent constant folding of the return value.
-# At runtime this errors - but our compiler intercepts before runtime.
-@noinline function new_intrinsic(::Type{T})::T where T
-    # inferencebarrier on the zero value prevents the optimizer from knowing
-    # what the return value is, so expressions using it can't be folded
-    Base.inferencebarrier(zero(T))
-end
-
 """
     bid(axis) -> Int32
 
 Get the block ID along the given axis (0=x, 1=y, 2=z).
 In kernel code, this is compiled to GetTileBlockIdOp.
 """
-@noinline bid(axis::Integer)::Int32 = new_intrinsic(Int32)
+@noinline bid(axis::Integer)::Int32 = Base.inferencebarrier(zero(Int32))
 
 """
     num_blocks(axis) -> Int32
@@ -149,7 +113,7 @@ In kernel code, this is compiled to GetTileBlockIdOp.
 Get the grid size along the given axis (0=x, 1=y, 2=z).
 In kernel code, this is compiled to GetNumTileBlocksOp.
 """
-@noinline num_blocks(axis::Integer)::Int32 = new_intrinsic(Int32)
+@noinline num_blocks(axis::Integer)::Int32 = Base.inferencebarrier(zero(Int32))
 
 """
     load(array, index, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -178,25 +142,17 @@ In kernel code, this is compiled to StoreViewTkoOp.
     nothing
 end
 
-#=============================================================================
- Host Utilities
-=============================================================================#
-
 """
-    cdiv(a, b)
+    compile(f, argtypes; name=nothing, sm_arch="sm_100", opt_level=3) -> Vector{UInt8}
 
-Ceiling division: ceil(a/b).
+Compile a Julia kernel function to CUBIN.
 """
-cdiv(a, b) = cld(a, b)
+function compile(@nospecialize(f), @nospecialize(argtypes);
+                 name::Union{String, Nothing}=nothing,
+                 sm_arch::String="sm_100",
+                 opt_level::Int=3)
+    tile_bytecode = emit_tileir(f, argtypes; name)
 
-"""
-    compile_to_cubin(tile_bytecode::Vector{UInt8}; sm_arch="sm_100", opt_level=3) -> Vector{UInt8}
-
-Compile Tile IR bytecode to a CUBIN using tileiras.
-Returns the CUBIN bytes. Throws an error if compilation fails.
-"""
-function compile_to_cubin(tile_bytecode::Vector{UInt8}; sm_arch::String="sm_100", opt_level::Int=3)
-    # Create temp files for input/output
     input_path = tempname() * ".tile"
     output_path = tempname() * ".cubin"
 
@@ -208,19 +164,6 @@ function compile_to_cubin(tile_bytecode::Vector{UInt8}; sm_arch::String="sm_100"
         rm(input_path, force=true)
         rm(output_path, force=true)
     end
-end
-
-"""
-    compile_kernel_to_cubin(f, argtypes; name=nothing, sm_arch="sm_100", opt_level=3) -> Vector{UInt8}
-
-Compile a Julia kernel function directly to CUBIN.
-"""
-function compile_kernel_to_cubin(@nospecialize(f), @nospecialize(argtypes);
-                                  name::Union{String, Nothing}=nothing,
-                                  sm_arch::String="sm_100",
-                                  opt_level::Int=3)
-    tile_bytecode = compile_kernel(f, argtypes; name)
-    return compile_to_cubin(tile_bytecode; sm_arch, opt_level)
 end
 
 end # module cuTile

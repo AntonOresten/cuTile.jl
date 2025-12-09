@@ -6,13 +6,6 @@ include("target.jl")
 
 using Core: SlotNumber
 
-# Forward declarations for cuTile intrinsics
-# These will be resolved when the module is fully loaded
-const CUTILE_INTRINSICS = Dict{Symbol, Function}()
-
-function register_intrinsic!(name::Symbol, func::Function)
-    CUTILE_INTRINSICS[name] = func
-end
 
 """
     emit_kernel!(writer, target; name, is_entry=true) -> Vector{UInt8}
@@ -209,9 +202,6 @@ Emit bytecode for a function call.
 """
 function emit_call!(tr::Translation, target::TileTarget,
                     expr::Expr, @nospecialize(result_type))
-    cb = tr.code_builder
-    tt = tr.type_table
-
     args = expr.args
     f = args[1]
     call_args = args[2:end]
@@ -221,8 +211,9 @@ function emit_call!(tr::Translation, target::TileTarget,
     # a GlobalRef statement earlier in the code
     func = resolve_function_in_ir(f, target)
 
-    # Handle known functions
-    return emit_known_call!(tr, target, func, call_args, result_type)
+    result = emit_known_call!(tr, target, func, call_args, result_type)
+    result === missing && error("Unknown function call: $func with args $call_args")
+    return result
 end
 
 """
@@ -251,17 +242,16 @@ Emit bytecode for a method invocation.
 """
 function emit_invoke!(tr::Translation, target::TileTarget,
                       expr::Expr, @nospecialize(result_type))
-    cb = tr.code_builder
-
     # invoke has: (MethodInstance, func, args...)
-    mi = expr.args[1]
     f = expr.args[2]
     call_args = expr.args[3:end]
 
     # Resolve the function from the GlobalRef
     func = resolve_function(f)
 
-    return emit_known_call!(tr, target, func, call_args, result_type)
+    result = emit_known_call!(tr, target, func, call_args, result_type)
+    result === missing && error("Unknown function call: $func with args $call_args")
+    return result
 end
 
 """
@@ -280,56 +270,33 @@ function resolve_function(@nospecialize(f))
 end
 
 """
-    emit_known_call!(tr, func, args, result_type) -> Union{Value, Nothing}
+    emit_known_call!(tr, func, args, result_type) -> Union{Value, Nothing, Missing}
 
 Emit bytecode for a known function call.
+Returns `missing` if the function is not recognized.
 """
 function emit_known_call!(tr::Translation, target::TileTarget, @nospecialize(func),
                           args::AbstractVector, @nospecialize(result_type))
-    cb = tr.code_builder
-    tt = tr.type_table
+    # cuTile intrinsics
+    func === bid && return emit_bid!(tr, args, result_type)
+    func === load && return emit_load!(tr, target, args, result_type)
+    func === store && return emit_store!(tr, target, args, result_type)
+    func === num_blocks && return emit_num_blocks!(tr, args, result_type)
+    func === tile_add && return emit_tile_add!(tr, args, result_type)
+    func === tile_sub && return emit_tile_sub!(tr, args, result_type)
+    func === tile_mul && return emit_tile_mul!(tr, args, result_type)
+    func === transpose && return emit_transpose!(tr, args, result_type)
 
-    # Check for cuTile intrinsics first
-    if haskey(CUTILE_INTRINSICS, :bid) && func === CUTILE_INTRINSICS[:bid]
-        return emit_bid!(tr, args, result_type)
-    elseif haskey(CUTILE_INTRINSICS, :load) && func === CUTILE_INTRINSICS[:load]
-        return emit_load!(tr, target, args, result_type)
-    elseif haskey(CUTILE_INTRINSICS, :store) && func === CUTILE_INTRINSICS[:store]
-        return emit_store!(tr, target, args, result_type)
-    elseif haskey(CUTILE_INTRINSICS, :num_blocks) && func === CUTILE_INTRINSICS[:num_blocks]
-        return emit_num_blocks!(tr, args, result_type)
-    elseif haskey(CUTILE_INTRINSICS, :tile_add) && func === CUTILE_INTRINSICS[:tile_add]
-        return emit_tile_add!(tr, args, result_type)
-    elseif haskey(CUTILE_INTRINSICS, :tile_sub) && func === CUTILE_INTRINSICS[:tile_sub]
-        return emit_tile_sub!(tr, args, result_type)
-    elseif haskey(CUTILE_INTRINSICS, :tile_mul) && func === CUTILE_INTRINSICS[:tile_mul]
-        return emit_tile_mul!(tr, args, result_type)
-    elseif haskey(CUTILE_INTRINSICS, :transpose) && func === CUTILE_INTRINSICS[:transpose]
-        return emit_transpose!(tr, args, result_type)
-    end
+    # Core intrinsics that we can skip (compile-time operations)
+    func === Core.tuple && return nothing
+    func === Base.getfield && return nothing
 
-    # Core intrinsics that we can skip
-    if func === Core.tuple
-        # Tuple construction - this is a compile-time constant, don't emit anything
-        # The tuple value is in the result_type as Core.Const((values...))
-        return nothing
-    elseif func === Base.getfield
-        # Field access - might be getting tuple elements
-        return nothing
-    end
+    # Arithmetic operators on Tiles (when not inlined to tile_add etc.)
+    func === Base.:(+) && return emit_tile_add!(tr, args, result_type)
+    func === Base.:(-) && return emit_tile_sub!(tr, args, result_type)
+    func === Base.:(*) && return emit_tile_mul!(tr, args, result_type)
 
-    # Arithmetic operations - all go through tile emitters
-    # (In Tile IR, even scalars are 0D tiles)
-    if func === Base.:(+) || func === Base.add_float || func === Base.add_int
-        return emit_tile_add!(tr, args, result_type)
-    elseif func === Base.:(-) || func === Base.sub_float || func === Base.sub_int
-        return emit_tile_sub!(tr, args, result_type)
-    elseif func === Base.:(*) || func === Base.mul_float || func === Base.mul_int
-        return emit_tile_mul!(tr, args, result_type)
-    end
-
-    @warn "Unknown function call" func args
-    return nothing
+    return missing
 end
 
 #=============================================================================
@@ -1013,13 +980,12 @@ function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
 end
 
 """
-    compile_kernel(f, argtypes; name=nothing, sm_arch="sm_100") -> Vector{UInt8}
+    emit_tileir(f, argtypes; name=nothing) -> Vector{UInt8}
 
 Compile a Julia function to Tile IR bytecode.
 """
-function compile_kernel(@nospecialize(f), @nospecialize(argtypes);
-                        name::Union{String, Nothing} = nothing,
-                        sm_arch::String = "sm_100")
+function emit_tileir(@nospecialize(f), @nospecialize(argtypes);
+                     name::Union{String, Nothing} = nothing)
     target = TileTarget(f, argtypes)
 
     kernel_name = name === nothing ? string(target.mi.def.name) : name
