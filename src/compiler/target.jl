@@ -52,6 +52,9 @@ mutable struct Translation
     # Maps Tile IR values to their grid axis (for bid results only)
     value_grid_axis::Dict{Int, Int}  # Value.id -> axis (0=x, 1=y, 2=z)
 
+    # Maps Tile IR values to their Julia types
+    value_julia_types::Dict{Int, Any}  # Value.id -> Julia type
+
     # Tables for the bytecode
     type_table::TypeTable
     string_table::StringTable
@@ -72,6 +75,7 @@ function Translation(writer::BytecodeWriter)
         Dict{Int, TypeId}(),
         Dict{Int, Vector{Int}}(),
         Dict{Int, Int}(),
+        Dict{Int, Any}(),
         writer.type_table,
         writer.string_table,
         writer.constant_table,
@@ -108,6 +112,16 @@ end
 # Set the grid axis for a Value
 function set_grid_axis!(tr::Translation, val::Value, axis::Int)
     tr.value_grid_axis[val.id] = axis
+end
+
+# Get the Julia type of a Value
+function get_julia_type(tr::Translation, val::Value)
+    get(tr.value_julia_types, val.id, nothing)
+end
+
+# Set the Julia type of a Value
+function set_julia_type!(tr::Translation, val::Value, @nospecialize(jltype))
+    tr.value_julia_types[val.id] = jltype
 end
 
 # Lookup values

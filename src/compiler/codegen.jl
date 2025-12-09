@@ -45,6 +45,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         tr[SlotNumber(i + 1)] = val
         # Also keep the Argument mapping for backwards compatibility
         tr[Argument(i + 1)] = val
+        # Track the Julia type of this argument
+        set_julia_type!(tr, val, target.argtypes[i])
     end
 
     # Emit each statement
@@ -369,6 +371,21 @@ function emit_num_blocks!(tr::Translation, args::AbstractVector, @nospecialize(r
 end
 
 """
+    extract_pointer_element_type(tr::Translation, val::Value) -> Type
+
+Extract the element type from a pointer value's Julia type.
+Returns Float32 as fallback if type cannot be determined.
+"""
+function extract_pointer_element_type(tr::Translation, val::Value)
+    jltype = get_julia_type(tr, val)
+    if jltype !== nothing && jltype <: Ptr
+        return eltype(jltype)
+    end
+    # Fallback to Float32
+    return Float32
+end
+
+"""
     emit_load!(tr, args, result_type) -> Value
 
 Emit load operation for ct.load(array; index, shape).
@@ -429,9 +446,8 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
         end
     end
 
-    # Determine element type - default to Float32 for now
-    # TODO: Extract from array type
-    elem_type = Float32
+    # Extract element type from the pointer argument
+    elem_type = extract_pointer_element_type(tr, array_val)
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
     # Create types
@@ -558,8 +574,9 @@ function emit_store!(tr::Translation, target::TileTarget, args::AbstractVector, 
         error("Cannot determine tile shape for store() - tile value has no tracked shape")
     end
 
-    # Get dtype from the type table (default to F32)
-    dtype = F32(tt)
+    # Extract element type from the pointer argument
+    elem_type = extract_pointer_element_type(tr, array_val)
+    dtype = julia_to_tile_dtype!(tt, elem_type)
 
     ndim = length(tile_shape)
 
