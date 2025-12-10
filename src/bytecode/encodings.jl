@@ -103,6 +103,111 @@ function encode_enum!(buf::Vector{UInt8}, e::Enum)
 end
 
 #=============================================================================
+ Attribute Tags (for tagged attributes like AssumePredicate)
+=============================================================================#
+
+module AttributeTag
+    const Integer = 0x01
+    const Float = 0x02
+    const Bool = 0x03
+    const Type = 0x04
+    const String = 0x05
+    const Array = 0x06
+    const DenseElements = 0x07
+    const DivBy = 0x08
+    const SameElements = 0x09
+    const Dictionary = 0x0a
+    const OptimizationHints = 0x0b
+    const Bounded = 0x0c
+end
+
+#=============================================================================
+ AssumePredicate types for AssumeOp
+=============================================================================#
+
+"""
+    AssumePredicate
+
+Abstract type for assume predicates used with AssumeOp.
+"""
+abstract type AssumePredicate end
+
+"""
+    DivBy(divisor; every=nothing, along=nothing)
+
+Predicate asserting a value is divisible by `divisor`.
+Optional `every` and `along` specify dimensional constraints.
+"""
+struct DivBy <: AssumePredicate
+    divisor::Int
+    every::Union{Int, Nothing}
+    along::Union{Int, Nothing}
+end
+DivBy(divisor::Int) = DivBy(divisor, nothing, nothing)
+
+"""
+    Bounded(; lb=nothing, ub=nothing)
+
+Predicate asserting a value is within bounds [lb, ub].
+Either bound can be nothing (unbounded).
+"""
+struct Bounded <: AssumePredicate
+    lb::Union{Int, Nothing}
+    ub::Union{Int, Nothing}
+end
+Bounded(; lb=nothing, ub=nothing) = Bounded(lb, ub)
+
+"""
+    SameElements(values)
+
+Predicate asserting all elements of a tile have the same value from `values`.
+Used for broadcast/splat optimization hints.
+"""
+struct SameElements <: AssumePredicate
+    values::Vector{Int}
+end
+
+"""
+    encode_assume_predicate!(cb, pred::AssumePredicate)
+
+Encode an assume predicate as a tagged attribute.
+"""
+function encode_assume_predicate!(cb::CodeBuilder, pred::DivBy)
+    push!(cb.buf, AttributeTag.DivBy)
+    encode_varint!(cb.buf, pred.divisor)
+    flags = (pred.every !== nothing ? 0x01 : 0x00) |
+            (pred.along !== nothing ? 0x02 : 0x00)
+    push!(cb.buf, flags)
+    if pred.every !== nothing
+        encode_signed_varint!(cb.buf, pred.every)
+    end
+    if pred.along !== nothing
+        encode_signed_varint!(cb.buf, pred.along)
+    end
+end
+
+function encode_assume_predicate!(cb::CodeBuilder, pred::Bounded)
+    push!(cb.buf, AttributeTag.Bounded)
+    flags = (pred.lb !== nothing ? 0x01 : 0x00) |
+            (pred.ub !== nothing ? 0x02 : 0x00)
+    push!(cb.buf, flags)
+    if pred.lb !== nothing
+        encode_signed_varint!(cb.buf, pred.lb)
+    end
+    if pred.ub !== nothing
+        encode_signed_varint!(cb.buf, pred.ub)
+    end
+end
+
+function encode_assume_predicate!(cb::CodeBuilder, pred::SameElements)
+    push!(cb.buf, AttributeTag.SameElements)
+    encode_varint!(cb.buf, length(pred.values))
+    for v in pred.values
+        encode_signed_varint!(cb.buf, v)
+    end
+end
+
+#=============================================================================
  Essential operations for vadd
 =============================================================================#
 
@@ -116,6 +221,23 @@ function encode_ConstantOp!(cb::CodeBuilder, result_type::TypeId, value_bytes::V
     encode_varint!(cb.buf, Opcode.ConstantOp)
     encode_typeid!(cb.buf, result_type)
     encode_opattr_dense!(cb, value_bytes)
+    return new_op!(cb)
+end
+
+"""
+    encode_AssumeOp!(cb, result_type, value, predicate) -> Value
+
+Create an assume operation that annotates a value with a predicate.
+The predicate tells the compiler it can assume certain properties about
+the value (e.g., divisibility, bounds) for optimization.
+
+Opcode: 6
+"""
+function encode_AssumeOp!(cb::CodeBuilder, result_type::TypeId, value::Value, predicate::AssumePredicate)
+    encode_varint!(cb.buf, Opcode.AssumeOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_assume_predicate!(cb, predicate)
+    encode_operand!(cb.buf, value)
     return new_op!(cb)
 end
 

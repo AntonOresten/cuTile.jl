@@ -34,20 +34,38 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     tr = Translation(writer)
     tt = tr.type_table
 
-    # Filter ghost types from parameters
+    # Build parameter list, handling ghost types and struct destructuring
     # Ghost types (like Val{V}) have no runtime representation - their values
     # are baked into the specialized IR as constants (QuoteNodes)
+    # Struct types (like TileArray) are destructured into flat parameters
     param_types = TypeId[]
-    param_arg_indices = Int[]  # Maps param index to original arg index
+    # Track: (orig_arg_idx, field_or_nothing) for each flat param
+    param_mapping = Tuple{Int, Union{Nothing, Symbol}}[]
 
     for (i, argtype) in enumerate(target.argtypes)
-        if is_ghost_type(argtype)
+        argtype_unwrapped = unwrap_type(argtype)
+        if is_ghost_type(argtype_unwrapped)
             # Ghost type - no runtime representation, skip as parameter
             continue
+        elseif should_destructure(argtype_unwrapped)
+            # Destructure struct into flat parameters, one entry per field
+            for fi in 1:fieldcount(argtype_unwrapped)
+                fname = fieldname(argtype_unwrapped, fi)
+                ftype = fieldtype(argtype_unwrapped, fi)
+                fcount = flat_field_count(ftype)
+                # Get the element type for tuple fields
+                elem_type = ftype <: Tuple ? eltype(ftype) : ftype
+                for _ in 1:fcount
+                    push!(param_types, tile_type_for_julia!(tr, elem_type))
+                    push!(param_mapping, (i, fname))
+                end
+            end
+            # Store the original type for this destructured arg
+            tr.arg_types[i] = argtype_unwrapped
         else
             # Regular parameter
-            push!(param_types, tile_type_for_julia!(tr, argtype))
-            push!(param_arg_indices, i)
+            push!(param_types, tile_type_for_julia!(tr, argtype_unwrapped))
+            push!(param_mapping, (i, nothing))
         end
     end
 
@@ -62,18 +80,33 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     tr.code_builder = cb
 
     # Set up argument values
-    # In Julia's CodeInfo:
-    # - Slot 1 (_1) is the function itself
-    # - Slots 2..n+1 (_2.._n+1) are the n function arguments
     arg_values = make_block_args!(cb, length(param_types))
 
-    # Map block args to their original argument slots
+    # Build the unified arg_flat_values map
+    # Collect values by (arg_idx, field) key
+    field_values = Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}()
+
     for (param_idx, val) in enumerate(arg_values)
-        orig_arg_idx = param_arg_indices[param_idx]
-        # Slot orig_arg_idx+1 corresponds to argument orig_arg_idx
-        tr[SlotNumber(orig_arg_idx + 1)] = val
-        tr[Argument(orig_arg_idx + 1)] = val
-        set_julia_type!(tr, val, target.argtypes[orig_arg_idx])
+        key = param_mapping[param_idx]
+        if !haskey(field_values, key)
+            field_values[key] = Value[]
+        end
+        push!(field_values[key], val)
+    end
+
+    # Store in Translation and set up slot/argument mappings
+    for (key, values) in field_values
+        arg_idx, field = key
+        tr.arg_flat_values[key] = values
+
+        if field === nothing
+            # Regular argument - also set up traditional slot/arg mappings
+            @assert length(values) == 1
+            val = values[1]
+            tr[SlotNumber(arg_idx + 1)] = val
+            tr[Argument(arg_idx + 1)] = val
+            set_julia_type!(tr, val, target.argtypes[arg_idx])
+        end
     end
 
     # Ghost type arguments don't need explicit handling - their constant values
@@ -319,9 +352,9 @@ function emit_known_call!(tr::Translation, target::TileTarget, @nospecialize(fun
     func === tile_mul && return emit_tile_mul!(tr, args, result_type)
     func === transpose && return emit_transpose!(tr, args, result_type)
 
-    # Core intrinsics that we can skip (compile-time operations)
+    # Core intrinsics
     func === Core.tuple && return nothing
-    func === Base.getfield && return nothing
+    func === Base.getfield && return emit_getfield!(tr, target, args, result_type)
 
     # Arithmetic operators on Tiles (when not inlined to tile_add etc.)
     func === Base.:(+) && return emit_tile_add!(tr, args, result_type)
@@ -329,6 +362,86 @@ function emit_known_call!(tr::Translation, target::TileTarget, @nospecialize(fun
     func === Base.:(*) && return emit_tile_mul!(tr, args, result_type)
 
     return missing
+end
+
+"""
+    emit_getfield!(tr, target, args, result_type) -> Union{Value, Vector{Value}, Nothing}
+
+Handle getfield for destructured struct arguments.
+Returns the flat value(s) for the accessed field, or nothing if not a destructured arg.
+"""
+function emit_getfield!(tr::Translation, target::TileTarget,
+                        args::AbstractVector, @nospecialize(result_type))
+    # getfield(obj, field) - args[1] is the object, args[2] is the field name
+    if length(args) < 2
+        return nothing
+    end
+
+    obj_arg = args[1]
+    field_arg = args[2]
+
+    # Extract the field name
+    field_name = extract_field_symbol(field_arg, target)
+    if field_name === nothing
+        return nothing
+    end
+
+    # Check if obj is a SlotNumber or Argument referencing a destructured arg
+    arg_idx = extract_argument_index(obj_arg)
+    if arg_idx === nothing
+        return nothing
+    end
+
+    # Look up the flat values for this field
+    values = get_arg_flat_values(tr, arg_idx, field_name)
+    if values === nothing
+        return nothing
+    end
+
+    # Return single value or first value of tuple field
+    # (tuple indexing would need additional handling)
+    if length(values) == 1
+        return values[1]
+    else
+        # For tuple fields, we return the first value for now
+        # Full tuple support would require tracking the tuple as a whole
+        return values[1]
+    end
+end
+
+"""
+    extract_field_symbol(arg, target) -> Union{Symbol, Nothing}
+
+Extract a field name symbol from an argument (QuoteNode or SSA reference).
+"""
+function extract_field_symbol(@nospecialize(arg), target::TileTarget)
+    if arg isa QuoteNode && arg.value isa Symbol
+        return arg.value
+    elseif arg isa Core.SSAValue
+        stmt = code(target)[arg.id]
+        if stmt isa QuoteNode && stmt.value isa Symbol
+            return stmt.value
+        end
+    elseif arg isa Symbol
+        return arg
+    end
+    return nothing
+end
+
+"""
+    extract_argument_index(arg) -> Union{Int, Nothing}
+
+Extract the argument index from a SlotNumber or Argument.
+Returns the 1-based argument index (slot index - 1).
+"""
+function extract_argument_index(@nospecialize(arg))
+    if arg isa SlotNumber
+        # Slot 2 corresponds to arg 1, slot 3 to arg 2, etc.
+        return arg.id - 1
+    elseif arg isa Argument
+        return arg.n - 1
+    end
+    return nothing
 end
 
 #=============================================================================
@@ -416,10 +529,61 @@ function extract_pointer_element_type(tr::Translation, val::Value)
 end
 
 """
+    get_array_spec(T::Type{<:TileArray}) -> Union{ArraySpec, Nothing}
+
+Extract the ArraySpec from a TileArray type parameter.
+Returns nothing if the type doesn't have an ArraySpec.
+"""
+function get_array_spec(@nospecialize(T))
+    if T <: TileArray
+        # TileArray{T, N, S} - extract S
+        S = T.parameters[3]
+        if S isa ArraySpec  # Works for ArraySpec{N} since it's still <: ArraySpec
+            return S
+        end
+    end
+    return nothing
+end
+
+"""
+    emit_assume_aligned!(cb, tt, ptr_val, ptr_type, alignment) -> Value
+
+Emit an AssumeOp asserting the pointer is aligned to `alignment` bytes.
+Returns the assumed pointer value.
+"""
+function emit_assume_aligned!(cb::CodeBuilder, tt::TypeTable, ptr_val::Value, ptr_type::TypeId, alignment::Int)
+    encode_AssumeOp!(cb, ptr_type, ptr_val, DivBy(alignment))
+end
+
+"""
+    emit_assume_bounded!(cb, tt, val, val_type; lb=nothing, ub=nothing) -> Value
+
+Emit an AssumeOp asserting the value is within bounds.
+Returns the assumed value.
+"""
+function emit_assume_bounded!(cb::CodeBuilder, tt::TypeTable, val::Value, val_type::TypeId; lb=nothing, ub=nothing)
+    encode_AssumeOp!(cb, val_type, val, Bounded(lb, ub))
+end
+
+"""
+    emit_assume_divisible!(cb, tt, val, val_type, divisor) -> Value
+
+Emit an AssumeOp asserting the value is divisible by `divisor`.
+Returns the assumed value.
+"""
+function emit_assume_divisible!(cb::CodeBuilder, tt::TypeTable, val::Value, val_type::TypeId, divisor::Int)
+    encode_AssumeOp!(cb, val_type, val, DivBy(divisor))
+end
+
+"""
     emit_load!(tr, args, result_type) -> Value
 
 Emit load operation for ct.load(array; index, shape).
 This creates: TensorView -> PartitionView -> LoadViewTkoOp.
+
+Handles both raw pointer arguments and TileArray arguments.
+For TileArray, uses the sizes/strides from the destructured parameters,
+and emits AssumeOp for alignment hints based on ArraySpec.
 """
 function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @nospecialize(result_type))
     cb = tr.code_builder
@@ -430,9 +594,30 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
         error("load() requires at least an array argument")
     end
 
-    array_val = resolve_value(tr, args[1])
-    if array_val === nothing
-        error("Cannot resolve array argument for load()")
+    array_arg = args[1]
+
+    # Check if this is a TileArray argument (destructured)
+    arg_idx = extract_argument_index(array_arg)
+    is_tilearray = arg_idx !== nothing && is_destructured_arg(tr, arg_idx)
+
+    # Get pointer value and ArraySpec for specialization
+    array_spec = nothing
+    if is_tilearray
+        ptr_vals = get_arg_flat_values(tr, arg_idx, :ptr)
+        if ptr_vals === nothing || isempty(ptr_vals)
+            error("Cannot get ptr from TileArray argument")
+        end
+        array_val = ptr_vals[1]
+        # Get element type and ArraySpec from the TileArray type
+        tilearray_type = get_arg_type(tr, arg_idx)
+        elem_type = eltype(tilearray_type)
+        array_spec = get_array_spec(tilearray_type)
+    else
+        array_val = resolve_value(tr, array_arg)
+        if array_val === nothing
+            error("Cannot resolve array argument for load()")
+        end
+        elem_type = extract_pointer_element_type(tr, array_val)
     end
 
     # Parse shape argument first to know dimensions
@@ -454,10 +639,9 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
         if index_arg isa Core.SSAValue
             # Look up the tuple construction to get the element SSA values
             tuple_stmt = code(target)[index_arg.id]
-            # Check if it's a Core.tuple call - args[1] is a GlobalRef to Core.tuple
-        is_tuple_call = tuple_stmt isa Expr && tuple_stmt.head === :call &&
-            (tuple_stmt.args[1] isa GlobalRef && tuple_stmt.args[1].mod === Core && tuple_stmt.args[1].name === :tuple)
-        if is_tuple_call
+            is_tuple_call = tuple_stmt isa Expr && tuple_stmt.head === :call &&
+                (tuple_stmt.args[1] isa GlobalRef && tuple_stmt.args[1].mod === Core && tuple_stmt.args[1].name === :tuple)
+            if is_tuple_call
                 # Core.tuple(arg1, arg2, ...) - extract each arg
                 for elem_arg in tuple_stmt.args[2:end]
                     if elem_arg isa Core.SSAValue && haskey(tr.results, elem_arg.id)
@@ -476,8 +660,6 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
         end
     end
 
-    # Extract element type from the pointer argument
-    elem_type = extract_pointer_element_type(tr, array_val)
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
     # Create types
@@ -493,42 +675,83 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
     dim_map = collect(0:ndim-1)
     pv_type = partition_view_type!(tt, tile_shape, tv_type, dim_map, PaddingZero)
 
-    # For tensor view, we need size and stride values for each dimension
     scalar_i32 = tile_type!(tt, I32(tt), Int[])
 
-    # Get grid sizes for each dimension
-    nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(cb, scalar_i32, scalar_i32, scalar_i32)
-    grid_sizes = [nb_x, nb_y, nb_z]
-
-    # Create size and stride values for each dimension
+    # Get size and stride values
     size_vals = Value[]
     stride_vals = Value[]
 
-    # Calculate strides for row-major (C) order
-    # For 2D array of shape (M, N): stride[0] = N, stride[1] = 1
-    # Size = grid_size * tile_size for each dim
-    for dim in 1:ndim
-        # Create tile_size constant for this dimension
-        tile_size_bytes = reinterpret(UInt8, [Int32(tile_shape[dim])])
-        tile_size_val = encode_ConstantOp!(cb, scalar_i32, collect(tile_size_bytes))
+    if is_tilearray
+        # Use sizes and strides from the TileArray parameter
+        sizes_from_arg = get_arg_flat_values(tr, arg_idx, :sizes)
+        strides_from_arg = get_arg_flat_values(tr, arg_idx, :strides)
 
-        # Compute array size = grid_size * tile_size
-        size_val = encode_MulIOp!(cb, scalar_i32, grid_sizes[dim], tile_size_val)
-        push!(size_vals, size_val)
+        if sizes_from_arg !== nothing && length(sizes_from_arg) >= ndim
+            size_vals = sizes_from_arg[1:ndim]
+        end
+        if strides_from_arg !== nothing && length(strides_from_arg) >= ndim
+            stride_vals = strides_from_arg[1:ndim]
+        end
     end
 
-    # Compute strides for column-major order (Julia/Fortran)
-    # stride[0] = 1, stride[i] = stride[i-1] * size[i-1]
-    for dim in 1:ndim
-        if dim == 1
-            # First dimension has stride 1
-            stride_bytes = reinterpret(UInt8, [Int32(1)])
-            stride_val = encode_ConstantOp!(cb, scalar_i32, collect(stride_bytes))
-        else
-            # stride[dim] = stride[dim-1] * size[dim-1]
-            stride_val = encode_MulIOp!(cb, scalar_i32, stride_vals[end], size_vals[dim-1])
+    # Fall back to computing from grid if not available
+    if isempty(size_vals)
+        nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(cb, scalar_i32, scalar_i32, scalar_i32)
+        grid_sizes = [nb_x, nb_y, nb_z]
+
+        for dim in 1:ndim
+            tile_size_bytes = reinterpret(UInt8, [Int32(tile_shape[dim])])
+            tile_size_val = encode_ConstantOp!(cb, scalar_i32, collect(tile_size_bytes))
+            size_val = encode_MulIOp!(cb, scalar_i32, grid_sizes[dim], tile_size_val)
+            push!(size_vals, size_val)
         end
-        push!(stride_vals, stride_val)
+    end
+
+    if isempty(stride_vals)
+        # Compute strides for column-major order (Julia/Fortran)
+        for dim in 1:ndim
+            if dim == 1
+                stride_bytes = reinterpret(UInt8, [Int32(1)])
+                stride_val = encode_ConstantOp!(cb, scalar_i32, collect(stride_bytes))
+            else
+                stride_val = encode_MulIOp!(cb, scalar_i32, stride_vals[end], size_vals[dim-1])
+            end
+            push!(stride_vals, stride_val)
+        end
+    end
+
+    # Emit AssumeOps based on ArraySpec for optimization hints
+    if array_spec !== nothing
+        # Get the pointer type for AssumeOp (0-D tile of ptr<dtype>)
+        ptr_dtype = pointer_type!(tt, dtype)
+        ptr_tile_type = tile_type!(tt, ptr_dtype, Int[])
+
+        # If aligned, assert pointer alignment
+        if array_spec.alignment > 0
+            array_val = emit_assume_aligned!(cb, tt, array_val, ptr_tile_type, array_spec.alignment)
+        end
+
+        # Add bounds assumes for sizes and strides (non-negative)
+        size_vals = [emit_assume_bounded!(cb, tt, v, scalar_i32; lb=0) for v in size_vals]
+        stride_vals = [emit_assume_bounded!(cb, tt, v, scalar_i32; lb=0) for v in stride_vals]
+
+        # Add divisibility assumes for sizes (enables tile boundary optimization)
+        if hasproperty(array_spec, :shape_div_by)
+            for (i, div_by) in enumerate(array_spec.shape_div_by)
+                if div_by > 0 && i <= length(size_vals)
+                    size_vals[i] = emit_assume_divisible!(cb, tt, size_vals[i], scalar_i32, div_by)
+                end
+            end
+        end
+
+        # Add divisibility assumes for strides (enables vectorized access)
+        if hasproperty(array_spec, :stride_div_by)
+            for (i, div_by) in enumerate(array_spec.stride_div_by)
+                if div_by > 0 && i <= length(stride_vals)
+                    stride_vals[i] = emit_assume_divisible!(cb, tt, stride_vals[i], scalar_i32, div_by)
+                end
+            end
+        end
     end
 
     # Create tensor view from pointer
@@ -634,6 +857,10 @@ end
 
 Emit store operation for ct.store(array, index, tile).
 Creates: TensorView -> PartitionView -> StoreViewTkoOp.
+
+Handles both raw pointer arguments and TileArray arguments.
+For TileArray, uses the sizes/strides from the destructured parameters,
+and emits AssumeOp for alignment hints based on ArraySpec.
 """
 function emit_store!(tr::Translation, target::TileTarget, args::AbstractVector, @nospecialize(result_type))
     cb = tr.code_builder
@@ -644,9 +871,30 @@ function emit_store!(tr::Translation, target::TileTarget, args::AbstractVector, 
         error("store() requires array, index, and tile arguments")
     end
 
-    array_val = resolve_value(tr, args[1])
-    if array_val === nothing
-        error("Cannot resolve array argument for store()")
+    array_arg = args[1]
+
+    # Check if this is a TileArray argument (destructured)
+    arg_idx = extract_argument_index(array_arg)
+    is_tilearray = arg_idx !== nothing && is_destructured_arg(tr, arg_idx)
+
+    # Get pointer value and ArraySpec for specialization
+    array_spec = nothing
+    if is_tilearray
+        ptr_vals = get_arg_flat_values(tr, arg_idx, :ptr)
+        if ptr_vals === nothing || isempty(ptr_vals)
+            error("Cannot get ptr from TileArray argument")
+        end
+        array_val = ptr_vals[1]
+        # Get element type and ArraySpec from the TileArray type
+        tilearray_type = get_arg_type(tr, arg_idx)
+        elem_type = eltype(tilearray_type)
+        array_spec = get_array_spec(tilearray_type)
+    else
+        array_val = resolve_value(tr, array_arg)
+        if array_val === nothing
+            error("Cannot resolve array argument for store()")
+        end
+        elem_type = extract_pointer_element_type(tr, array_val)
     end
 
     # Parse tile argument first to get its shape
@@ -661,10 +909,7 @@ function emit_store!(tr::Translation, target::TileTarget, args::AbstractVector, 
         error("Cannot determine tile shape for store() - tile value has no tracked shape")
     end
 
-    # Extract element type from the pointer argument
-    elem_type = extract_pointer_element_type(tr, array_val)
     dtype = julia_to_tile_dtype!(tt, elem_type)
-
     ndim = length(tile_shape)
 
     # Parse index argument - handle tuple indices for multi-dimensional stores
@@ -674,7 +919,6 @@ function emit_store!(tr::Translation, target::TileTarget, args::AbstractVector, 
     if index_arg isa Core.SSAValue
         # Look up the tuple construction to get the element SSA values
         tuple_stmt = code(target)[index_arg.id]
-        # Check if it's a Core.tuple call - args[1] is a GlobalRef to Core.tuple
         is_tuple_call = tuple_stmt isa Expr && tuple_stmt.head === :call &&
             (tuple_stmt.args[1] isa GlobalRef && tuple_stmt.args[1].mod === Core && tuple_stmt.args[1].name === :tuple)
         if is_tuple_call
@@ -704,52 +948,97 @@ function emit_store!(tr::Translation, target::TileTarget, args::AbstractVector, 
     dim_map = collect(0:ndim-1)
     pv_type = partition_view_type!(tt, tile_shape, tv_type, dim_map, PaddingZero)
 
-    # For tensor view, we need size and stride values for each dimension
     scalar_i32 = tile_type!(tt, I32(tt), Int[])
 
-    # Get grid sizes for each dimension
-    nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(cb, scalar_i32, scalar_i32, scalar_i32)
-    all_grid_sizes = [nb_x, nb_y, nb_z]
-
-    # Determine which grid dimension corresponds to each array dimension
-    # based on which bid() axis each index value came from
-    index_grid_axes = Int[]
-    for (i, idx_val) in enumerate(index_vals)
-        grid_axis = get_grid_axis(tr, idx_val)
-        if grid_axis !== nothing
-            push!(index_grid_axes, grid_axis)
-        else
-            # Default: assume array dim i maps to grid dim i
-            push!(index_grid_axes, i - 1)
-        end
-    end
-
-    # Create size and stride values for each dimension
+    # Get size and stride values
     size_vals = Value[]
     stride_vals = Value[]
 
-    # Calculate sizes: array_size = grid_size * tile_size for each dim
-    # Use the grid axis that corresponds to each array dimension
-    for dim in 1:ndim
-        grid_axis = dim <= length(index_grid_axes) ? index_grid_axes[dim] : dim - 1
-        grid_size = all_grid_sizes[grid_axis + 1]  # +1 for 1-based indexing
+    if is_tilearray
+        # Use sizes and strides from the TileArray parameter
+        sizes_from_arg = get_arg_flat_values(tr, arg_idx, :sizes)
+        strides_from_arg = get_arg_flat_values(tr, arg_idx, :strides)
 
-        tile_size_bytes = reinterpret(UInt8, [Int32(tile_shape[dim])])
-        tile_size_val = encode_ConstantOp!(cb, scalar_i32, collect(tile_size_bytes))
-        size_val = encode_MulIOp!(cb, scalar_i32, grid_size, tile_size_val)
-        push!(size_vals, size_val)
+        if sizes_from_arg !== nothing && length(sizes_from_arg) >= ndim
+            size_vals = sizes_from_arg[1:ndim]
+        end
+        if strides_from_arg !== nothing && length(strides_from_arg) >= ndim
+            stride_vals = strides_from_arg[1:ndim]
+        end
     end
 
-    # Compute strides for column-major order (Julia/Fortran)
-    # stride[0] = 1, stride[i] = stride[i-1] * size[i-1]
-    for dim in 1:ndim
-        if dim == 1
-            stride_bytes = reinterpret(UInt8, [Int32(1)])
-            stride_val = encode_ConstantOp!(cb, scalar_i32, collect(stride_bytes))
-        else
-            stride_val = encode_MulIOp!(cb, scalar_i32, stride_vals[end], size_vals[dim-1])
+    # Fall back to computing from grid if not available
+    if isempty(size_vals)
+        nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(cb, scalar_i32, scalar_i32, scalar_i32)
+        all_grid_sizes = [nb_x, nb_y, nb_z]
+
+        # Determine which grid dimension corresponds to each array dimension
+        index_grid_axes = Int[]
+        for (i, idx_val) in enumerate(index_vals)
+            grid_axis = get_grid_axis(tr, idx_val)
+            if grid_axis !== nothing
+                push!(index_grid_axes, grid_axis)
+            else
+                push!(index_grid_axes, i - 1)
+            end
         end
-        push!(stride_vals, stride_val)
+
+        for dim in 1:ndim
+            grid_axis = dim <= length(index_grid_axes) ? index_grid_axes[dim] : dim - 1
+            grid_size = all_grid_sizes[grid_axis + 1]
+
+            tile_size_bytes = reinterpret(UInt8, [Int32(tile_shape[dim])])
+            tile_size_val = encode_ConstantOp!(cb, scalar_i32, collect(tile_size_bytes))
+            size_val = encode_MulIOp!(cb, scalar_i32, grid_size, tile_size_val)
+            push!(size_vals, size_val)
+        end
+    end
+
+    if isempty(stride_vals)
+        # Compute strides for column-major order (Julia/Fortran)
+        for dim in 1:ndim
+            if dim == 1
+                stride_bytes = reinterpret(UInt8, [Int32(1)])
+                stride_val = encode_ConstantOp!(cb, scalar_i32, collect(stride_bytes))
+            else
+                stride_val = encode_MulIOp!(cb, scalar_i32, stride_vals[end], size_vals[dim-1])
+            end
+            push!(stride_vals, stride_val)
+        end
+    end
+
+    # Emit AssumeOps based on ArraySpec for optimization hints
+    if array_spec !== nothing
+        # Get the pointer type for AssumeOp (0-D tile of ptr<dtype>)
+        ptr_dtype = pointer_type!(tt, dtype)
+        ptr_tile_type = tile_type!(tt, ptr_dtype, Int[])
+
+        # If aligned, assert pointer alignment
+        if array_spec.alignment > 0
+            array_val = emit_assume_aligned!(cb, tt, array_val, ptr_tile_type, array_spec.alignment)
+        end
+
+        # Add bounds assumes for sizes and strides (non-negative)
+        size_vals = [emit_assume_bounded!(cb, tt, v, scalar_i32; lb=0) for v in size_vals]
+        stride_vals = [emit_assume_bounded!(cb, tt, v, scalar_i32; lb=0) for v in stride_vals]
+
+        # Add divisibility assumes for sizes (enables tile boundary optimization)
+        if hasproperty(array_spec, :shape_div_by)
+            for (i, div_by) in enumerate(array_spec.shape_div_by)
+                if div_by > 0 && i <= length(size_vals)
+                    size_vals[i] = emit_assume_divisible!(cb, tt, size_vals[i], scalar_i32, div_by)
+                end
+            end
+        end
+
+        # Add divisibility assumes for strides (enables vectorized access)
+        if hasproperty(array_spec, :stride_div_by)
+            for (i, div_by) in enumerate(array_spec.stride_div_by)
+                if div_by > 0 && i <= length(stride_vals)
+                    stride_vals[i] = emit_assume_divisible!(cb, tt, stride_vals[i], scalar_i32, div_by)
+                end
+            end
+        end
     end
 
     # Create tensor view from pointer

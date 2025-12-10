@@ -7,8 +7,8 @@ include("bytecode/encodings.jl")
 include("compiler/codegen.jl")
 
 # Public API
-export emit_tileir, compile
-export Tile, Constant
+export emit_tileir, compile, launch
+export Tile, Constant, TileArray, ArraySpec, flatten
 
 #=============================================================================
  API Types
@@ -66,6 +66,202 @@ Base.eltype(::Type{Tile{T, Shape}}) where {T, Shape} = T
 Base.eltype(::Tile{T, Shape}) where {T, Shape} = T
 tile_shape(::Type{Tile{T, Shape}}) where {T, Shape} = Shape
 tile_shape(::Tile{T, Shape}) where {T, Shape} = Shape
+
+"""
+    ArraySpec{N}
+
+Specialization hints for N-dimensional array arguments. Encoded as a type
+parameter to enable kernel specialization based on array properties.
+
+# Fields
+- `alignment::Int`: Base pointer alignment in bytes (0 = unknown)
+- `contiguous::Bool`: Whether stride[1] == 1 (contiguous in first dimension)
+- `stride_div_by::NTuple{N,Int}`: Per-dimension stride divisibility (0 = unknown)
+- `shape_div_by::NTuple{N,Int}`: Per-dimension shape divisibility (0 = unknown)
+
+Common alignment values:
+- 0: Unknown/unaligned
+- 16: 16-byte aligned (enables basic vectorization)
+- 128: 128-byte aligned (optimal for TMA on Blackwell)
+
+Divisibility values enable optimizations:
+- stride_div_by[i] = 4 means stride[i] is divisible by 4 (enables vectorized access)
+- shape_div_by[i] = 16 means shape[i] is divisible by 16 (no tile boundary handling needed)
+"""
+struct ArraySpec{N}
+    alignment::Int
+    contiguous::Bool
+    stride_div_by::NTuple{N, Int}
+    shape_div_by::NTuple{N, Int}
+end
+
+# Convenience constructors
+function ArraySpec(alignment::Int, contiguous::Bool)
+    # 0-dimensional fallback (scalar pointers)
+    ArraySpec{0}(alignment, contiguous, (), ())
+end
+
+function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
+    # N-dimensional with no divisibility info
+    ArraySpec{N}(alignment, contiguous, ntuple(_ -> 0, N), ntuple(_ -> 0, N))
+end
+
+# Backwards compatibility with boolean aligned
+ArraySpec(aligned::Bool, contiguous::Bool) = ArraySpec(aligned ? 16 : 0, contiguous)
+
+"""
+    TileArray{T, N, S}
+
+Represents an N-dimensional array argument to a kernel with element type `T`
+and specialization `S::ArraySpec`.
+
+Unlike raw pointers, TileArray carries size and stride information that is
+passed to the kernel as runtime parameters, enabling dynamic array sizes.
+
+The specialization parameter `S` drives kernel compilation - different
+specializations (e.g., aligned vs unaligned) produce different cubins.
+
+# Fields
+- `ptr::Ptr{T}`: Base pointer to array data
+- `sizes::NTuple{N, Int32}`: Size in each dimension
+- `strides::NTuple{N, Int32}`: Stride in each dimension (in elements)
+"""
+struct TileArray{T, N, S}
+    ptr::Ptr{T}
+    sizes::NTuple{N, Int32}
+    strides::NTuple{N, Int32}
+end
+
+# Type accessors for TileArray
+Base.eltype(::Type{TileArray{T, N, S}}) where {T, N, S} = T
+Base.eltype(::TileArray{T, N, S}) where {T, N, S} = T
+Base.ndims(::Type{TileArray{T, N, S}}) where {T, N, S} = N
+Base.ndims(::TileArray{T, N, S}) where {T, N, S} = N
+
+"""
+    compute_alignment(ptr_int)
+
+Compute largest power-of-2 alignment of a pointer address (up to 128 bytes).
+Returns 0 for null pointers.
+"""
+function compute_alignment(ptr_int::Int)
+    ptr_int == 0 && return 0
+    for align in (128, 64, 32, 16, 8, 4, 2, 1)
+        if ptr_int % align == 0
+            return align
+        end
+    end
+    return 0
+end
+
+"""
+    compute_divisibility(value, max_divisor=16)
+
+Compute largest power-of-2 that divides `value` (up to max_divisor).
+Returns 0 if value is 0 or not divisible by any power of 2.
+"""
+function compute_divisibility(value::Integer, max_divisor::Int=16)
+    value == 0 && return 0
+    divisor = 1
+    while divisor <= max_divisor && value % (divisor * 2) == 0
+        divisor *= 2
+    end
+    return divisor >= 2 ? divisor : 0  # Only return if at least divisible by 2
+end
+
+"""
+    compute_array_spec(ptr, sizes, strides, elem_size)
+
+Compute ArraySpec from array properties.
+
+# Arguments
+- `ptr`: Base pointer
+- `sizes`: Array dimensions
+- `strides`: Stride in each dimension (in elements)
+- `elem_size`: Size of element type in bytes
+
+# Returns
+ArraySpec{N} with:
+- `alignment`: Pointer alignment in bytes
+- `contiguous`: Whether stride[1] == 1
+- `stride_div_by`: Per-dimension stride divisibility (enables vectorized access)
+- `shape_div_by`: Per-dimension shape divisibility (eliminates boundary checks)
+"""
+function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTuple{N, Int32}) where {T, N}
+    elem_size = sizeof(T)
+
+    # Pointer alignment
+    alignment = compute_alignment(Int(ptr))
+
+    # Contiguity (first dimension)
+    contiguous = N > 0 && strides[1] == 1
+
+    # Per-dimension stride divisibility
+    # For stride to enable 16-byte vectorization, stride * elem_size must be divisible by 16
+    # E.g., for Float32 (4 bytes): stride must be divisible by 4 to get 16-byte alignment
+    stride_div_by = ntuple(N) do i
+        stride_bytes = strides[i] * elem_size
+        # Check if stride in bytes is 16-byte divisible
+        if stride_bytes % 16 == 0
+            # Return divisibility in elements (not bytes)
+            return 16 ÷ elem_size
+        end
+        return 0
+    end
+
+    # Per-dimension shape divisibility (for tile boundary optimization)
+    shape_div_by = ntuple(N) do i
+        compute_divisibility(sizes[i], 16)
+    end
+
+    ArraySpec{N}(alignment, contiguous, stride_div_by, shape_div_by)
+end
+
+# Backwards compatible version without sizes (no shape_div_by info)
+function compute_array_spec(ptr::Ptr{T}, strides::NTuple{N, Int32}) where {T, N}
+    compute_array_spec(ptr, ntuple(_ -> Int32(0), N), strides)
+end
+
+"""
+    TileArray(ptr, sizes, strides)
+
+Create a TileArray from a pointer, sizes, and strides.
+Computes the ArraySpec automatically based on alignment, contiguity, and divisibility.
+"""
+function TileArray(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTuple{N, Int32}) where {T, N}
+    spec = compute_array_spec(ptr, sizes, strides)
+    TileArray{T, N, spec}(ptr, sizes, strides)
+end
+
+"""
+    TileArray(arr)
+
+Create a TileArray from a CUDA array (CuArray or similar).
+Automatically extracts pointer, sizes, strides, and computes ArraySpec.
+
+This method works with any array type that supports:
+- `pointer(arr)` - returns device pointer
+- `size(arr)` - returns array dimensions
+- `strides(arr)` - returns array strides
+"""
+function TileArray(arr::AbstractArray{T, N}) where {T, N}
+    ptr = Ptr{T}(pointer(arr))
+    sizes = NTuple{N, Int32}(Int32.(size(arr)))
+    strides_val = NTuple{N, Int32}(Int32.(strides(arr)))
+    TileArray(ptr, sizes, strides_val)
+end
+
+"""
+    flatten(x)
+
+Flatten a value into a tuple of its leaf fields for kernel launch.
+Scalars return themselves wrapped in a tuple. Structs like TileArray
+return their fields in order.
+
+This is used by the launch helper to splat arguments to cudacall.
+"""
+flatten(x) = (x,)
+flatten(arr::TileArray{T, N}) where {T, N} = (arr.ptr, arr.sizes..., arr.strides...)
 
 #=============================================================================
  Tile Arithmetic
@@ -158,6 +354,29 @@ In kernel code, this is compiled to StoreViewTkoOp.
     nothing
 end
 
+# TileArray overloads - these are intercepted by the compiler
+# The compiler extracts ptr/sizes/strides from the destructured TileArray
+
+"""
+    load(arr::TileArray, index, shape) -> Tile
+
+Load a tile from a TileArray at the given index with the specified shape.
+The TileArray's sizes and strides are used to construct the TensorView.
+"""
+@noinline function load(arr::TileArray{T, N}, index, shape::NTuple{M, Int}) where {T, N, M}
+    Tile{T, shape}()
+end
+
+"""
+    store(arr::TileArray, index, tile::Tile) -> Nothing
+
+Store a tile to a TileArray at the given index.
+"""
+@noinline function store(arr::TileArray{T, N}, index, tile::Tile{T})::Nothing where {T, N}
+    Base.donotdelete(arr, index, tile)
+    nothing
+end
+
 """
     compile(f, argtypes; name=nothing, sm_arch="sm_100", opt_level=3) -> Vector{UInt8}
 
@@ -180,6 +399,73 @@ function compile(@nospecialize(f), @nospecialize(argtypes);
         rm(input_path, force=true)
         rm(output_path, force=true)
     end
+end
+
+"""
+    launch(f, grid, args...; name=nothing, sm_arch="sm_100", opt_level=3)
+
+Compile and launch a kernel function with the given grid size and arguments.
+
+Arguments are automatically flattened using `flatten()` - TileArray arguments
+are expanded to their constituent ptr, sizes, and strides parameters.
+
+# Arguments
+- `f`: The kernel function to launch
+- `grid`: Grid size as Int or NTuple for multi-dimensional grids
+- `args...`: Kernel arguments (may include TileArray)
+- `name`: Optional kernel name for debugging
+- `sm_arch`: Target GPU architecture (default: "sm_100")
+- `opt_level`: Optimization level 0-3 (default: 3)
+
+# Example
+```julia
+using CUDA, cuTile
+
+a = CUDA.zeros(Float32, 1024)
+b = CUDA.ones(Float32, 1024)
+c = CUDA.zeros(Float32, 1024)
+
+function vadd_kernel(a::cuTile.TileArray{Float32,1}, b::cuTile.TileArray{Float32,1},
+                     c::cuTile.TileArray{Float32,1})
+    pid = cuTile.bid(0)
+    ta = cuTile.load(a, (pid,), (16,))
+    tb = cuTile.load(b, (pid,), (16,))
+    cuTile.store(c, (pid,), ta + tb)
+    return nothing
+end
+
+cuTile.launch(vadd_kernel, 64,
+              cuTile.TileArray(a), cuTile.TileArray(b), cuTile.TileArray(c))
+```
+"""
+function launch(@nospecialize(f), grid, args...;
+                name::Union{String, Nothing}=nothing,
+                sm_arch::String="sm_100",
+                opt_level::Int=3)
+    # Compute argument types from the provided arguments
+    argtypes = Tuple{map(typeof, args)...}
+
+    # Compile the kernel
+    cubin = compile(f, argtypes; name, sm_arch, opt_level)
+
+    # Determine kernel name
+    kernel_name = name !== nothing ? name : string(nameof(f))
+
+    # Flatten arguments for cudacall
+    flat_args = Tuple(Iterators.flatten(map(flatten, args)))
+    flat_types = Tuple{map(typeof, flat_args)...}
+
+    # Get grid dimensions
+    grid_dims = grid isa Integer ? (grid,) : grid
+
+    # Load and launch via CUDA.jl
+    # Note: This requires CUDA.jl to be loaded
+    cumod = Base.invokelatest(Main.CUDA.CuModule, cubin)
+    cufunc = Base.invokelatest(Main.CUDA.CuFunction, cumod, kernel_name)
+    Base.invokelatest(Main.CUDA.cudacall, cufunc, flat_types, flat_args...;
+                      blocks=grid_dims, threads=128)
+
+    return nothing
 end
 
 end # module cuTile

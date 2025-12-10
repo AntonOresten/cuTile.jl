@@ -55,6 +55,14 @@ mutable struct Translation
     # Maps Tile IR values to their Julia types
     value_julia_types::Dict{Int, Any}  # Value.id -> Julia type
 
+    # Unified argument field map: (arg_idx, field_or_nothing) -> flat Values
+    # For regular args: (i, nothing) -> [value]
+    # For struct fields: (i, :fieldname) -> [values...]
+    arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
+
+    # Original types for destructured arguments
+    arg_types::Dict{Int, Type}  # Argument index -> Julia type
+
     # Tables for the bytecode
     type_table::TypeTable
     string_table::StringTable
@@ -76,6 +84,8 @@ function Translation(writer::BytecodeWriter)
         Dict{Int, Vector{Int}}(),
         Dict{Int, Int}(),
         Dict{Int, Any}(),
+        Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
+        Dict{Int, Type}(),
         writer.type_table,
         writer.string_table,
         writer.constant_table,
@@ -282,4 +292,83 @@ Handles Core.Const and other type wrappers.
 function is_int_type(@nospecialize(T))
     actual_type = unwrap_type(T)
     return actual_type <: Integer
+end
+
+#=============================================================================
+ Struct Destructuring Helpers
+=============================================================================#
+
+"""
+    should_destructure(T) -> Bool
+
+Check if a type should be destructured into flat parameters.
+Returns true for struct types that have runtime fields (like TileArray).
+"""
+function should_destructure(@nospecialize(T))
+    T = unwrap_type(T)
+    # Must be a concrete struct type
+    T isa DataType || return false
+    # Must have fields (not a primitive or abstract type)
+    isstructtype(T) || return false
+    # Must not be a ghost type (zero-size)
+    is_ghost_type(T) && return false
+    # Must not be a primitive type
+    isprimitivetype(T) && return false
+    # Check if it's a TileArray
+    T.name.name === :TileArray && return true
+    # For now, only destructure TileArray
+    return false
+end
+
+"""
+    flat_field_count(T) -> Int
+
+Count the number of flat parameters a type expands to.
+Scalars expand to 1, NTuple{N,T} expands to N.
+"""
+flat_field_count(::Type{<:NTuple{N, T}}) where {N, T} = N
+flat_field_count(::Type) = 1
+
+"""
+    total_flat_field_count(T) -> Int
+
+Count the total number of flat parameters for all fields of a struct type.
+"""
+function total_flat_field_count(@nospecialize(T))
+    count = 0
+    for i in 1:fieldcount(T)
+        ftype = fieldtype(T, i)
+        count += flat_field_count(ftype)
+    end
+    return count
+end
+
+"""
+    get_arg_flat_values(tr, arg_idx, field=nothing) -> Union{Vector{Value}, Nothing}
+
+Get the flat values for an argument or its field.
+- For regular args: `get_arg_flat_values(tr, i)` or `get_arg_flat_values(tr, i, nothing)`
+- For struct fields: `get_arg_flat_values(tr, i, :fieldname)`
+Returns nothing if not found.
+"""
+function get_arg_flat_values(tr::Translation, arg_idx::Int, field::Union{Nothing, Symbol}=nothing)
+    get(tr.arg_flat_values, (arg_idx, field), nothing)
+end
+
+"""
+    is_destructured_arg(tr, arg_idx) -> Bool
+
+Check if an argument was destructured (has field entries in arg_flat_values).
+"""
+function is_destructured_arg(tr::Translation, arg_idx::Int)
+    haskey(tr.arg_types, arg_idx)
+end
+
+"""
+    get_arg_type(tr, arg_idx) -> Union{Type, Nothing}
+
+Get the original Julia type for a destructured argument.
+"""
+function get_arg_type(tr::Translation, arg_idx::Int)
+    get(tr.arg_types, arg_idx, nothing)
 end
