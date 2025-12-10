@@ -8,6 +8,21 @@ using Core: SlotNumber
 
 
 """
+    is_ghost_type(T) -> Bool
+
+Check if a type is a ghost type (zero-size singleton that has no runtime representation).
+Ghost types like Val{V} are filtered from kernel parameters since their values
+are embedded in the specialized method.
+"""
+function is_ghost_type(@nospecialize(T))
+    try
+        isbitstype(T) && sizeof(T) == 0
+    catch
+        false
+    end
+end
+
+"""
     emit_kernel!(writer, target; name, is_entry=true) -> Vector{UInt8}
 
 Compile a TileTarget to Tile IR bytecode.
@@ -19,10 +34,21 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     tr = Translation(writer)
     tt = tr.type_table
 
-    # Determine parameter types for the kernel
+    # Filter ghost types from parameters
+    # Ghost types (like Val{V}) have no runtime representation - their values
+    # are baked into the specialized IR as constants (QuoteNodes)
     param_types = TypeId[]
+    param_arg_indices = Int[]  # Maps param index to original arg index
+
     for (i, argtype) in enumerate(target.argtypes)
-        push!(param_types, tile_type_for_julia!(tr, argtype))
+        if is_ghost_type(argtype)
+            # Ghost type - no runtime representation, skip as parameter
+            continue
+        else
+            # Regular parameter
+            push!(param_types, tile_type_for_julia!(tr, argtype))
+            push!(param_arg_indices, i)
+        end
     end
 
     # Determine return types
@@ -40,14 +66,18 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # - Slot 1 (_1) is the function itself
     # - Slots 2..n+1 (_2.._n+1) are the n function arguments
     arg_values = make_block_args!(cb, length(param_types))
-    for (i, val) in enumerate(arg_values)
-        # Slot i+1 corresponds to argument i
-        tr[SlotNumber(i + 1)] = val
-        # Also keep the Argument mapping for backwards compatibility
-        tr[Argument(i + 1)] = val
-        # Track the Julia type of this argument
-        set_julia_type!(tr, val, target.argtypes[i])
+
+    # Map block args to their original argument slots
+    for (param_idx, val) in enumerate(arg_values)
+        orig_arg_idx = param_arg_indices[param_idx]
+        # Slot orig_arg_idx+1 corresponds to argument orig_arg_idx
+        tr[SlotNumber(orig_arg_idx + 1)] = val
+        tr[Argument(orig_arg_idx + 1)] = val
+        set_julia_type!(tr, val, target.argtypes[orig_arg_idx])
     end
+
+    # Ghost type arguments don't need explicit handling - their constant values
+    # flow through Julia's IR as QuoteNodes and are handled by emit_constant!
 
     # Emit each statement
     code_stmts = code(target)
@@ -409,7 +439,7 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
     tile_shape = Int[16]  # Default
     if length(args) >= 3
         shape_arg = args[3]
-        shape = extract_constant_tuple_from_arg(shape_arg, tr)
+        shape = extract_constant_tuple_from_arg(shape_arg, tr, target)
         if shape !== nothing
             tile_shape = collect(Int, shape)
         end
@@ -527,18 +557,75 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
 end
 
 """
-    extract_constant_tuple_from_arg(arg, tr) -> Union{Tuple, Nothing}
+    extract_constant_tuple_from_arg(arg, tr, target) -> Union{Tuple, Nothing}
 
-Extract a constant tuple value from an argument, handling SSA references.
+Extract a constant tuple value from an argument.
+Handles direct tuples, QuoteNodes, and SSA references to tuple constructions.
+
+Note: With ghost type filtering, constant values from Val{V} parameters
+flow through Julia's IR as QuoteNodes, so this function extracts them naturally.
 """
+function extract_constant_tuple_from_arg(@nospecialize(arg), tr::Translation, target::TileTarget)
+    if arg isa Tuple
+        return arg
+    elseif arg isa QuoteNode && arg.value isa Tuple
+        return arg.value
+    elseif arg isa Core.SSAValue
+        # Check if this is a tuple construction with constant elements
+        stmt = code(target)[arg.id]
+        if stmt isa QuoteNode && stmt.value isa Tuple
+            return stmt.value
+        elseif stmt isa Expr && stmt.head === :call
+            callee = stmt.args[1]
+            if callee isa GlobalRef && callee.mod === Core && callee.name === :tuple
+                # This is Core.tuple(...) - extract each element
+                elements = Any[]
+                for elem in stmt.args[2:end]
+                    val = extract_constant_value_from_ir(elem, target)
+                    if val === nothing
+                        return nothing  # Not all elements are constants
+                    end
+                    push!(elements, val)
+                end
+                return Tuple(elements)
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    extract_constant_value_from_ir(arg, target) -> Union{Number, Nothing}
+
+Extract a constant value from IR. Handles:
+- Literal integer values
+- QuoteNode wrapped values
+- SSA values that are QuoteNodes in the IR
+"""
+function extract_constant_value_from_ir(@nospecialize(arg), target::TileTarget)
+    if arg isa Integer
+        return arg
+    elseif arg isa QuoteNode && arg.value isa Integer
+        return arg.value
+    elseif arg isa Core.SSAValue
+        # Look up what this SSA value is in the code
+        stmt = code(target)[arg.id]
+        if stmt isa QuoteNode && stmt.value isa Integer
+            return stmt.value
+        elseif stmt isa Integer
+            return stmt
+        end
+    end
+    return nothing
+end
+
+# Backward-compatible version for calls that don't have target
 function extract_constant_tuple_from_arg(@nospecialize(arg), tr::Translation)
     if arg isa Tuple
         return arg
     elseif arg isa QuoteNode && arg.value isa Tuple
         return arg.value
     end
-    # For SSA values, we'd need to look at the result type
-    # For now, return nothing and let caller use default
     return nothing
 end
 

@@ -15,17 +15,6 @@ export Tile
 =============================================================================#
 
 """
-    Constant{T}
-
-Marker type for compile-time constant values.
-"""
-struct Constant{T}
-    value::T
-end
-
-Base.convert(::Type{Constant{T}}, x::T) where T = Constant{T}(x)
-
-"""
     Tile{T, Shape}
 
 Represents a tile of data with element type `T` and static shape `Shape`.
