@@ -29,11 +29,13 @@ Shape is a tuple of integers representing the tile dimensions.
 This is a compile-time abstraction - at runtime in kernel code, tiles are
 represented as Tile IR values. The struct exists to enable proper type
 inference and operator dispatch.
-"""
-struct Tile{T, Shape}
-    # No runtime fields - this is a phantom type for the compiler
-    # The actual data lives in GPU registers during kernel execution
 
+Note: This is a mutable struct (despite having no fields) to prevent Julia's
+optimizer from treating it as a singleton. Each Tile instance represents a
+distinct Tile IR value, and we need SSA references to be preserved rather
+than being replaced with constant QuoteNodes.
+"""
+mutable struct Tile{T, Shape}
     # Inner constructor that's never actually called at runtime
     function Tile{T, Shape}() where {T, Shape}
         new{T, Shape}()

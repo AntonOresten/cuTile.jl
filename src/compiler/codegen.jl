@@ -979,9 +979,6 @@ function emit_load!(tr::Translation, target::TileTarget, args::AbstractVector, @
     set_value_type!(tr, tile_val, tile_type)
     set_tile_shape!(tr, tile_val, tile_shape)
 
-    # Track tile value for QuoteNode resolution
-    push!(tr.recent_tiles, tile_val)
-
     return tile_val
 end
 
@@ -1145,16 +1142,10 @@ function emit_store!(tr::Translation, target::TileTarget, args::AbstractVector, 
         elem_type = extract_pointer_element_type(tr, array_val)
     end
 
-    # Parse tile argument first to get its shape
-    tile_arg = args[3]
-    tile_val = resolve_value(tr, tile_arg)
+    # Parse tile argument to get its shape
+    tile_val = resolve_value(tr, args[3])
     if tile_val === nothing
-        # If resolve failed and arg is a QuoteNode with Tile type, use recent_tiles
-        if tile_arg isa QuoteNode && tile_arg.value isa Tile && !isempty(tr.recent_tiles)
-            tile_val = pop!(tr.recent_tiles)
-        else
-            error("store() requires a tile argument")
-        end
+        error("store() requires a tile argument")
     end
 
     # Get tile shape from the tracked tile shapes
@@ -1334,20 +1325,8 @@ function emit_tile_add!(tr::Translation, args::AbstractVector, @nospecialize(res
         error("tile_add() requires exactly 2 arguments")
     end
 
-    # Helper to resolve tile arguments, using recent_tiles for QuoteNode Tile args
-    function resolve_tile_arg(arg)
-        val = resolve_value(tr, arg)
-        if val !== nothing
-            return val
-        end
-        if arg isa QuoteNode && arg.value isa Tile && !isempty(tr.recent_tiles)
-            return pop!(tr.recent_tiles)
-        end
-        return nothing
-    end
-
-    lhs = resolve_tile_arg(args[1])
-    rhs = resolve_tile_arg(args[2])
+    lhs = resolve_value(tr, args[1])
+    rhs = resolve_value(tr, args[2])
 
     if lhs === nothing || rhs === nothing
         error("Cannot resolve operands for tile_add()")
@@ -1374,9 +1353,6 @@ function emit_tile_add!(tr::Translation, args::AbstractVector, @nospecialize(res
         set_tile_shape!(tr, result, shape)
     end
 
-    # Track tile value for QuoteNode resolution
-    push!(tr.recent_tiles, result)
-
     return result
 end
 
@@ -1392,20 +1368,8 @@ function emit_tile_sub!(tr::Translation, args::AbstractVector, @nospecialize(res
         error("tile_sub() requires exactly 2 arguments")
     end
 
-    # Helper to resolve tile arguments, using recent_tiles for QuoteNode Tile args
-    function resolve_tile_arg(arg)
-        val = resolve_value(tr, arg)
-        if val !== nothing
-            return val
-        end
-        if arg isa QuoteNode && arg.value isa Tile && !isempty(tr.recent_tiles)
-            return pop!(tr.recent_tiles)
-        end
-        return nothing
-    end
-
-    lhs = resolve_tile_arg(args[1])
-    rhs = resolve_tile_arg(args[2])
+    lhs = resolve_value(tr, args[1])
+    rhs = resolve_value(tr, args[2])
 
     if lhs === nothing || rhs === nothing
         error("Cannot resolve operands for tile_sub()")
@@ -1430,9 +1394,6 @@ function emit_tile_sub!(tr::Translation, args::AbstractVector, @nospecialize(res
         set_tile_shape!(tr, result, shape)
     end
 
-    # Track tile value for QuoteNode resolution
-    push!(tr.recent_tiles, result)
-
     return result
 end
 
@@ -1448,20 +1409,8 @@ function emit_tile_mul!(tr::Translation, args::AbstractVector, @nospecialize(res
         error("tile_mul() requires exactly 2 arguments")
     end
 
-    # Helper to resolve tile arguments, using recent_tiles for QuoteNode Tile args
-    function resolve_tile_arg(arg)
-        val = resolve_value(tr, arg)
-        if val !== nothing
-            return val
-        end
-        if arg isa QuoteNode && arg.value isa Tile && !isempty(tr.recent_tiles)
-            return pop!(tr.recent_tiles)
-        end
-        return nothing
-    end
-
-    lhs = resolve_tile_arg(args[1])
-    rhs = resolve_tile_arg(args[2])
+    lhs = resolve_value(tr, args[1])
+    rhs = resolve_value(tr, args[2])
 
     if lhs === nothing || rhs === nothing
         error("Cannot resolve operands for tile_mul()")
@@ -1485,9 +1434,6 @@ function emit_tile_mul!(tr::Translation, args::AbstractVector, @nospecialize(res
     if shape !== nothing
         set_tile_shape!(tr, result, shape)
     end
-
-    # Track tile value for QuoteNode resolution
-    push!(tr.recent_tiles, result)
 
     return result
 end
@@ -1705,28 +1651,14 @@ Emit MmaFOp for matrix-multiply-accumulate: result = a @ b + acc.
 """
 function emit_mma!(tr::Translation, args::AbstractVector, @nospecialize(result_type))
     cb = tr.code_builder
-    tt = tr.type_table
 
     if length(args) != 3
         error("mma() requires exactly 3 arguments (a, b, acc)")
     end
 
-    # Resolve operands, using recent_tiles for QuoteNode Tile arguments
-    function resolve_tile_arg(arg)
-        val = resolve_value(tr, arg)
-        if val !== nothing
-            return val
-        end
-        # If resolve failed and arg is a QuoteNode with Tile type, use recent_tiles
-        if arg isa QuoteNode && arg.value isa Tile && !isempty(tr.recent_tiles)
-            return pop!(tr.recent_tiles)
-        end
-        return nothing
-    end
-
-    lhs = resolve_tile_arg(args[1])
-    rhs = resolve_tile_arg(args[2])
-    acc = resolve_tile_arg(args[3])
+    lhs = resolve_value(tr, args[1])
+    rhs = resolve_value(tr, args[2])
+    acc = resolve_value(tr, args[3])
 
     if lhs === nothing || rhs === nothing || acc === nothing
         error("Cannot resolve operands for mma()")
@@ -1746,9 +1678,6 @@ function emit_mma!(tr::Translation, args::AbstractVector, @nospecialize(result_t
     if shape !== nothing
         set_tile_shape!(tr, result, shape)
     end
-
-    # Track tile value for QuoteNode resolution
-    push!(tr.recent_tiles, result)
 
     return result
 end
@@ -1852,9 +1781,6 @@ function emit_full!(tr::Translation, target::TileTarget, args::AbstractVector, @
 
     set_value_type!(tr, result, tile_type)
     set_tile_shape!(tr, result, tile_shape)
-
-    # Track tile value for QuoteNode resolution
-    push!(tr.recent_tiles, result)
 
     return result
 end

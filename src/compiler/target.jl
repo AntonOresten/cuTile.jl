@@ -76,10 +76,6 @@ mutable struct Translation
 
     # Token for memory ordering (created at kernel start)
     token::Union{Value, Nothing}
-
-    # Queue of recent tile values (used when Julia's optimizer replaces
-    # SSA values with constant QuoteNodes)
-    recent_tiles::Vector{Value}
 end
 
 function Translation(writer::BytecodeWriter)
@@ -98,8 +94,7 @@ function Translation(writer::BytecodeWriter)
         writer.constant_table,
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
         Dict{Type, TypeId}(),
-        nothing,  # token initialized later
-        Value[]   # recent_tiles
+        nothing  # token initialized later
     )
 end
 
@@ -168,7 +163,7 @@ function Base.setindex!(tr::Translation, val::Value, slot::SlotNumber)
     tr.slots[slot.id] = val
 end
 
-# Resolve any value (Argument, SSAValue, SlotNumber, or literal)
+# Resolve any value (Argument, SSAValue, SlotNumber) to its Tile IR Value
 function resolve_value(tr::Translation, @nospecialize(val))
     if val isa Argument
         return tr[val]
@@ -176,11 +171,9 @@ function resolve_value(tr::Translation, @nospecialize(val))
         return tr[val]
     elseif val isa SlotNumber
         return tr[val]
-    elseif val isa QuoteNode
-        return resolve_value(tr, val.value)
     else
-        # Literal value - need to create a constant
-        return nothing  # Will be handled by emit_constant
+        # Literal value or QuoteNode - not a tracked SSA value
+        return nothing
     end
 end
 
