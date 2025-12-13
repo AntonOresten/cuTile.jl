@@ -33,8 +33,7 @@ function test_add_1d(::Type{T}, n, tile; name=nothing) where T
 
     # Launch with ct.launch - CuArrays are auto-converted to TileArray
     # Constant parameters are ghost types - filtered out at launch time
-    ct.launch(vec_add_kernel_1d, cld(n, tile), a, b, c, ct.Constant(tile);
-              sm_arch="sm_120")
+    ct.launch(vec_add_kernel_1d, cld(n, tile), a, b, c, ct.Constant(tile))
 
     @assert Array(c) ≈ Array(a) + Array(b)
     println("✓ passed")
@@ -48,8 +47,7 @@ function test_add_2d(::Type{T}, m, n, tile_x, tile_y; name=nothing) where T
 
     # Launch with ct.launch - CuArrays are auto-converted to TileArray
     ct.launch(vec_add_kernel_2d, (cld(m, tile_x), cld(n, tile_y)), a, b, c,
-              ct.Constant(tile_x), ct.Constant(tile_y);
-              sm_arch="sm_120")
+              ct.Constant(tile_x), ct.Constant(tile_y))
 
     @assert Array(c) ≈ Array(a) + Array(b)
     println("✓ passed")

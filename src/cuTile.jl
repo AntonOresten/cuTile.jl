@@ -1,6 +1,6 @@
 module cuTile
 
-using CUDA: CuModule, CuFunction, cudacall
+using CUDA: CuModule, CuFunction, cudacall, device, capability
 
 # Bytecode infrastructure
 include("bytecode/encodings.jl")
@@ -537,13 +537,24 @@ Modulo operation: a % b (C-style, result has same sign as dividend)
 @noinline Base.mod(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
 
 """
-    compile(f, argtypes; name=nothing, sm_arch="sm_100", opt_level=3) -> Vector{UInt8}
+    default_sm_arch() -> String
+
+Get the SM architecture string for the current CUDA device.
+Returns e.g. "sm_120" for compute capability 12.0.
+"""
+function default_sm_arch()
+    cap = capability(device())
+    "sm_$(cap.major)$(cap.minor)"
+end
+
+"""
+    compile(f, argtypes; name=nothing, sm_arch=default_sm_arch(), opt_level=3) -> Vector{UInt8}
 
 Compile a Julia kernel function to CUBIN.
 """
 function compile(@nospecialize(f), @nospecialize(argtypes);
                  name::Union{String, Nothing}=nothing,
-                 sm_arch::String="sm_100",
+                 sm_arch::String=default_sm_arch(),
                  opt_level::Int=3)
     tile_bytecode = emit_tileir(f, argtypes; name)
 
@@ -561,7 +572,7 @@ function compile(@nospecialize(f), @nospecialize(argtypes);
 end
 
 """
-    launch(f, grid, args...; name=nothing, sm_arch="sm_100", opt_level=3)
+    launch(f, grid, args...; name=nothing, sm_arch=default_sm_arch(), opt_level=3)
 
 Compile and launch a kernel function with the given grid size and arguments.
 
@@ -573,7 +584,7 @@ are expanded to their constituent ptr, sizes, and strides parameters.
 - `grid`: Grid size as Int or NTuple for multi-dimensional grids
 - `args...`: Kernel arguments (may include TileArray)
 - `name`: Optional kernel name for debugging
-- `sm_arch`: Target GPU architecture (default: "sm_100")
+- `sm_arch`: Target GPU architecture (default: current device's capability)
 - `opt_level`: Optimization level 0-3 (default: 3)
 
 # Example
@@ -599,7 +610,7 @@ cuTile.launch(vadd_kernel, 64, a, b, c)
 """
 function launch(@nospecialize(f), grid, args...;
                 name::Union{String, Nothing}=nothing,
-                sm_arch::String="sm_100",
+                sm_arch::String=default_sm_arch(),
                 opt_level::Int=3)
     # Convert CuArray -> TileArray (and other conversions)
     tile_args = map(to_tile_arg, args)

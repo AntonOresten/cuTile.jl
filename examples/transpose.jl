@@ -26,8 +26,7 @@ function test_transpose(::Type{T}, m, n, tm, tn; name=nothing) where T
 
     # Launch with ct.launch - CuArrays are auto-converted to TileArray
     ct.launch(transpose_kernel, (grid_x, grid_y), x, y,
-              ct.Constant(tm), ct.Constant(tn);
-              sm_arch="sm_120")
+              ct.Constant(tm), ct.Constant(tn))
 
     @assert Array(y) ≈ transpose(Array(x))
     println("✓ passed")
