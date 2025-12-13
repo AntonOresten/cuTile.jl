@@ -1,8 +1,14 @@
-# TileTarget: Compilation target for cuTile
+# TileTarget and CodegenContext for cuTile compilation
 #
 # Holds the typed IR and compilation state for a kernel.
 
 include("interpreter.jl")
+
+using Core: SlotNumber
+
+#=============================================================================
+ TileTarget: Compilation target wrapping Julia typed IR
+=============================================================================#
 
 """
     TileTarget
@@ -19,7 +25,6 @@ end
 function TileTarget(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}))
     ci, rettype = get_typed_ir(f, argtypes)
     mi = get_method_instance(f, argtypes)
-    # Extract argument types from the Tuple type
     arg_types = argtypes === Tuple{} ? Any[] : collect(argtypes.parameters)
     TileTarget(mi, ci, rettype, arg_types)
 end
@@ -30,167 +35,149 @@ ssatypes(target::TileTarget) = target.ci.ssavaluetypes
 slottypes(target::TileTarget) = target.ci.slottypes
 nargs(target::TileTarget) = length(target.argtypes)
 
-using Core: SlotNumber
+#=============================================================================
+ TileValue: Unified value representation (analogous to Julia's jl_cgval_t)
+=============================================================================#
 
 """
-    Translation
+    TileValue
 
-Maps Julia SSA values to Tile IR values during compilation.
+Represents a value during Tile IR code generation, bundling the IR value
+with its type information and metadata.
+
+Similar to Julia compiler's `jl_cgval_t`, this provides a unified representation
+for all values flowing through codegen.
 """
-mutable struct Translation
-    # Maps Julia SSA values/arguments to Tile IR values
-    args::Dict{Int, Value}          # Argument index -> Value
-    results::Dict{Int, Value}       # SSA index -> Value
-    slots::Dict{Int, Value}         # Slot number -> Value (for unoptimized IR)
+struct TileValue
+    v::Union{Value, Nothing}  # Tile IR value (nothing for ghost values)
+    type_id::TypeId           # Tile IR type
+    jltype::Any               # Original Julia type
+    shape::Vector{Int}        # Tile shape (empty for scalars)
+end
 
-    # Maps Tile IR values to their types
-    value_types::Dict{Int, TypeId}  # Value.id -> TypeId
+# Convenience constructors
+TileValue(v::Value, type_id::TypeId, @nospecialize(jltype)) =
+    TileValue(v, type_id, jltype, Int[])
 
-    # Maps Tile IR values to their tile shapes (for tiles only)
-    tile_shapes::Dict{Int, Vector{Int}}  # Value.id -> shape
+"""
+    ghost_value(jltype) -> TileValue
 
-    # Maps Tile IR values to their grid axis (for bid results only)
-    value_grid_axis::Dict{Int, Int}  # Value.id -> axis (0=x, 1=y, 2=z)
+Create a ghost value (zero-size singleton with no runtime representation).
+"""
+ghost_value(@nospecialize(jltype)) = TileValue(nothing, TypeId(-1), jltype, Int[])
 
-    # Maps Tile IR values to their Julia types
-    value_julia_types::Dict{Int, Any}  # Value.id -> Julia type
+"""
+    is_ghost(tv::TileValue) -> Bool
 
-    # Unified argument field map: (arg_idx, field_or_nothing) -> flat Values
-    # For regular args: (i, nothing) -> [value]
-    # For struct fields: (i, :fieldname) -> [values...]
+Check if a TileValue is a ghost (no runtime representation).
+"""
+is_ghost(tv::TileValue) = tv.v === nothing
+
+#=============================================================================
+ CodegenContext: Compilation context
+=============================================================================#
+
+"""
+    CodegenContext
+
+Holds all state during Tile IR code generation for a kernel function.
+Maps Julia SSA values to TileValues and manages bytecode emission.
+"""
+mutable struct CodegenContext
+    # SSA value mappings
+    values::Dict{Int, TileValue}      # SSA id -> TileValue
+    args::Dict{Int, TileValue}        # Argument index -> TileValue
+    slots::Dict{Int, TileValue}       # Slot number -> TileValue
+
+    # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
+    arg_types::Dict{Int, Type}
 
-    # Original types for destructured arguments
-    arg_types::Dict{Int, Type}  # Argument index -> Julia type
+    # Bytecode infrastructure
+    cb::CodeBuilder
+    tt::TypeTable
+    target::TileTarget
 
-    # Tables for the bytecode
-    type_table::TypeTable
-    string_table::StringTable
-    constant_table::ConstantTable
-
-    # Code builder
-    code_builder::CodeBuilder
+    # Memory ordering token
+    token::Union{Value, Nothing}
 
     # Type cache: Julia type -> TypeId
     type_cache::Dict{Type, TypeId}
-
-    # Token for memory ordering (created at kernel start)
-    token::Union{Value, Nothing}
 end
 
-function Translation(writer::BytecodeWriter)
-    Translation(
-        Dict{Int, Value}(),
-        Dict{Int, Value}(),
-        Dict{Int, Value}(),
-        Dict{Int, TypeId}(),
-        Dict{Int, Vector{Int}}(),
-        Dict{Int, Int}(),
-        Dict{Int, Any}(),
+function CodegenContext(writer::BytecodeWriter, target::TileTarget)
+    CodegenContext(
+        Dict{Int, TileValue}(),
+        Dict{Int, TileValue}(),
+        Dict{Int, TileValue}(),
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        writer.type_table,
-        writer.string_table,
-        writer.constant_table,
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
-        Dict{Type, TypeId}(),
-        nothing  # token initialized later
+        writer.type_table,
+        target,
+        nothing,
+        Dict{Type, TypeId}()
     )
 end
 
-# Get the Tile IR type of a Value
-function get_value_type(tr::Translation, val::Value)
-    get(tr.value_types, val.id, nothing)
+#=============================================================================
+ Value lookup via indexing syntax
+=============================================================================#
+
+function Base.getindex(ctx::CodegenContext, ssa::SSAValue)
+    get(ctx.values, ssa.id, nothing)
 end
 
-# Set the Tile IR type of a Value
-function set_value_type!(tr::Translation, val::Value, type_id::TypeId)
-    tr.value_types[val.id] = type_id
+function Base.getindex(ctx::CodegenContext, arg::Argument)
+    get(ctx.args, arg.n, nothing)
 end
 
-# Get the tile shape for a Value
-function get_tile_shape(tr::Translation, val::Value)
-    get(tr.tile_shapes, val.id, nothing)
+function Base.getindex(ctx::CodegenContext, slot::SlotNumber)
+    get(ctx.slots, slot.id, nothing)
 end
 
-# Set the tile shape for a Value
-function set_tile_shape!(tr::Translation, val::Value, shape::Vector{Int})
-    tr.tile_shapes[val.id] = shape
+function Base.setindex!(ctx::CodegenContext, tv::TileValue, ssa::SSAValue)
+    ctx.values[ssa.id] = tv
 end
 
-# Get the grid axis for a Value (bid results)
-function get_grid_axis(tr::Translation, val::Value)
-    get(tr.value_grid_axis, val.id, nothing)
+function Base.setindex!(ctx::CodegenContext, tv::TileValue, arg::Argument)
+    ctx.args[arg.n] = tv
 end
 
-# Set the grid axis for a Value
-function set_grid_axis!(tr::Translation, val::Value, axis::Int)
-    tr.value_grid_axis[val.id] = axis
+function Base.setindex!(ctx::CodegenContext, tv::TileValue, slot::SlotNumber)
+    ctx.slots[slot.id] = tv
 end
 
-# Get the Julia type of a Value
-function get_julia_type(tr::Translation, val::Value)
-    get(tr.value_julia_types, val.id, nothing)
-end
+#=============================================================================
+ Destructured argument helpers
+=============================================================================#
 
-# Set the Julia type of a Value
-function set_julia_type!(tr::Translation, val::Value, @nospecialize(jltype))
-    tr.value_julia_types[val.id] = jltype
-end
+"""
+    get_arg_flat_values(ctx, arg_idx, field=nothing) -> Union{Vector{Value}, Nothing}
 
-# Lookup values
-function Base.getindex(tr::Translation, arg::Argument)
-    get(tr.args, arg.n, nothing)
-end
-
-function Base.getindex(tr::Translation, ssa::SSAValue)
-    get(tr.results, ssa.id, nothing)
-end
-
-function Base.getindex(tr::Translation, slot::SlotNumber)
-    get(tr.slots, slot.id, nothing)
-end
-
-function Base.setindex!(tr::Translation, val::Value, arg::Argument)
-    tr.args[arg.n] = val
-end
-
-function Base.setindex!(tr::Translation, val::Value, ssa::SSAValue)
-    tr.results[ssa.id] = val
-end
-
-function Base.setindex!(tr::Translation, val::Value, slot::SlotNumber)
-    tr.slots[slot.id] = val
-end
-
-# Resolve any value (Argument, SSAValue, SlotNumber) to its Tile IR Value
-function resolve_value(tr::Translation, @nospecialize(val))
-    if val isa Argument
-        return tr[val]
-    elseif val isa SSAValue
-        return tr[val]
-    elseif val isa SlotNumber
-        return tr[val]
-    else
-        # Literal value or QuoteNode - not a tracked SSA value
-        return nothing
-    end
+Get the flat Tile IR values for an argument or its field.
+"""
+function get_arg_flat_values(ctx::CodegenContext, arg_idx::Int, field::Union{Nothing, Symbol}=nothing)
+    get(ctx.arg_flat_values, (arg_idx, field), nothing)
 end
 
 """
-    tile_type_for_julia!(tr::Translation, T) -> TypeId
+    is_destructured_arg(ctx, arg_idx) -> Bool
 
-Get or create a Tile IR type for a Julia type.
-Handles Core.Const and other type wrappers.
+Check if an argument was destructured into multiple flat parameters.
 """
-function tile_type_for_julia!(tr::Translation, @nospecialize(T))
-    # Unwrap Core.Const and other type wrappers
-    actual_type = unwrap_type(T)
+is_destructured_arg(ctx::CodegenContext, arg_idx::Int) = haskey(ctx.arg_types, arg_idx)
 
-    get!(tr.type_cache, actual_type) do
-        _tile_type_for_julia!(tr, actual_type)
-    end
-end
+"""
+    get_arg_type(ctx, arg_idx) -> Union{Type, Nothing}
+
+Get the original Julia type for a destructured argument.
+"""
+get_arg_type(ctx::CodegenContext, arg_idx::Int) = get(ctx.arg_types, arg_idx, nothing)
+
+#=============================================================================
+ Type conversion utilities
+=============================================================================#
 
 """
     unwrap_type(T) -> Type
@@ -205,7 +192,6 @@ function unwrap_type(@nospecialize(T))
     elseif T isa Type
         return T
     else
-        # Might be another wrapper or the type itself
         return T
     end
 end
@@ -213,25 +199,30 @@ end
 """
     require_concrete_type(T, context::String)
 
-Ensure a type is fully concrete (not a UnionAll). Throws an error with a helpful
-message if the type has unbound type parameters.
-
-This is used to enforce that all types in the kernel are fully specified at compile time.
+Ensure a type is fully concrete (not a UnionAll).
 """
 function require_concrete_type(@nospecialize(T), context::String)
     T_unwrapped = unwrap_type(T)
     if T_unwrapped isa UnionAll
-        error("Type must be fully concrete in $context, got partial type: $T. " *
-              "Ensure all type parameters are specified (e.g., use Tile{Float32, (16,)} " *
-              "instead of Tile{Float32}).")
+        error("Type must be fully concrete in $context, got partial type: $T")
     end
     return T_unwrapped
 end
 
-function _tile_type_for_julia!(tr::Translation, @nospecialize(T::Type))
-    tt = tr.type_table
+"""
+    tile_type_for_julia!(ctx, T) -> TypeId
 
-    # Scalar types -> 0-D tile of the corresponding dtype
+Get or create a Tile IR type for a Julia type.
+"""
+function tile_type_for_julia!(ctx::CodegenContext, @nospecialize(T))
+    actual_type = unwrap_type(T)
+    get!(ctx.type_cache, actual_type) do
+        _tile_type_for_julia!(ctx.tt, actual_type)
+    end
+end
+
+function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
+    # Scalar types -> 0-D tile
     if T === Bool
         return tile_type!(tt, I1(tt), Int[])
     elseif T === Int32 || T === UInt32
@@ -245,7 +236,7 @@ function _tile_type_for_julia!(tr::Translation, @nospecialize(T::Type))
     elseif T === Float64
         return tile_type!(tt, F64(tt), Int[])
     elseif T === Nothing
-        return Token(tt)  # Use token type for Nothing/Unit
+        return Token(tt)
     end
 
     # Pointers -> 0-D tile of pointer type
@@ -255,17 +246,15 @@ function _tile_type_for_julia!(tr::Translation, @nospecialize(T::Type))
         return tile_type!(tt, ptr_type, Int[])
     end
 
-    # Tile{T, Shape} -> tile type with appropriate dtype and shape
-    # Both T and Shape must be fully specified (no UnionAll)
+    # Tile{T, Shape} -> tile type with shape
     if T isa DataType && T <: Tile
         if length(T.parameters) < 2
-            error("Tile type must have both element type and shape specified, got: $T. " *
-                  "Use Tile{Float32, (16,)} instead of Tile{Float32}.")
+            error("Tile type must have both element type and shape, got: $T")
         end
         elem_type = T.parameters[1]
         shape_param = T.parameters[2]
         if !(shape_param isa Tuple)
-            error("Tile shape must be a compile-time constant tuple, got: $shape_param in $T")
+            error("Tile shape must be a tuple, got: $shape_param")
         end
         elem_dtype = julia_to_tile_dtype!(tt, elem_type)
         shape = collect(Int, shape_param)
@@ -276,114 +265,62 @@ function _tile_type_for_julia!(tr::Translation, @nospecialize(T::Type))
 end
 
 """
-    is_float_type(T) -> Bool
+    tile_type_and_shape_for_julia!(ctx, T) -> (TypeId, Vector{Int})
 
-Check if a Julia type is a floating-point type.
-Handles Core.Const and other type wrappers.
+Get the Tile IR type and shape for a Julia type.
 """
-function is_float_type(@nospecialize(T))
+function tile_type_and_shape_for_julia!(ctx::CodegenContext, @nospecialize(T))
     actual_type = unwrap_type(T)
-    return actual_type <: AbstractFloat
-end
+    type_id = tile_type_for_julia!(ctx, actual_type)
 
-"""
-    is_int_type(T) -> Bool
+    # Extract shape from Tile types
+    shape = Int[]
+    if actual_type isa DataType && actual_type <: Tile && length(actual_type.parameters) >= 2
+        shape_param = actual_type.parameters[2]
+        if shape_param isa Tuple
+            shape = collect(Int, shape_param)
+        end
+    end
 
-Check if a Julia type is an integer type.
-Handles Core.Const and other type wrappers.
-"""
-function is_int_type(@nospecialize(T))
-    actual_type = unwrap_type(T)
-    return actual_type <: Integer
+    return (type_id, shape)
 end
 
 #=============================================================================
- Struct Destructuring Helpers
+ Struct destructuring helpers
 =============================================================================#
+
+"""
+    is_ghost_type(T) -> Bool
+
+Check if a type is a ghost type (zero-size singleton).
+"""
+function is_ghost_type(@nospecialize(T))
+    try
+        isbitstype(T) && sizeof(T) == 0
+    catch
+        false
+    end
+end
 
 """
     should_destructure(T) -> Bool
 
 Check if a type should be destructured into flat parameters.
-Returns true for struct types that have runtime fields (like TileArray).
-Requires T to be a concrete type (not a UnionAll).
 """
 function should_destructure(@nospecialize(T))
     T = unwrap_type(T)
-
-    # Must be a concrete struct type (not UnionAll)
     T isa DataType || return false
-    # Must have fields (not a primitive or abstract type)
     isstructtype(T) || return false
-    # Must not be a ghost type (zero-size)
     is_ghost_type(T) && return false
-    # Must not be a primitive type
     isprimitivetype(T) && return false
-    # Check if it's a TileArray
     T <: TileArray && return true
-    # For now, only destructure TileArray
     return false
-end
-
-"""
-    get_base_type(T) -> DataType
-
-Get the base DataType from a type. Requires T to be concrete (not UnionAll).
-"""
-function get_base_type(@nospecialize(T))
-    T isa DataType && return T
-    error("Expected a concrete DataType, got: $T ($(typeof(T)))")
 end
 
 """
     flat_field_count(T) -> Int
 
-Count the number of flat parameters a type expands to.
-Scalars expand to 1, NTuple{N,T} expands to N.
+Count flat parameters a type expands to.
 """
 flat_field_count(::Type{<:NTuple{N, T}}) where {N, T} = N
 flat_field_count(::Type) = 1
-
-"""
-    total_flat_field_count(T) -> Int
-
-Count the total number of flat parameters for all fields of a struct type.
-"""
-function total_flat_field_count(@nospecialize(T))
-    count = 0
-    for i in 1:fieldcount(T)
-        ftype = fieldtype(T, i)
-        count += flat_field_count(ftype)
-    end
-    return count
-end
-
-"""
-    get_arg_flat_values(tr, arg_idx, field=nothing) -> Union{Vector{Value}, Nothing}
-
-Get the flat values for an argument or its field.
-- For regular args: `get_arg_flat_values(tr, i)` or `get_arg_flat_values(tr, i, nothing)`
-- For struct fields: `get_arg_flat_values(tr, i, :fieldname)`
-Returns nothing if not found.
-"""
-function get_arg_flat_values(tr::Translation, arg_idx::Int, field::Union{Nothing, Symbol}=nothing)
-    get(tr.arg_flat_values, (arg_idx, field), nothing)
-end
-
-"""
-    is_destructured_arg(tr, arg_idx) -> Bool
-
-Check if an argument was destructured (has field entries in arg_flat_values).
-"""
-function is_destructured_arg(tr::Translation, arg_idx::Int)
-    haskey(tr.arg_types, arg_idx)
-end
-
-"""
-    get_arg_type(tr, arg_idx) -> Union{Type, Nothing}
-
-Get the original Julia type for a destructured argument.
-"""
-function get_arg_type(tr::Translation, arg_idx::Int)
-    get(tr.arg_types, arg_idx, nothing)
-end

@@ -2,11 +2,8 @@ module cuTile
 
 using CUDA: CuModule, CuFunction, cudacall, device, capability
 
-# Bytecode infrastructure
+# Bytecode infrastructure (no dependencies)
 include("bytecode/encodings.jl")
-
-# Compiler infrastructure
-include("compiler/codegen.jl")
 
 # Public API
 export emit_tileir, compile, launch
@@ -535,6 +532,16 @@ This is equivalent to `a ÷ b` but provided for consistency with the cuTile API.
 Modulo operation: a % b (C-style, result has same sign as dividend)
 """
 @noinline Base.mod(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
+
+#=============================================================================
+ Compiler Infrastructure (must be after stub definitions for multiple dispatch)
+=============================================================================#
+
+include("compiler/codegen.jl")
+
+#=============================================================================
+ Compilation and Launch Functions
+=============================================================================#
 
 """
     default_sm_arch() -> String

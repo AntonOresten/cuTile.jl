@@ -524,6 +524,22 @@ function encode_SubFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::V
 end
 
 """
+    encode_SubIOp!(cb, result_type, lhs, rhs; overflow) -> Value
+
+Integer subtraction.
+Opcode: 104
+"""
+function encode_SubIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
+                        overflow::IntegerOverflow=OverflowNone)
+    encode_varint!(cb.buf, Opcode.SubIOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_enum!(cb.buf, overflow)
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    return new_op!(cb)
+end
+
+"""
     encode_MulFOp!(cb, result_type, lhs, rhs; kwargs...) -> Value
 
 Float multiplication.
