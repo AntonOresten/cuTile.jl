@@ -172,13 +172,44 @@ end
 """
     StructuredCodeInfo
 
-Represents a function's code after restructuring.
+Represents a function's code with a structured view of control flow.
 Keeps the original Julia IR intact while providing a structured view
-with nested control flow.
+with nested control flow operations.
+
+Create with `StructuredCodeInfo(ci)` for a flat (unstructured) view,
+then call `structurize!(sci)` to convert control flow to structured ops.
 """
-struct StructuredCodeInfo
-    code::CodeInfo                   # Original Julia IR - statements accessed by index
+mutable struct StructuredCodeInfo
+    const code::CodeInfo             # Original Julia IR - statements accessed by index
     entry::Block                     # Structured view with nested control flow
+end
+
+"""
+    StructuredCodeInfo(code::CodeInfo)
+
+Create a flat (unstructured) StructuredCodeInfo from Julia CodeInfo.
+All statements are placed sequentially in a single block, with control
+flow statements (GotoNode, GotoIfNot) included as-is.
+
+Call `structurize!(sci)` to convert to structured control flow.
+"""
+function StructuredCodeInfo(code::CodeInfo)
+    stmts = code.code
+    n = length(stmts)
+
+    entry = Block(1)
+
+    for i in 1:n
+        stmt = stmts[i]
+        if stmt isa ReturnNode
+            entry.terminator = stmt
+        else
+            # Include ALL statements, including control flow
+            push!(entry.stmts, i)
+        end
+    end
+
+    return StructuredCodeInfo(code, entry)
 end
 
 #=============================================================================

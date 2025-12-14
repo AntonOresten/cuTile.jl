@@ -1309,6 +1309,276 @@ function set_terminator!(block::Block, code::CodeInfo)
 end
 
 #=============================================================================
+ In-Place Structurization
+=============================================================================#
+
+"""
+    structurize!(sci::StructuredCodeInfo) -> StructuredCodeInfo
+
+Convert unstructured control flow in `sci` to structured control flow operations
+(IfOp, LoopOp, ForOp) in-place.
+
+This transforms GotoNode and GotoIfNot statements into nested structured ops
+that can be traversed hierarchically.
+
+Returns `sci` for convenience (allows chaining).
+
+# Example
+```julia
+ci, _ = get_typed_ir(f, Tuple{Int})
+sci = StructuredCodeInfo(ci)  # flat view with raw control flow
+structurize!(sci)              # convert to structured ops
+validate_structured_control_flow(sci)  # verify no unstructured control flow remains
+```
+"""
+function structurize!(sci::StructuredCodeInfo)
+    code = sci.code
+    stmts = code.code
+    n = length(stmts)
+
+    n == 0 && return sci
+
+    # Check if the code is straight-line (no control flow)
+    has_control_flow = any(s -> s isa GotoNode || s isa GotoIfNot, stmts)
+
+    if !has_control_flow
+        # Straight-line code: just filter out the control flow from stmts
+        # (there shouldn't be any, but be safe)
+        new_entry = Block(1)
+        for i in 1:n
+            stmt = stmts[i]
+            if stmt isa ReturnNode
+                new_entry.terminator = stmt
+            elseif !(stmt isa GotoNode || stmt isa GotoIfNot)
+                push!(new_entry.stmts, i)
+            end
+        end
+        sci.entry = new_entry
+        return sci
+    end
+
+    # Has control flow - use block-level analysis
+    blocks = build_block_cfg(code)
+    loops = find_loops(blocks)
+
+    if !isempty(loops)
+        # Use block-level structuring with loop detection
+        sci.entry = structurize_with_loops(code, blocks, loops)
+    else
+        # No loops - use control tree for if-then-else patterns
+        cfg = julia_cfg(code)
+        control_tree = build_control_tree(cfg, code)
+        sci.entry = control_tree_to_structured_ir(control_tree, code).entry
+    end
+
+    return sci
+end
+
+"""
+    structurize_with_loops(code::CodeInfo, blocks::Vector{BlockInfo}, loops::Vector{LoopInfo}) -> Block
+
+Structurize code that contains loops using block-level analysis.
+Returns the entry block with structured control flow.
+"""
+function structurize_with_loops(code::CodeInfo, blocks::Vector{BlockInfo}, loops::Vector{LoopInfo})
+    stmts = code.code
+
+    # For now, handle the common case: single loop with optional pre/post code
+    @assert length(loops) == 1 "Multiple loops not yet supported"
+    loop = loops[1]
+
+    entry = Block(1)
+    block_id = Ref(2)
+
+    # Process blocks before the loop (entry blocks)
+    entry_blocks = filter(bi -> bi ∉ loop.blocks, 1:loop.header-1)
+    for bi in entry_blocks
+        collect_block_stmts!(entry, blocks[bi], code)
+    end
+
+    # Create the LoopOp
+    loop_op = build_loop_op(code, blocks, loop, block_id)
+    push!(entry.nested, loop_op)
+
+    # Process blocks after the loop (exit blocks)
+    for exit_bi in sort(collect(loop.exit_blocks))
+        block = blocks[exit_bi]
+        for si in block.range
+            stmt = stmts[si]
+            if stmt isa ReturnNode
+                entry.terminator = stmt
+            elseif !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa PhiNode)
+                push!(entry.stmts, si)
+            end
+        end
+    end
+
+    return entry
+end
+
+"""
+    collect_block_stmts!(block::Block, info::BlockInfo, code::CodeInfo)
+
+Collect statements from a BlockInfo into a Block, excluding control flow.
+"""
+function collect_block_stmts!(block::Block, info::BlockInfo, code::CodeInfo)
+    stmts = code.code
+    for si in info.range
+        stmt = stmts[si]
+        if stmt isa ReturnNode
+            block.terminator = stmt
+        elseif !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa PhiNode)
+            push!(block.stmts, si)
+        end
+    end
+end
+
+"""
+    build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo, block_id::Ref{Int}) -> LoopOp
+
+Build a LoopOp from loop information.
+"""
+function build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo, block_id::Ref{Int})
+    stmts = code.code
+    header_block = blocks[loop.header]
+
+    # Find phi nodes in header - these become loop-carried values and results
+    init_values = IRValue[]
+    carried_values = IRValue[]
+    block_args = BlockArg[]
+    result_vars = SSAValue[]
+
+    for si in header_block.range
+        stmt = stmts[si]
+        if stmt isa PhiNode
+            push!(result_vars, SSAValue(si))
+            phi = stmt
+            edges = phi.edges
+            values = phi.values
+
+            entry_preds = filter(p -> p ∉ loop.blocks, header_block.preds)
+            latch_preds = filter(p -> p ∈ loop.blocks, header_block.preds)
+
+            entry_val = nothing
+            carried_val = nothing
+
+            for (edge_idx, _edge) in enumerate(edges)
+                if isassigned(values, edge_idx)
+                    val = values[edge_idx]
+
+                    if val isa SSAValue
+                        val_stmt = val.id
+                        stmt_to_blk = stmt_to_block_map(blocks, length(stmts))
+                        if val_stmt > 0 && val_stmt <= length(stmts)
+                            val_block = stmt_to_blk[val_stmt]
+                            if val_block ∈ loop.blocks
+                                carried_val = val
+                            else
+                                entry_val = convert_phi_value(val)
+                            end
+                        else
+                            entry_val = convert_phi_value(val)
+                        end
+                    else
+                        entry_val = convert_phi_value(val)
+                    end
+                end
+            end
+
+            if entry_val !== nothing
+                push!(init_values, entry_val)
+            end
+            if carried_val !== nothing
+                push!(carried_values, carried_val)
+            end
+
+            phi_type = code.ssavaluetypes[si]
+            arg = BlockArg(length(block_args) + 1, phi_type)
+            push!(block_args, arg)
+        end
+    end
+
+    # Build loop body block
+    body = Block(block_id[])
+    block_id[] += 1
+    body.args = block_args
+
+    # Collect header statements (excluding phi nodes and control flow)
+    for si in header_block.range
+        stmt = stmts[si]
+        if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
+            push!(body.stmts, si)
+        end
+    end
+
+    # Find the condition for loop exit
+    condition = nothing
+    for si in header_block.range
+        stmt = stmts[si]
+        if stmt isa GotoIfNot
+            condition = stmt.cond
+            break
+        end
+    end
+
+    # Collect body block statements (from latch blocks)
+    for latch_bi in loop.latches
+        if latch_bi != loop.header
+            latch_block = blocks[latch_bi]
+            for si in latch_block.range
+                stmt = stmts[si]
+                if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
+                    push!(body.stmts, si)
+                end
+            end
+        end
+    end
+
+    # Create the conditional structure inside the loop body
+    if condition !== nothing
+        cond_value = convert_phi_value(condition)
+
+        then_block = Block(block_id[])
+        block_id[] += 1
+        then_block.terminator = ContinueOp(carried_values)
+
+        else_block = Block(block_id[])
+        block_id[] += 1
+        result_values = IRValue[]
+        for (i, arg) in enumerate(block_args)
+            push!(result_values, arg)
+        end
+        else_block.terminator = BreakOp(result_values)
+
+        if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
+        push!(body.nested, if_op)
+    else
+        body.terminator = ContinueOp(carried_values)
+    end
+
+    return LoopOp(init_values, body, result_vars)
+end
+
+"""
+    convert_phi_value(val) -> IRValue
+
+Convert a phi node value to an IRValue.
+"""
+function convert_phi_value(val)
+    if val isa SSAValue
+        return val
+    elseif val isa Argument
+        return val
+    elseif val isa Int
+        return SSAValue(0)  # Indicates literal
+    elseif val isa QuoteNode
+        return SSAValue(0)
+    else
+        return SSAValue(0)
+    end
+end
+
+#=============================================================================
  Structured Control Flow Validation
 =============================================================================#
 
@@ -1327,7 +1597,7 @@ function Base.showerror(io::IO, e::UnstructuredControlFlowError)
 end
 
 """
-    validate_structured_control_flow(sci::StructuredCodeInfo) -> Bool
+    validate_scf(sci::StructuredCodeInfo) -> Bool
 
 Validate that all control flow in the original CodeInfo has been properly
 converted to structured control flow operations (IfOp, LoopOp, ForOp).
@@ -1338,14 +1608,8 @@ Returns `true` if all control flow is properly structured.
 The invariant is simple: no statement index in any `block.stmts` should point
 to a `GotoNode` or `GotoIfNot` - those should have been replaced by structured
 ops that the visitor descends into.
-
-# Example
-```julia
-sci = code_structured(my_kernel, Tuple{Vector{Float32}})
-validate_structured_control_flow(sci)  # throws if unstructured control flow remains
-```
 """
-function validate_structured_control_flow(sci::StructuredCodeInfo)
+function validate_scf(sci::StructuredCodeInfo)
     stmts = sci.code.code
     unstructured = Int[]
 
