@@ -60,6 +60,7 @@ struct Value
     id::Int
 end
 
+
 function encode_operand!(buf::Vector{UInt8}, val::Value)
     encode_varint!(buf, val.id)
 end
@@ -138,6 +139,55 @@ function make_block_args!(cb::CodeBuilder, count::Int)
     vals = [Value(cb.next_value_id + i) for i in 0:count-1]
     cb.next_value_id += count
     return vals
+end
+
+"""
+    with_region(f, cb, arg_type_ids) -> Vector{Value}
+
+Execute `f(block_args)` in a new region/block context.
+Handles buffer management automatically (MLIR-style callback pattern).
+
+The callback receives block arguments and should emit operations into `cb`.
+"""
+function with_region(f::Function, cb::CodeBuilder, arg_type_ids::Vector{TypeId})
+    # Number of blocks in region (always 1)
+    push!(cb.buf, 0x01)
+
+    # Number of block arguments
+    encode_varint!(cb.buf, length(arg_type_ids))
+
+    # Encode block argument types
+    for tid in arg_type_ids
+        encode_typeid!(cb.buf, tid)
+    end
+
+    # Create block arguments
+    block_args = make_block_args!(cb, length(arg_type_ids))
+
+    # Save current buffer and state
+    parent_buf = cb.buf
+    parent_num_ops = cb.num_ops
+
+    # Create fresh buffer for block body
+    cb.buf = UInt8[]
+    cb.num_ops = 0
+
+    # Execute the callback to populate the block
+    f(block_args)
+
+    # Capture block body
+    block_body = cb.buf
+    block_num_ops = cb.num_ops
+
+    # Restore parent state
+    cb.buf = parent_buf
+    cb.num_ops = parent_num_ops
+
+    # Encode: num_ops, then block body
+    encode_varint!(cb.buf, block_num_ops)
+    append!(cb.buf, block_body)
+
+    return block_args
 end
 
 # Attribute encoders for operations

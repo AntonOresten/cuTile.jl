@@ -125,4 +125,78 @@ end
     @test contains(sass, "STG")  # Tile store
 end
 
+@testset "control flow" begin
+    # Test structured IR restructuring + control flow encoding
+    # Note: Full control flow emission is work-in-progress, these tests
+    # verify the restructuring infrastructure is working
+
+    @testset "restructuring produces IfOp" begin
+        # Simple ternary expression generates structured IR with IfOp
+        function ternary_func(x::Int32)
+            return x > 0 ? x + 1 : x - 1
+        end
+        # Verify it can be restructured (this tests the IR layer)
+        target = ct.TileTarget(ternary_func, Tuple{Int32})
+        structured = ct.lower_to_structured_ir(target)
+        # Check that we have an IfOp in the structured IR
+        has_ifop = any(op -> op isa ct.IfOp, structured.entry.nested)
+        @test has_ifop
+    end
+
+    @testset "restructuring handles terminating if-else" begin
+        # Multiple return statements create terminating if-then-else
+        function multi_return_func(x::Int32)
+            if x > 0
+                return x + 1
+            else
+                return x - 1
+            end
+        end
+        target = ct.TileTarget(multi_return_func, Tuple{Int32})
+        structured = ct.lower_to_structured_ir(target)
+        # Terminating if-else becomes an IfOp
+        has_ifop = any(op -> op isa ct.IfOp, structured.entry.nested)
+        @test has_ifop
+    end
+
+    @testset "IfOp encoding produces bytecode" begin
+        # Test that the bytecode encoding infrastructure works
+        # by directly calling the encoder
+        using cuTile: BytecodeWriter, CodeBuilder, TypeId, Value
+        using cuTile: encode_IfOp!, encode_YieldOp!, tile_type!, I32
+
+        writer = ct.BytecodeWriter()
+        cb = ct.CodeBuilder(writer.string_table, writer.constant_table, writer.type_table)
+        tt = writer.type_table
+
+        # Create a dummy condition value
+        cond_type = tile_type!(tt, I32(tt), Int[])
+        cond_bytes = reinterpret(UInt8, [Int32(1)])
+        cond = ct.encode_ConstantOp!(cb, cond_type, collect(cond_bytes))
+
+        # Encode an IfOp with empty result types
+        then_body = _ -> encode_YieldOp!(cb)
+        else_body = _ -> encode_YieldOp!(cb)
+        results = encode_IfOp!(then_body, else_body, cb, TypeId[], cond)
+
+        @test isempty(results)  # No results from IfOp
+        @test cb.num_ops >= 1   # At least the IfOp was encoded
+    end
+
+    @testset "LoopOp encoding produces bytecode" begin
+        using cuTile: encode_LoopOp!, encode_BreakOp!, encode_ContinueOp!
+
+        writer = ct.BytecodeWriter()
+        cb = ct.CodeBuilder(writer.string_table, writer.constant_table, writer.type_table)
+        tt = writer.type_table
+
+        # Encode a LoopOp with no carried values
+        body = _ -> encode_BreakOp!(cb)
+        results = ct.encode_LoopOp!(body, cb, TypeId[], Value[])
+
+        @test isempty(results)
+        @test cb.num_ops >= 1
+    end
+end
+
 end

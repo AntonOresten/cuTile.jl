@@ -639,6 +639,185 @@ function encode_YieldOp!(cb::CodeBuilder, operands::Vector{Value}=Value[])
     return new_op!(cb, 0)
 end
 
+"""
+    encode_BreakOp!(cb, operands)
+
+Break out of a loop, yielding final result values.
+Opcode: 10
+"""
+function encode_BreakOp!(cb::CodeBuilder, operands::Vector{Value}=Value[])
+    encode_varint!(cb.buf, Opcode.BreakOp)
+    # Variadic result types (empty - break doesn't produce values, it yields to parent)
+    encode_typeid_seq!(cb.buf, TypeId[])
+    # Operands
+    encode_varint!(cb.buf, length(operands))
+    encode_operands!(cb.buf, operands)
+    return new_op!(cb, 0)
+end
+
+"""
+    encode_ContinueOp!(cb, operands)
+
+Continue to next loop iteration with updated carried values.
+Opcode: 17
+"""
+function encode_ContinueOp!(cb::CodeBuilder, operands::Vector{Value}=Value[])
+    encode_varint!(cb.buf, Opcode.ContinueOp)
+    # Variadic result types (empty)
+    encode_typeid_seq!(cb.buf, TypeId[])
+    # Operands
+    encode_varint!(cb.buf, length(operands))
+    encode_operands!(cb.buf, operands)
+    return new_op!(cb, 0)
+end
+
+"""
+    encode_IfOp!(cb, result_types, condition, then_body, else_body) -> Vector{Value}
+
+Create an if-then-else operation with callback-based region building.
+Opcode: 50
+
+Arguments:
+- `then_body(block_args)`: Callback to emit then branch ops, must end with YieldOp
+- `else_body(block_args)`: Callback to emit else branch ops, must end with YieldOp
+
+Returns the result values from the IfOp.
+
+Example:
+    results = encode_IfOp!(cb, result_types, cond) do _
+        # then body
+        encode_YieldOp!(cb, then_results)
+    end do _
+        # else body
+        encode_YieldOp!(cb, else_results)
+    end
+"""
+function encode_IfOp!(then_body::Function, else_body::Function,
+                      cb::CodeBuilder, result_types::Vector{TypeId}, condition::Value)
+    encode_varint!(cb.buf, Opcode.IfOp)
+    encode_typeid_seq!(cb.buf, result_types)
+    encode_operand!(cb.buf, condition)
+
+    # Number of regions
+    push!(cb.debug_attrs, cb.cur_debug_attr)
+    cb.num_ops += 1
+    encode_varint!(cb.buf, 2)  # 2 regions: then, else
+
+    # Then region (no block args for if branches)
+    with_region(then_body, cb, TypeId[])
+
+    # Else region
+    with_region(else_body, cb, TypeId[])
+
+    # Create result values
+    num_results = length(result_types)
+    if num_results == 0
+        return Value[]
+    else
+        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
+        cb.next_value_id += num_results
+        return vals
+    end
+end
+
+"""
+    encode_LoopOp!(cb, result_types, init_values, body) -> Vector{Value}
+
+Create a general loop operation with callback-based region building.
+Opcode: 65
+
+The body callback receives block arguments for loop-carried values.
+Use BreakOp to exit the loop and ContinueOp to continue iteration.
+
+Example:
+    results = encode_LoopOp!(cb, result_types, init_values) do block_args
+        # block_args are the loop-carried values
+        # ... compute condition and new values ...
+        encode_IfOp!(...) do _
+            encode_BreakOp!(cb, final_values)
+        end do _
+            encode_YieldOp!(cb)
+        end
+        encode_ContinueOp!(cb, next_values)
+    end
+"""
+function encode_LoopOp!(body::Function, cb::CodeBuilder,
+                        result_types::Vector{TypeId}, init_values::Vector{Value})
+    encode_varint!(cb.buf, Opcode.LoopOp)
+    encode_typeid_seq!(cb.buf, result_types)
+    encode_varint!(cb.buf, length(init_values))
+    encode_operands!(cb.buf, init_values)
+
+    # Number of regions
+    push!(cb.debug_attrs, cb.cur_debug_attr)
+    cb.num_ops += 1
+    encode_varint!(cb.buf, 1)  # 1 region: body
+
+    # Body region - block args are the loop-carried values
+    with_region(body, cb, result_types)
+
+    # Create result values
+    num_results = length(result_types)
+    if num_results == 0
+        return Value[]
+    else
+        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
+        cb.next_value_id += num_results
+        return vals
+    end
+end
+
+"""
+    encode_ForOp!(cb, result_types, lower, upper, step, init_values, body) -> Vector{Value}
+
+Create a for loop operation with callback-based region building.
+Opcode: 41
+
+The body callback receives (induction_var, carried_values...) as block arguments.
+
+Example:
+    results = encode_ForOp!(cb, result_types, lb, ub, step, init_values) do block_args
+        iv = block_args[1]  # induction variable
+        carried = block_args[2:end]  # loop-carried values
+        # ... loop body ...
+        encode_YieldOp!(cb, next_carried_values)
+    end
+"""
+function encode_ForOp!(body::Function, cb::CodeBuilder,
+                       result_types::Vector{TypeId},
+                       lower::Value, upper::Value, step::Value,
+                       init_values::Vector{Value})
+    encode_varint!(cb.buf, Opcode.ForOp)
+    encode_typeid_seq!(cb.buf, result_types)
+    # Operands: lower, upper, step, init_values...
+    encode_varint!(cb.buf, 3 + length(init_values))
+    encode_operand!(cb.buf, lower)
+    encode_operand!(cb.buf, upper)
+    encode_operand!(cb.buf, step)
+    encode_operands!(cb.buf, init_values)
+
+    # Number of regions
+    push!(cb.debug_attrs, cb.cur_debug_attr)
+    cb.num_ops += 1
+    encode_varint!(cb.buf, 1)  # 1 region: body
+
+    # Body region - block args are (induction_var, carried_values...)
+    # Induction var has same type as bounds (typically i32)
+    iv_type = tile_type!(cb.type_table, I32(cb.type_table), Int[])
+    body_arg_types = vcat([iv_type], result_types)
+    with_region(body, cb, body_arg_types)
+
+    # Create result values
+    num_results = length(result_types)
+    if num_results == 0
+        return Value[]
+    else
+        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
+        cb.next_value_id += num_results
+        return vals
+    end
+end
+
 #=============================================================================
  Matrix multiply-accumulate operations
 =============================================================================#
@@ -878,83 +1057,3 @@ end
  Control flow operations
 =============================================================================#
 
-"""
-    NestedBlockBuilder
-
-Context for building nested blocks (for loops, if statements).
-Tracks the block arguments and provides methods for finalizing blocks.
-"""
-mutable struct NestedBlockBuilder
-    cb::CodeBuilder
-    result_values::Vector{Value}
-    num_blocks::Int
-    block_positions::Vector{Int}  # Positions where block lengths need to be patched
-end
-
-"""
-    encode_ForOp!(cb, result_types, lower_bound, upper_bound, step, init_values) -> NestedBlockBuilder
-
-Create a for loop.
-Opcode: 41
-
-Returns a NestedBlockBuilder to construct the loop body.
-The loop body receives block arguments: (induction_var, accumulators...)
-"""
-function encode_ForOp!(cb::CodeBuilder, result_types::Vector{TypeId},
-                       lower_bound::Value, upper_bound::Value, step::Value,
-                       init_values::Vector{Value})
-    encode_varint!(cb.buf, Opcode.ForOp)
-    encode_typeid_seq!(cb.buf, result_types)
-    # Operands: lower_bound, upper_bound, step, init_values...
-    num_operands = 3 + length(init_values)
-    encode_varint!(cb.buf, num_operands)
-    encode_operand!(cb.buf, lower_bound)
-    encode_operand!(cb.buf, upper_bound)
-    encode_operand!(cb.buf, step)
-    encode_operands!(cb.buf, init_values)
-
-    # Create result values
-    result_vals = new_op!(cb, length(result_types))
-
-    return NestedBlockBuilder(cb,
-        result_vals isa Tuple ? collect(result_vals) : (result_vals === nothing ? Value[] : [result_vals]),
-        1, Int[])
-end
-
-"""
-    begin_block!(nbb::NestedBlockBuilder, num_args::Int) -> Vector{Value}
-
-Begin a nested block, returning the block arguments.
-For ForOp, this creates the induction variable and loop-carried values.
-"""
-function begin_block!(nbb::NestedBlockBuilder, num_args::Int)
-    # Reserve space for block length (will be patched later)
-    push!(nbb.block_positions, length(nbb.cb.buf) + 1)
-
-    # Placeholder for length - will be filled when block is ended
-    push!(nbb.cb.buf, 0x00)  # Varint placeholder
-
-    # Create block arguments
-    return make_block_args!(nbb.cb, num_args)
-end
-
-"""
-    end_block!(nbb::NestedBlockBuilder, yield_values::Vector{Value})
-
-End a nested block, emitting a YieldOp with the given values.
-"""
-function end_block!(nbb::NestedBlockBuilder, yield_values::Vector{Value})
-    # Emit yield operation
-    encode_YieldOp!(nbb.cb, yield_values)
-end
-
-"""
-    finalize_nested!(nbb::NestedBlockBuilder)
-
-Finalize all nested blocks. Must be called after all blocks are complete.
-Note: In the current simple implementation, block length patching is deferred.
-"""
-function finalize_nested!(nbb::NestedBlockBuilder)
-    # For now, this is a placeholder - proper implementation needs length patching
-    # The Python implementation encodes block length inline
-end

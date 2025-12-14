@@ -84,6 +84,7 @@ mutable struct CodegenContext
     values::Dict{Int, TileValue}      # SSA id -> TileValue
     args::Dict{Int, TileValue}        # Argument index -> TileValue
     slots::Dict{Int, TileValue}       # Slot number -> TileValue
+    block_args::Dict{Int, TileValue}  # BlockArg id -> TileValue (for control flow)
 
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
@@ -103,6 +104,7 @@ end
 
 function CodegenContext(writer::BytecodeWriter, target::TileTarget)
     CodegenContext(
+        Dict{Int, TileValue}(),
         Dict{Int, TileValue}(),
         Dict{Int, TileValue}(),
         Dict{Int, TileValue}(),
@@ -142,6 +144,14 @@ end
 
 function Base.setindex!(ctx::CodegenContext, tv::TileValue, slot::SlotNumber)
     ctx.slots[slot.id] = tv
+end
+
+function Base.getindex(ctx::CodegenContext, block_arg::BlockArg)
+    get(ctx.block_args, block_arg.id, nothing)
+end
+
+function Base.setindex!(ctx::CodegenContext, tv::TileValue, block_arg::BlockArg)
+    ctx.block_args[block_arg.id] = tv
 end
 
 #=============================================================================

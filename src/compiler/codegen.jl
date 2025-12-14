@@ -144,23 +144,134 @@ end
 Emit bytecode for a structured control flow operation.
 """
 function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
+    cb = ctx.cb
+
     # Get condition value
     cond_tv = emit_irvalue!(ctx, op.condition)
     cond_tv === nothing && error("Cannot resolve condition for IfOp")
 
-    # For now, error on IfOp - full implementation in Phase 2
-    error("IfOp control flow not yet fully implemented. " *
-          "Use straight-line kernels for now, or wait for control flow support.")
+    # Determine result types from the result_vars
+    result_types = TypeId[]
+    for result_var in op.result_vars
+        result_type = ssatypes(ctx.target)[result_var.id]
+        type_id = tile_type_for_julia!(ctx, result_type)
+        push!(result_types, type_id)
+    end
+
+    # Emit IfOp with callback-based region building
+    then_body = _ -> emit_block!(ctx, op.then_block)
+    else_body = _ -> emit_block!(ctx, op.else_block)
+    results = encode_IfOp!(then_body, else_body, cb, result_types, cond_tv.v)
+
+    # Map result values to SSA values
+    for (i, result_var) in enumerate(op.result_vars)
+        if i <= length(results)
+            result_type = ssatypes(ctx.target)[result_var.id]
+            type_id = tile_type_for_julia!(ctx, result_type)
+            ctx[result_var] = TileValue(results[i], type_id, result_type)
+        end
+    end
 end
 
 function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
-    error("ForOp control flow not yet fully implemented. " *
-          "Use straight-line kernels for now, or wait for control flow support.")
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get bounds values
+    lower_tv = emit_irvalue!(ctx, op.lower)
+    upper_tv = emit_irvalue!(ctx, op.upper)
+    step_tv = emit_irvalue!(ctx, op.step)
+
+    (lower_tv === nothing || upper_tv === nothing || step_tv === nothing) &&
+        error("Cannot resolve ForOp bounds")
+
+    # Get init values
+    init_values = Value[]
+    for init_val in op.init_values
+        tv = emit_irvalue!(ctx, init_val)
+        tv === nothing && error("Cannot resolve ForOp init value")
+        push!(init_values, tv.v)
+    end
+
+    # Determine result types
+    result_types = TypeId[]
+    for result_var in op.result_vars
+        result_type = ssatypes(ctx.target)[result_var.id]
+        type_id = tile_type_for_julia!(ctx, result_type)
+        push!(result_types, type_id)
+    end
+
+    # Emit ForOp with callback-based region building
+    body_builder = function(block_args)
+        # Map block arguments (induction var + carried values)
+        if !isempty(op.body.args)
+            # First block arg is induction variable
+            iv_arg = op.body.args[1]
+            iv_type = tile_type!(tt, I32(tt), Int[])
+            ctx[iv_arg] = TileValue(block_args[1], iv_type, Int32)
+
+            # Remaining are carried values
+            for (i, body_arg) in enumerate(op.body.args[2:end])
+                if i < length(block_args)
+                    ctx[body_arg] = TileValue(block_args[i+1], result_types[i], body_arg.type)
+                end
+            end
+        end
+
+        emit_block!(ctx, op.body)
+    end
+    results = encode_ForOp!(body_builder, cb, result_types, lower_tv.v, upper_tv.v, step_tv.v, init_values)
+
+    # Map result values
+    for (i, result_var) in enumerate(op.result_vars)
+        if i <= length(results)
+            result_type = ssatypes(ctx.target)[result_var.id]
+            type_id = tile_type_for_julia!(ctx, result_type)
+            ctx[result_var] = TileValue(results[i], type_id, result_type)
+        end
+    end
 end
 
 function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
-    error("LoopOp control flow not yet fully implemented. " *
-          "Use straight-line kernels for now, or wait for control flow support.")
+    cb = ctx.cb
+
+    # Get init values
+    init_values = Value[]
+    for init_val in op.init_values
+        tv = emit_irvalue!(ctx, init_val)
+        tv === nothing && error("Cannot resolve LoopOp init value")
+        push!(init_values, tv.v)
+    end
+
+    # Determine result types from init values
+    result_types = TypeId[]
+    for result_var in op.result_vars
+        result_type = ssatypes(ctx.target)[result_var.id]
+        type_id = tile_type_for_julia!(ctx, result_type)
+        push!(result_types, type_id)
+    end
+
+    # Emit LoopOp with callback-based region building
+    body_builder = function(block_args)
+        # Map block arguments (carried values)
+        for (i, body_arg) in enumerate(op.body.args)
+            if i <= length(block_args) && i <= length(result_types)
+                ctx[body_arg] = TileValue(block_args[i], result_types[i], body_arg.type)
+            end
+        end
+
+        emit_block!(ctx, op.body)
+    end
+    results = encode_LoopOp!(body_builder, cb, result_types, init_values)
+
+    # Map result values
+    for (i, result_var) in enumerate(op.result_vars)
+        if i <= length(results)
+            result_type = ssatypes(ctx.target)[result_var.id]
+            type_id = tile_type_for_julia!(ctx, result_type)
+            ctx[result_var] = TileValue(results[i], type_id, result_type)
+        end
+    end
 end
 
 """
@@ -172,16 +283,34 @@ function emit_terminator!(ctx::CodegenContext, node::ReturnNode)
     emit_return!(ctx, node)
 end
 
-function emit_terminator!(ctx::CodegenContext, ::YieldOp)
-    # YieldOp is handled at the IfOp/LoopOp level
+function emit_terminator!(ctx::CodegenContext, op::YieldOp)
+    # Collect yield operands
+    operands = Value[]
+    for val in op.values
+        tv = emit_irvalue!(ctx, val)
+        tv !== nothing && push!(operands, tv.v)
+    end
+    encode_YieldOp!(ctx.cb, operands)
 end
 
-function emit_terminator!(ctx::CodegenContext, ::ContinueOp)
-    # ContinueOp is handled at the LoopOp level
+function emit_terminator!(ctx::CodegenContext, op::ContinueOp)
+    # Collect continue operands (updated carried values)
+    operands = Value[]
+    for val in op.values
+        tv = emit_irvalue!(ctx, val)
+        tv !== nothing && push!(operands, tv.v)
+    end
+    encode_ContinueOp!(ctx.cb, operands)
 end
 
-function emit_terminator!(ctx::CodegenContext, ::BreakOp)
-    # BreakOp is handled at the LoopOp level
+function emit_terminator!(ctx::CodegenContext, op::BreakOp)
+    # Collect break operands (final values)
+    operands = Value[]
+    for val in op.values
+        tv = emit_irvalue!(ctx, val)
+        tv !== nothing && push!(operands, tv.v)
+    end
+    encode_BreakOp!(ctx.cb, operands)
 end
 
 function emit_terminator!(ctx::CodegenContext, ::Nothing)
@@ -196,11 +325,7 @@ Emit/resolve an IRValue reference.
 emit_irvalue!(ctx::CodegenContext, ssa::SSAValue) = ctx[ssa]
 emit_irvalue!(ctx::CodegenContext, arg::Argument) = ctx[arg]
 emit_irvalue!(ctx::CodegenContext, slot::SlotNumber) = ctx[slot]
-
-function emit_irvalue!(ctx::CodegenContext, arg::BlockArg)
-    # BlockArg handling - will be implemented with full control flow support
-    error("BlockArg not yet implemented")
-end
+emit_irvalue!(ctx::CodegenContext, block_arg::BlockArg) = ctx[block_arg]
 
 #=============================================================================
  Statement Emission
@@ -477,6 +602,9 @@ emit_intrinsic!(ctx::CodegenContext, @nospecialize(func), args, @nospecialize(re
 # Skip tuple construction
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Core.tuple), args, @nospecialize(result_type)) = nothing
 
+# Skip getproperty (module.field access, resolved elsewhere)
+emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getproperty), args, @nospecialize(result_type)) = nothing
+
 #-----------------------------------------------------------------------------
 # cuTile intrinsics
 #-----------------------------------------------------------------------------
@@ -580,6 +708,47 @@ emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(-)), args, @nospecialize(_)
 
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(*)), args, @nospecialize(_)) =
     emit_binop!(ctx, args, encode_MulFOp!, encode_MulIOp!)
+
+#-----------------------------------------------------------------------------
+# Comparison operators
+#-----------------------------------------------------------------------------
+
+function emit_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    lhs = emit_value!(ctx, args[1])
+    rhs = emit_value!(ctx, args[2])
+
+    lhs === nothing && error("Cannot resolve LHS operand for comparison")
+    rhs === nothing && error("Cannot resolve RHS operand for comparison")
+
+    # Result type is a boolean (i1) scalar
+    result_type = tile_type!(tt, I1(tt), Int[])
+
+    result_v = encode_CmpIOp!(cb, result_type, lhs.v, rhs.v;
+                              predicate=predicate, signedness=SignednessSigned)
+
+    TileValue(result_v, result_type, Bool)
+end
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(>)), args, @nospecialize(_)) =
+    emit_cmp!(ctx, args, CmpGreaterThan)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(<)), args, @nospecialize(_)) =
+    emit_cmp!(ctx, args, CmpLessThan)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(>=)), args, @nospecialize(_)) =
+    emit_cmp!(ctx, args, CmpGreaterThanOrEqual)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(<=)), args, @nospecialize(_)) =
+    emit_cmp!(ctx, args, CmpLessThanOrEqual)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(==)), args, @nospecialize(_)) =
+    emit_cmp!(ctx, args, CmpEqual)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(!=)), args, @nospecialize(_)) =
+    emit_cmp!(ctx, args, CmpNotEqual)
 
 #-----------------------------------------------------------------------------
 # getfield for destructured arguments
