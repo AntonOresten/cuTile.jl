@@ -177,14 +177,17 @@ function build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo
     stmts = code.code
     header_block = blocks[loop.header]
 
-    # Find phi nodes in header - these become loop-carried values
+    # Find phi nodes in header - these become loop-carried values and results
     init_values = IRValue[]
     carried_values = IRValue[]
     block_args = BlockArg[]
+    result_vars = SSAValue[]  # The SSAValues that the loop produces (the phi nodes)
 
     for si in header_block.range
         stmt = stmts[si]
         if stmt isa PhiNode
+            # The phi's SSAValue becomes a result of the loop
+            push!(result_vars, SSAValue(si))
             # Extract initial value (from entry edge) and carried value (from back edge)
             phi = stmt
             edges = phi.edges
@@ -301,7 +304,7 @@ function build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo
         for (i, arg) in enumerate(block_args)
             push!(result_values, arg)
         end
-        else_block.terminator = YieldOp(result_values)
+        else_block.terminator = BreakOp(result_values)
 
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
         push!(body.nested, if_op)
@@ -309,10 +312,6 @@ function build_loop_op(code::CodeInfo, blocks::Vector{BlockInfo}, loop::LoopInfo
         # No condition found - unconditional loop (shouldn't happen for while loops)
         body.terminator = ContinueOp(carried_values)
     end
-
-    # Result variables - the SSAValues that the loop produces
-    # For now, we use placeholder SSAValues; in codegen we'll map these properly
-    result_vars = SSAValue[]
 
     return LoopOp(init_values, body, result_vars)
 end

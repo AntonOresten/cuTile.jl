@@ -247,8 +247,8 @@ end
     inner_if = inner_if_ops[end]  # The one inside the loop
     # Then branch should continue
     @test inner_if.then_block.terminator isa ContinueOp
-    # Else branch should yield (exit loop)
-    @test inner_if.else_block.terminator isa YieldOp
+    # Else branch should break (exit loop)
+    @test inner_if.else_block.terminator isa BreakOp
 
     # Display should show while structure
     io = IOBuffer()
@@ -256,7 +256,7 @@ end
     output = String(take!(io))
     @test occursin("while", output)
     @test occursin("continue", output)
-    @test occursin("yield", output)
+    @test occursin("break", output)
 
     # Count-down while loop
     function count_down(n)
