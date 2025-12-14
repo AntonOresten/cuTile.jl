@@ -243,7 +243,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
     end
 
     # Tile{T, Shape} -> tile type with shape
-    if T isa DataType && T <: Tile
+    if T <: Tile
         if length(T.parameters) < 2
             error("Tile type must have both element type and shape, got: $T")
         end
@@ -271,7 +271,7 @@ function tile_type_and_shape_for_julia!(ctx::CodegenContext, @nospecialize(T))
 
     # Extract shape from Tile types
     shape = Int[]
-    if actual_type isa DataType && actual_type <: Tile && length(actual_type.parameters) >= 2
+    if actual_type <: Tile && length(actual_type.parameters) >= 2
         shape_param = actual_type.parameters[2]
         if shape_param isa Tuple
             shape = collect(Int, shape_param)
@@ -305,7 +305,6 @@ Check if a type should be destructured into flat parameters.
 """
 function should_destructure(@nospecialize(T))
     T = unwrap_type(T)
-    T isa DataType || return false
     isstructtype(T) || return false
     is_ghost_type(T) && return false
     isprimitivetype(T) && return false

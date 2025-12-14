@@ -240,11 +240,11 @@ end
 function extract_constant(ctx::CodegenContext, @nospecialize(val))
     # Handle Val{V} instances
     T = typeof(val)
-    if T <: Val && T isa DataType && length(T.parameters) == 1
+    if T <: Val && length(T.parameters) == 1
         return T.parameters[1]
     end
     # Handle Constant{T, V} instances
-    if T isa DataType && T <: Constant && length(T.parameters) >= 2
+    if T <: Constant && length(T.parameters) >= 2
         return T.parameters[2]
     end
     nothing
@@ -457,7 +457,7 @@ function emit_binop!(ctx::CodegenContext, args, float_encoder::Function, int_enc
     rhs === nothing && error("Cannot resolve RHS operand")
 
     elem_type = unwrap_type(lhs.jltype)
-    if elem_type isa DataType && elem_type <: Tile
+    if elem_type <: Tile
         elem_type = elem_type.parameters[1]
     end
 
@@ -768,7 +768,7 @@ function extract_pointer_elem_type(@nospecialize(jltype))
 end
 
 function get_array_spec(@nospecialize(T))
-    if T isa DataType && T <: TileArray && length(T.parameters) >= 3
+    if T <: TileArray && length(T.parameters) >= 3
         S = T.parameters[3]
         S isa ArraySpec && return S
     end
@@ -912,7 +912,7 @@ function emit_transpose!(ctx::CodegenContext, args::AbstractVector, @nospecializ
     output_shape = reverse(input_shape)
 
     elem_type = unwrap_type(source.jltype)
-    if elem_type isa DataType && elem_type <: Tile
+    if elem_type <: Tile
         elem_type = elem_type.parameters[1]
     end
 
@@ -965,7 +965,7 @@ function emit_full!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     # Extract dtype from result type
     result_type_unwrapped = unwrap_type(result_type)
     elem_type = Float32
-    if result_type_unwrapped isa DataType && result_type_unwrapped <: Tile
+    if result_type_unwrapped <: Tile
         elem_type = result_type_unwrapped.parameters[1]
     end
 
