@@ -1,3 +1,5 @@
+public code_structured
+
 # Typed IR utilities for cuTile compilation
 #
 # Gets fully-typed SSA IR that we can translate to Tile IR bytecode.

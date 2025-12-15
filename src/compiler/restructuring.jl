@@ -1,3 +1,5 @@
+public UnstructuredControlFlowError
+
 # Control flow restructuring - converts unstructured Julia IR to nested structured IR
 #
 # Adapted from SPIRV.jl's structural_analysis.jl
