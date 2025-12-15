@@ -96,6 +96,25 @@ function compile(@nospecialize(f), @nospecialize(argtypes);
                  opt_level::Int=3)
     tile_bytecode = emit_tileir(f, argtypes; name)
 
+    # Dump bytecode if JULIA_CUTILE_DUMP_BYTECODE is set
+    dump_dir = get(ENV, "JULIA_CUTILE_DUMP_BYTECODE", nothing)
+    if dump_dir !== nothing
+        mkpath(dump_dir)
+        # Get source location from the function's method
+        mi = first(methods(f, Base.to_tuple_type(argtypes)))
+        base_filename = basename(string(mi.file))
+        base_filename = first(splitext(base_filename))
+        # Find unique filename, adding counter if file exists
+        dump_path = joinpath(dump_dir, "$(base_filename).ln$(mi.line).cutile")
+        counter = 1
+        while isfile(dump_path)
+            counter += 1
+            dump_path = joinpath(dump_dir, "$(base_filename).ln$(mi.line).$(counter).cutile")
+        end
+        println(stderr, "Dumping TILEIR bytecode to file: $dump_path")
+        write(dump_path, tile_bytecode)
+    end
+
     input_path = tempname() * ".tile"
     output_path = tempname() * ".cubin"
 
