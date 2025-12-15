@@ -251,3 +251,119 @@ end
 end
 
 end
+
+@testset "math operations" begin
+
+@testset "1D vector div" begin
+    function vdiv_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                     c::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        ct.store(c, pid, tile_a / tile_b)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure non-zero
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vdiv_1d, cld(n, tile_size), a, b, c)
+
+    @test Array(c) ≈ Array(a) ./ Array(b) rtol=1e-5
+end
+
+@testset "1D sqrt" begin
+    function vsqrt_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, sqrt(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure positive
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vsqrt_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ sqrt.(Array(a)) rtol=1e-5
+end
+
+end
+
+@testset "reduction operations" begin
+
+@testset "reduce_sum along axis 1" begin
+    function reduce_sum_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, (pid, 0), (1, 128))  # Load 1x128 tile
+        sums = ct.reduce_sum(tile, 1)           # Sum along axis 1 -> (1,)
+        ct.store(b, pid, sums)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(reduce_sum_kernel, m, a, b)
+
+    # Each row should be summed
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ sum(a_cpu[i, :]) rtol=1e-3
+    end
+end
+
+@testset "reduce_sum along axis 0" begin
+    function reduce_sum_axis0_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, (0, pid), (64, 1))   # Load 64x1 tile
+        sums = ct.reduce_sum(tile, 0)           # Sum along axis 0 -> (1,)
+        ct.store(b, pid, sums)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(reduce_sum_axis0_kernel, n, a, b)
+
+    # Each column should be summed
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for j in 1:n
+        @test b_cpu[j] ≈ sum(a_cpu[:, j]) rtol=1e-3
+    end
+end
+
+@testset "reduce_max along axis 1" begin
+    function reduce_max_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, (pid, 0), (1, 128))  # Load 1x128 tile
+        maxes = ct.reduce_max(tile, 1)          # Max along axis 1 -> (1,)
+        ct.store(b, pid, maxes)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(reduce_max_kernel, m, a, b)
+
+    # Each row should have its max
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ maximum(a_cpu[i, :]) rtol=1e-5
+    end
+end
+
+end

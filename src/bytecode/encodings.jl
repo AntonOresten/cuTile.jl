@@ -586,6 +586,67 @@ function encode_TruncIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
     return new_op!(cb)
 end
 
+"""
+    encode_DivFOp!(cb, result_type, lhs, rhs; rounding_mode, flush_to_zero) -> Value
+
+Floating-point division.
+Opcode: 20
+"""
+function encode_DivFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
+                        rounding_mode::RoundingMode=RoundingNearestEven,
+                        flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.DivFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
+    encode_enum!(cb.buf, rounding_mode)
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    return new_op!(cb)
+end
+
+"""
+    encode_SqrtOp!(cb, result_type, source; rounding_mode, flush_to_zero) -> Value
+
+Square root operation.
+Opcode: 100
+"""
+function encode_SqrtOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                        rounding_mode::RoundingMode=RoundingNearestEven,
+                        flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.SqrtOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
+    encode_enum!(cb.buf, rounding_mode)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_IotaOp!(cb, result_type) -> Value
+
+Create a tile with values [0, 1, 2, ..., size-1] (arange).
+The result_type determines the shape and dtype.
+Opcode: 58
+"""
+function encode_IotaOp!(cb::CodeBuilder, result_type::TypeId)
+    encode_varint!(cb.buf, Opcode.IotaOp)
+    encode_typeid!(cb.buf, result_type)
+    return new_op!(cb)
+end
+
+"""
+    encode_NegFOp!(cb, result_type, source) -> Value
+
+Floating-point negation.
+Opcode: 79
+"""
+function encode_NegFOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.NegFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
 #=============================================================================
  Shape/layout operations
 =============================================================================#
@@ -911,9 +972,130 @@ function encode_MaxIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::V
     return new_op!(cb)
 end
 
+"""
+    encode_MaxFOp!(cb, result_type, lhs, rhs; propagate_nan, flush_to_zero) -> Value
+
+Floating-point maximum.
+Opcode: 69
+"""
+function encode_MaxFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
+                        propagate_nan::Bool=false, flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.MaxFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, (propagate_nan ? 1 : 0) | (flush_to_zero ? 2 : 0))
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    return new_op!(cb)
+end
+
+"""
+    encode_MinFOp!(cb, result_type, lhs, rhs; propagate_nan, flush_to_zero) -> Value
+
+Floating-point minimum.
+Opcode: 71
+"""
+function encode_MinFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
+                        propagate_nan::Bool=false, flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.MinFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, (propagate_nan ? 1 : 0) | (flush_to_zero ? 2 : 0))
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    return new_op!(cb)
+end
+
+#=============================================================================
+ Reduction operations
+=============================================================================#
+
+"""
+    encode_ReduceOp!(body, cb, result_types, operands, dim, identities, body_scalar_types) -> Vector{Value}
+
+Create a reduction operation with callback-based region building.
+Opcode: 88
+
+The body callback receives pairs of (accumulator, element) values as block arguments
+for each operand being reduced.
+
+Example for sum reduction:
+    results = encode_ReduceOp!(cb, [output_type], [input_tile], dim, identities, [scalar_0d_type]) do block_args
+        acc, elem = block_args[1], block_args[2]  # For single-operand reduce
+        result = encode_AddFOp!(cb, scalar_0d_type, acc, elem)
+        encode_YieldOp!(cb, [result])
+    end
+
+Arguments:
+- result_types: Output tile types (shape reduced along dim)
+- operands: Input tiles to reduce
+- dim: Axis to reduce along (0-indexed)
+- identities: Identity values for the reduction (e.g., 0.0 for sum)
+- body_scalar_types: 0D tile types for the body block arguments (one per result)
+"""
+function encode_ReduceOp!(body::Function, cb::CodeBuilder,
+                          result_types::Vector{TypeId},
+                          operands::Vector{Value},
+                          dim::Int,
+                          identities::Vector{<:ReduceIdentity},
+                          body_scalar_types::Vector{TypeId})
+    encode_varint!(cb.buf, Opcode.ReduceOp)
+
+    # Variadic result types
+    encode_typeid_seq!(cb.buf, result_types)
+
+    # Attributes: dim (int) and identities (array)
+    encode_opattr_int!(cb, dim)
+    encode_identity_array!(cb, identities)
+
+    # Variadic operands
+    encode_varint!(cb.buf, length(operands))
+    encode_operands!(cb.buf, operands)
+
+    # Number of regions
+    push!(cb.debug_attrs, cb.cur_debug_attr)
+    cb.num_ops += 1
+    encode_varint!(cb.buf, 1)  # 1 region: body
+
+    # Body region - block args are pairs of (acc, elem) for each operand
+    # The body operates on 0D tiles (scalars)
+    body_arg_types = TypeId[]
+    for scalar_type in body_scalar_types
+        push!(body_arg_types, scalar_type)  # accumulator
+        push!(body_arg_types, scalar_type)  # element
+    end
+    with_region(body, cb, body_arg_types)
+
+    # Create result values
+    num_results = length(result_types)
+    if num_results == 0
+        return Value[]
+    else
+        vals = [Value(cb.next_value_id + i) for i in 0:num_results-1]
+        cb.next_value_id += num_results
+        return vals
+    end
+end
+
 #=============================================================================
  Comparison and selection operations
 =============================================================================#
+
+"""
+    encode_CmpFOp!(cb, result_type, lhs, rhs; predicate, ordering) -> Value
+
+Floating-point comparison.
+Opcode: 14
+"""
+function encode_CmpFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value;
+                        predicate::ComparisonPredicate=CmpEqual,
+                        ordering::ComparisonOrdering=CmpOrdered)
+    encode_varint!(cb.buf, Opcode.CmpFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_enum!(cb.buf, predicate)
+    encode_enum!(cb.buf, ordering)
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    return new_op!(cb)
+end
 
 """
     encode_CmpIOp!(cb, result_type, lhs, rhs; predicate, signedness) -> Value

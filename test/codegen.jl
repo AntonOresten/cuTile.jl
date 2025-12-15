@@ -125,6 +125,69 @@ end
     @test contains(sass, "STG")  # Tile store
 end
 
+@testset "div" begin
+    function div_kernel(a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32})
+        pid = ct.bid(0)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        result = tile_a / tile_b
+        ct.store(c, pid, result)
+        return
+    end
+    cubin = ct.compile(div_kernel, Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}; sm_arch)
+    sass = disasm_sass(cubin)
+    @test contains(sass, "div_kernel")
+    @test contains(sass, "LDG")   # Tile loads
+    # Division may be implemented as reciprocal + multiply
+    @test contains(sass, "STG")   # Tile store
+end
+
+@testset "sqrt" begin
+    function sqrt_kernel(a::Ptr{Float32}, b::Ptr{Float32})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = sqrt(tile)
+        ct.store(b, pid, result)
+        return
+    end
+    cubin = ct.compile(sqrt_kernel, Tuple{Ptr{Float32}, Ptr{Float32}}; sm_arch)
+    sass = disasm_sass(cubin)
+    @test contains(sass, "sqrt_kernel")
+    @test contains(sass, "LDG")   # Tile load
+    @test contains(sass, "STG")   # Tile store
+end
+
+@testset "reduce_sum" begin
+    function reduce_sum_kernel(a::Ptr{Float32}, b::Ptr{Float32})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (4, 16))  # 2D tile
+        sums = ct.reduce_sum(tile, 1)    # Sum along axis 1 -> (4,)
+        ct.store(b, pid, sums)
+        return
+    end
+    cubin = ct.compile(reduce_sum_kernel, Tuple{Ptr{Float32}, Ptr{Float32}}; sm_arch)
+    sass = disasm_sass(cubin)
+    @test contains(sass, "reduce_sum_kernel")
+    @test contains(sass, "LDG")   # Tile load
+    @test contains(sass, "FADD")  # Float add (reduction)
+    @test contains(sass, "STG")   # Tile store
+end
+
+@testset "reduce_max" begin
+    function reduce_max_kernel(a::Ptr{Float32}, b::Ptr{Float32})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (4, 16))  # 2D tile
+        maxes = ct.reduce_max(tile, 1)   # Max along axis 1 -> (4,)
+        ct.store(b, pid, maxes)
+        return
+    end
+    cubin = ct.compile(reduce_max_kernel, Tuple{Ptr{Float32}, Ptr{Float32}}; sm_arch)
+    sass = disasm_sass(cubin)
+    @test contains(sass, "reduce_max_kernel")
+    @test contains(sass, "LDG")   # Tile load
+    @test contains(sass, "STG")   # Tile store
+end
+
 @testset "control flow" begin
     # Test structured IR restructuring + control flow encoding
     # Note: Full control flow emission is work-in-progress, these tests

@@ -1590,6 +1590,216 @@ function resolve_or_constant(ctx::CodegenContext, @nospecialize(arg), type_id::T
 end
 
 #=============================================================================
+ Floating-point Division
+=============================================================================#
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_div), args, @nospecialize(_)) =
+    emit_binop!(ctx, args, encode_DivFOp!, encode_DivIOp!)
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_div_scalar), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    tile_tv = emit_value!(ctx, args[1])
+    tile_tv === nothing && error("Cannot resolve tile operand for division")
+
+    # Get the scalar value
+    scalar_val = extract_constant(ctx, args[2])
+    scalar_val === nothing && error("Division by scalar requires compile-time constant")
+
+    # Get element type and shape
+    elem_type = unwrap_type(tile_tv.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+    tile_shape = tile_tv.shape
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Create scalar constant
+    scalar_type = tile_type!(tt, dtype, Int[])
+    value_bytes = constant_to_bytes(scalar_val, elem_type)
+    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+    # Broadcast scalar to tile shape
+    if !isempty(tile_shape)
+        ones_shape = fill(1, length(tile_shape))
+        reshaped_type = tile_type!(tt, dtype, ones_shape)
+        reshaped_val = encode_ReshapeOp!(cb, reshaped_type, scalar_const)
+        broadcast_type = tile_type!(tt, dtype, tile_shape)
+        broadcasted = encode_BroadcastOp!(cb, broadcast_type, reshaped_val)
+    else
+        broadcasted = scalar_const
+    end
+
+    # Perform division
+    result = encode_DivFOp!(cb, tile_tv.type_id, tile_tv.v, broadcasted)
+
+    TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
+end
+
+#=============================================================================
+ Math Operations
+=============================================================================#
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.sqrt), args, @nospecialize(result_type))
+    cb = ctx.cb
+
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve operand for sqrt()")
+
+    result = encode_SqrtOp!(cb, source.type_id, source.v)
+
+    TileValue(result, source.type_id, source.jltype, source.shape)
+end
+
+#=============================================================================
+ Tile Factory Operations
+=============================================================================#
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(arange), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Extract shape
+    shape = extract_constant(ctx, args[1])
+    shape isa Tuple || error("arange() shape must be a compile-time constant tuple")
+    tile_shape = collect(Int, shape)
+
+    # Extract dtype from result type
+    result_type_unwrapped = unwrap_type(result_type)
+    elem_type = Int32
+    if result_type_unwrapped <: Tile
+        elem_type = result_type_unwrapped.parameters[1]
+    end
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    tile_type = tile_type!(tt, dtype, tile_shape)
+
+    # Emit IotaOp
+    result = encode_IotaOp!(cb, tile_type)
+
+    TileValue(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+end
+
+#=============================================================================
+ Reduction Operations
+=============================================================================#
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(reduce_sum), args, @nospecialize(result_type))
+    emit_reduce!(ctx, args, result_type, :add)
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(reduce_max), args, @nospecialize(result_type))
+    emit_reduce!(ctx, args, result_type, :max)
+end
+
+function emit_reduce!(ctx::CodegenContext, args, @nospecialize(result_type), reduce_fn::Symbol)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get input tile
+    input_tv = emit_value!(ctx, args[1])
+    input_tv === nothing && error("Cannot resolve input tile for reduction")
+
+    # Get reduction axis
+    axis = extract_constant(ctx, args[2])
+    axis === nothing && error("Reduction axis must be a compile-time constant")
+
+    # Get element type and shapes
+    input_type = unwrap_type(input_tv.jltype)
+    elem_type = input_type <: Tile ? input_type.parameters[1] : input_type
+    input_shape = input_tv.shape
+    isempty(input_shape) && error("Cannot reduce scalar tile")
+
+    # Compute output shape (dimension at axis is removed)
+    output_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Output tile type
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+
+    # Scalar type for reduction body (0D tile)
+    scalar_tile_type = tile_type!(tt, dtype, Int[])
+
+    # Create identity value - use simple dtype (f32), not tile type
+    identity_val = reduce_fn == :add ? -0.0 : (reduce_fn == :max ? -Inf : 0.0)
+    identity = FloatIdentity(identity_val, dtype, elem_type)
+
+    # Emit ReduceOp
+    results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
+        acc, elem = block_args[1], block_args[2]
+
+        if reduce_fn == :add
+            res = encode_AddFOp!(cb, scalar_tile_type, acc, elem)
+        elseif reduce_fn == :max
+            res = encode_MaxFOp!(cb, scalar_tile_type, acc, elem)
+        else
+            error("Unsupported reduction function: $reduce_fn")
+        end
+
+        encode_YieldOp!(cb, [res])
+    end
+
+    TileValue(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+end
+
+#=============================================================================
+ Conditional Selection
+=============================================================================#
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(where), args, @nospecialize(result_type))
+    cb = ctx.cb
+
+    cond_tv = emit_value!(ctx, args[1])
+    x_tv = emit_value!(ctx, args[2])
+    y_tv = emit_value!(ctx, args[3])
+
+    (cond_tv === nothing || x_tv === nothing || y_tv === nothing) &&
+        error("Cannot resolve operands for where()")
+
+    result = encode_SelectOp!(cb, x_tv.type_id, cond_tv.v, x_tv.v, y_tv.v)
+
+    TileValue(result, x_tv.type_id, x_tv.jltype, x_tv.shape)
+end
+
+#=============================================================================
+ Tile Comparison Operations
+=============================================================================#
+
+function emit_tile_cmpf!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    lhs = emit_value!(ctx, args[1])
+    rhs = emit_value!(ctx, args[2])
+
+    (lhs === nothing || rhs === nothing) && error("Cannot resolve operands for tile comparison")
+
+    # Result type is boolean tile with same shape
+    tile_shape = lhs.shape
+    bool_tile_type = tile_type!(tt, I1(tt), tile_shape)
+
+    result_v = encode_CmpFOp!(cb, bool_tile_type, lhs.v, rhs.v;
+                              predicate=predicate, ordering=CmpOrdered)
+
+    TileValue(result_v, bool_tile_type, Tile{Bool, Tuple(tile_shape)}, tile_shape)
+end
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_gt), args, @nospecialize(_)) =
+    emit_tile_cmpf!(ctx, args, CmpGreaterThan)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_lt), args, @nospecialize(_)) =
+    emit_tile_cmpf!(ctx, args, CmpLessThan)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_ge), args, @nospecialize(_)) =
+    emit_tile_cmpf!(ctx, args, CmpGreaterThanOrEqual)
+
+emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_le), args, @nospecialize(_)) =
+    emit_tile_cmpf!(ctx, args, CmpLessThanOrEqual)
+
+#=============================================================================
  Constants
 =============================================================================#
 

@@ -288,3 +288,172 @@ Remainder operation: a % b (C-style, result has same sign as dividend)
 Minimum of two integers.
 """
 @noinline Base.min(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
+
+#=============================================================================
+ Floating-Point Arithmetic
+=============================================================================#
+
+public tile_div
+
+@noinline function tile_div(a::Tile{T, S}, b::Tile{T, S})::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+
+# Division operator for tiles
+Base.:(/)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_div(a, b)
+
+# Scalar-tile division (broadcast scalar to tile)
+@noinline function tile_div_scalar(a::Tile{T, S}, b::T)::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+Base.:(/)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_div_scalar(a, b)
+
+#=============================================================================
+ Math Operations
+=============================================================================#
+
+public sqrt, rsqrt
+
+"""
+    sqrt(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise square root of a tile.
+"""
+@noinline function Base.sqrt(tile::Tile{T, S})::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(tile)
+    Tile{T, S}()
+end
+
+"""
+    rsqrt(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise reciprocal square root (1/sqrt(x)) of a tile.
+"""
+@noinline function rsqrt(tile::Tile{T, S})::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(tile)
+    Tile{T, S}()
+end
+
+#=============================================================================
+ Tile Factory Operations
+=============================================================================#
+
+public arange
+
+"""
+    arange(shape::NTuple{1, Int}, dtype::Type{T}) -> Tile{T, shape}
+
+Create a 1D tile with values [0, 1, 2, ..., shape[1]-1].
+Similar to Python's ct.arange() or np.arange().
+
+# Example
+```julia
+indices = ct.arange((16,), Int32)  # Creates Tile with [0, 1, 2, ..., 15]
+```
+"""
+@noinline function arange(shape::NTuple{1, Int}, ::Type{T})::Tile{T, shape} where {T}
+    Tile{T, shape}()
+end
+
+# Helper for integer constant shape
+@inline arange(shape::Tuple{Constant{Int, V}}, ::Type{T}) where {V, T} = arange((V,), T)
+
+#=============================================================================
+ Reduction Operations
+=============================================================================#
+
+public reduce_sum, reduce_max
+
+"""
+    reduce_sum(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Sum reduction along the specified axis.
+Returns a tile with the specified dimension removed.
+
+# Arguments
+- `tile`: Input tile to reduce
+- `axis`: Axis to reduce along (0-indexed)
+
+# Example
+```julia
+# For a (128, 64) tile, reducing along axis 1:
+sums = ct.reduce_sum(tile, 1)  # Returns (128,) tile
+```
+"""
+@noinline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+    # Compute the reduced shape by removing the reduced dimension
+    reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+    Base.donotdelete(tile)
+    Tile{T, reduced_shape}()
+end
+
+"""
+    reduce_max(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+
+Maximum reduction along the specified axis.
+
+# Arguments
+- `tile`: Input tile to reduce
+- `axis`: Axis to reduce along (0-indexed)
+"""
+@noinline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+    reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+    Base.donotdelete(tile)
+    Tile{T, reduced_shape}()
+end
+
+#=============================================================================
+ Conditional Selection
+=============================================================================#
+
+public where
+
+"""
+    where(cond::Tile{Bool, S}, x::Tile{T, S}, y::Tile{T, S}) -> Tile{T, S}
+
+Element-wise conditional selection: returns x where cond is true, y otherwise.
+Similar to numpy.where() or torch.where().
+
+# Example
+```julia
+mask = tile_a .> tile_b  # Boolean tile
+result = ct.where(mask, tile_a, tile_b)  # Element-wise max
+```
+"""
+@noinline function where(cond::Tile{Bool, S}, x::Tile{T, S}, y::Tile{T, S})::Tile{T, S} where {T, S}
+    Base.donotdelete(cond, x, y)
+    Tile{T, S}()
+end
+
+#=============================================================================
+ Comparison Operations (returning Boolean tiles)
+=============================================================================#
+
+# Element-wise comparisons that return Boolean tiles
+@noinline function tile_gt(a::Tile{T, S}, b::Tile{T, S})::Tile{Bool, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{Bool, S}()
+end
+
+@noinline function tile_lt(a::Tile{T, S}, b::Tile{T, S})::Tile{Bool, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{Bool, S}()
+end
+
+@noinline function tile_ge(a::Tile{T, S}, b::Tile{T, S})::Tile{Bool, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{Bool, S}()
+end
+
+@noinline function tile_le(a::Tile{T, S}, b::Tile{T, S})::Tile{Bool, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{Bool, S}()
+end
+
+# Operator overloads for tile comparisons
+Base.:(>)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_gt(a, b)
+Base.:(<)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_lt(a, b)
+Base.:(>=)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_ge(a, b)
+Base.:(<=)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_le(a, b)
