@@ -946,9 +946,9 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
 
-    # TensorView type
+    # TensorView type - use static strides where known from ArraySpec
     tv_shape = fill(DYNAMIC_SHAPE, ndim)
-    tv_strides = fill(DYNAMIC_SHAPE, ndim)
+    tv_strides = compute_tensor_view_strides(array_spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 
     # PartitionView type
@@ -960,13 +960,16 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     # Get size and stride values
     size_vals, stride_vals = get_size_stride_vals(ctx, arg_idx, is_tilearray, ndim, tile_shape, index_vals, scalar_i32)
 
-    # Emit AssumeOps for optimization hints
+    # Emit AssumeOps for optimization hints (skip stride assumes for static strides)
     if array_spec !== nothing
-        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_i32)
+        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_i32; tv_strides)
     end
 
+    # Filter strides to only pass dynamic ones as operands
+    dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
+
     # Create tensor view
-    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, stride_vals)
+    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, dynamic_stride_vals)
 
     # Create partition view
     partition = encode_MakePartitionViewOp!(cb, pv_type, tensor_view)
@@ -1018,9 +1021,9 @@ function emit_store!(ctx::CodegenContext, args::AbstractVector, @nospecialize(re
     # Parse index argument
     index_vals = extract_index_values(ctx, args, 2, ndim)
 
-    # TensorView type
+    # TensorView type - use static strides where known from ArraySpec
     tv_shape = fill(DYNAMIC_SHAPE, ndim)
-    tv_strides = fill(DYNAMIC_SHAPE, ndim)
+    tv_strides = compute_tensor_view_strides(array_spec, ndim)
     tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
 
     # PartitionView type
@@ -1032,13 +1035,16 @@ function emit_store!(ctx::CodegenContext, args::AbstractVector, @nospecialize(re
     # Get size and stride values
     size_vals, stride_vals = get_size_stride_vals(ctx, arg_idx, is_tilearray, ndim, tile_shape, index_vals, scalar_i32)
 
-    # Emit AssumeOps
+    # Emit AssumeOps (skip stride assumes for static strides)
     if array_spec !== nothing
-        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_i32)
+        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, array_spec, dtype, scalar_i32; tv_strides)
     end
 
+    # Filter strides to only pass dynamic ones as operands
+    dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
+
     # Create tensor view
-    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, stride_vals)
+    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, dynamic_stride_vals)
 
     # Create partition view
     partition = encode_MakePartitionViewOp!(cb, pv_type, tensor_view)
@@ -1067,6 +1073,42 @@ function get_array_spec(@nospecialize(T))
         S isa ArraySpec && return S
     end
     nothing
+end
+
+"""
+    compute_tensor_view_strides(array_spec, ndim) -> Vector{Int64}
+
+Compute the stride values for a TensorView type based on ArraySpec.
+Returns static stride values where known, DYNAMIC_SHAPE where dynamic.
+
+For contiguous arrays (array_spec.contiguous == true), stride[1] = 1 is statically known.
+Higher dimensions are typically dynamic unless we have explicit info.
+"""
+function compute_tensor_view_strides(array_spec::Union{ArraySpec, Nothing}, ndim::Int)
+    strides = fill(DYNAMIC_SHAPE, ndim)
+
+    if array_spec !== nothing && array_spec.contiguous && ndim >= 1
+        # Contiguous array: first stride is statically known to be 1
+        strides[1] = 1
+    end
+
+    return strides
+end
+
+"""
+    filter_dynamic_strides(stride_vals, tv_strides) -> Vector{Value}
+
+Filter stride values to only include those corresponding to dynamic dimensions.
+Only pass operands for dimensions where tv_strides[i] == DYNAMIC_SHAPE.
+"""
+function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{Int64})
+    dynamic_vals = Value[]
+    for (i, stride_type_val) in enumerate(tv_strides)
+        if stride_type_val == DYNAMIC_SHAPE && i <= length(stride_vals)
+            push!(dynamic_vals, stride_vals[i])
+        end
+    end
+    return dynamic_vals
 end
 
 """
@@ -1161,7 +1203,8 @@ function get_size_stride_vals(ctx::CodegenContext, arg_idx, is_tilearray::Bool, 
 end
 
 function emit_assume_ops!(ctx::CodegenContext, array_val::Value, size_vals::Vector{Value},
-                          stride_vals::Vector{Value}, array_spec::ArraySpec, dtype::TypeId, scalar_i32::TypeId)
+                          stride_vals::Vector{Value}, array_spec::ArraySpec, dtype::TypeId, scalar_i32::TypeId;
+                          tv_strides::Union{Vector{Int64}, Nothing}=nothing)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -1172,9 +1215,17 @@ function emit_assume_ops!(ctx::CodegenContext, array_val::Value, size_vals::Vect
         array_val = encode_AssumeOp!(cb, ptr_tile_type, array_val, DivBy(array_spec.alignment))
     end
 
-    # Bounds assumes
+    # Bounds assumes for sizes
     size_vals = [encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in size_vals]
-    stride_vals = [encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in stride_vals]
+
+    # Bounds assumes for strides - only for dynamic strides
+    if tv_strides !== nothing
+        stride_vals = [tv_strides[i] == DYNAMIC_SHAPE ?
+                       encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) : v
+                       for (i, v) in enumerate(stride_vals)]
+    else
+        stride_vals = [encode_AssumeOp!(cb, scalar_i32, v, Bounded(0, nothing)) for v in stride_vals]
+    end
 
     # Divisibility assumes for sizes
     if hasproperty(array_spec, :shape_div_by)
@@ -1185,11 +1236,14 @@ function emit_assume_ops!(ctx::CodegenContext, array_val::Value, size_vals::Vect
         end
     end
 
-    # Divisibility assumes for strides
+    # Divisibility assumes for strides - only for dynamic strides
     if hasproperty(array_spec, :stride_div_by)
         for (i, div_by) in enumerate(array_spec.stride_div_by)
             if div_by > 0 && i <= length(stride_vals)
-                stride_vals[i] = encode_AssumeOp!(cb, scalar_i32, stride_vals[i], DivBy(div_by))
+                # Skip if this stride is static (not DYNAMIC_SHAPE)
+                if tv_strides === nothing || tv_strides[i] == DYNAMIC_SHAPE
+                    stride_vals[i] = encode_AssumeOp!(cb, scalar_i32, stride_vals[i], DivBy(div_by))
+                end
             end
         end
     end
