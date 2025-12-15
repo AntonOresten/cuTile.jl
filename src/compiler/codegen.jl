@@ -1638,6 +1638,231 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_div_scalar), args, @
     TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
 end
 
+# tile / integer - convert integer to float, then broadcast and divide
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_div_int), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    tile_tv = emit_value!(ctx, args[1])
+    tile_tv === nothing && error("Cannot resolve tile operand for division")
+
+    # Get the integer value
+    int_val = extract_constant(ctx, args[2])
+    int_val === nothing && error("Division by integer requires compile-time constant")
+
+    # Get element type and shape
+    elem_type = unwrap_type(tile_tv.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+    tile_shape = tile_tv.shape
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Create scalar constant (convert int to float)
+    scalar_type = tile_type!(tt, dtype, Int[])
+    float_val = elem_type(int_val)
+    value_bytes = constant_to_bytes(float_val, elem_type)
+    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+    # Broadcast scalar to tile shape
+    broadcasted = broadcast_scalar_to_tile!(cb, tt, scalar_const, dtype, tile_shape)
+
+    # Perform division
+    result = encode_DivFOp!(cb, tile_tv.type_id, tile_tv.v, broadcasted)
+
+    TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
+end
+
+# scalar / tile - broadcast scalar and divide
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(scalar_div_tile), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get the scalar value
+    scalar_val = extract_constant(ctx, args[1])
+    scalar_val === nothing && error("Scalar division requires compile-time constant numerator")
+
+    tile_tv = emit_value!(ctx, args[2])
+    tile_tv === nothing && error("Cannot resolve tile operand for division")
+
+    # Get element type and shape
+    elem_type = unwrap_type(tile_tv.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+    tile_shape = tile_tv.shape
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Create scalar constant
+    scalar_type = tile_type!(tt, dtype, Int[])
+    value_bytes = constant_to_bytes(scalar_val, elem_type)
+    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+    # Broadcast scalar to tile shape
+    broadcasted = broadcast_scalar_to_tile!(cb, tt, scalar_const, dtype, tile_shape)
+
+    # Perform division (scalar / tile)
+    result = encode_DivFOp!(cb, tile_tv.type_id, broadcasted, tile_tv.v)
+
+    TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
+end
+
+# tile + scalar
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_add_scalar), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    tile_tv = emit_value!(ctx, args[1])
+    tile_tv === nothing && error("Cannot resolve tile operand for addition")
+
+    # Get the scalar value
+    scalar_val = extract_constant(ctx, args[2])
+    scalar_val === nothing && error("Scalar addition requires compile-time constant")
+
+    # Get element type and shape
+    elem_type = unwrap_type(tile_tv.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+    tile_shape = tile_tv.shape
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Create scalar constant
+    scalar_type = tile_type!(tt, dtype, Int[])
+    value_bytes = constant_to_bytes(scalar_val, elem_type)
+    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+    # Broadcast scalar to tile shape
+    broadcasted = broadcast_scalar_to_tile!(cb, tt, scalar_const, dtype, tile_shape)
+
+    # Perform addition
+    result = encode_AddFOp!(cb, tile_tv.type_id, tile_tv.v, broadcasted)
+
+    TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
+end
+
+# tile - scalar
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_sub_scalar), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    tile_tv = emit_value!(ctx, args[1])
+    tile_tv === nothing && error("Cannot resolve tile operand for subtraction")
+
+    # Get the scalar value
+    scalar_val = extract_constant(ctx, args[2])
+    scalar_val === nothing && error("Scalar subtraction requires compile-time constant")
+
+    # Get element type and shape
+    elem_type = unwrap_type(tile_tv.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+    tile_shape = tile_tv.shape
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Create scalar constant
+    scalar_type = tile_type!(tt, dtype, Int[])
+    value_bytes = constant_to_bytes(scalar_val, elem_type)
+    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+    # Broadcast scalar to tile shape
+    broadcasted = broadcast_scalar_to_tile!(cb, tt, scalar_const, dtype, tile_shape)
+
+    # Perform subtraction
+    result = encode_SubFOp!(cb, tile_tv.type_id, tile_tv.v, broadcasted)
+
+    TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
+end
+
+# scalar - tile
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(scalar_sub_tile), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get the scalar value
+    scalar_val = extract_constant(ctx, args[1])
+    scalar_val === nothing && error("Scalar subtraction requires compile-time constant")
+
+    tile_tv = emit_value!(ctx, args[2])
+    tile_tv === nothing && error("Cannot resolve tile operand for subtraction")
+
+    # Get element type and shape
+    elem_type = unwrap_type(tile_tv.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+    tile_shape = tile_tv.shape
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Create scalar constant
+    scalar_type = tile_type!(tt, dtype, Int[])
+    value_bytes = constant_to_bytes(scalar_val, elem_type)
+    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+    # Broadcast scalar to tile shape
+    broadcasted = broadcast_scalar_to_tile!(cb, tt, scalar_const, dtype, tile_shape)
+
+    # Perform subtraction (scalar - tile)
+    result = encode_SubFOp!(cb, tile_tv.type_id, broadcasted, tile_tv.v)
+
+    TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
+end
+
+# tile * scalar
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_mul_scalar), args, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    tile_tv = emit_value!(ctx, args[1])
+    tile_tv === nothing && error("Cannot resolve tile operand for multiplication")
+
+    # Get the scalar value
+    scalar_val = extract_constant(ctx, args[2])
+    scalar_val === nothing && error("Scalar multiplication requires compile-time constant")
+
+    # Get element type and shape
+    elem_type = unwrap_type(tile_tv.jltype)
+    if elem_type <: Tile
+        elem_type = elem_type.parameters[1]
+    end
+    tile_shape = tile_tv.shape
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Create scalar constant
+    scalar_type = tile_type!(tt, dtype, Int[])
+    value_bytes = constant_to_bytes(scalar_val, elem_type)
+    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+    # Broadcast scalar to tile shape
+    broadcasted = broadcast_scalar_to_tile!(cb, tt, scalar_const, dtype, tile_shape)
+
+    # Perform multiplication
+    result = encode_MulFOp!(cb, tile_tv.type_id, tile_tv.v, broadcasted)
+
+    TileValue(result, tile_tv.type_id, tile_tv.jltype, tile_shape)
+end
+
+# Helper to broadcast a scalar constant to tile shape
+function broadcast_scalar_to_tile!(cb::CodeBuilder, tt::TypeTable, scalar_const::Value,
+                                    dtype::TypeId, tile_shape::Vector{Int})
+    if isempty(tile_shape)
+        return scalar_const
+    end
+
+    ones_shape = fill(1, length(tile_shape))
+    reshaped_type = tile_type!(tt, dtype, ones_shape)
+    reshaped_val = encode_ReshapeOp!(cb, reshaped_type, scalar_const)
+    broadcast_type = tile_type!(tt, dtype, tile_shape)
+    encode_BroadcastOp!(cb, broadcast_type, reshaped_val)
+end
+
 #=============================================================================
  Math Operations
 =============================================================================#

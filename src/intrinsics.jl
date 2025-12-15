@@ -303,12 +303,56 @@ end
 # Division operator for tiles
 Base.:(/)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_div(a, b)
 
-# Scalar-tile division (broadcast scalar to tile)
+# Scalar-tile division (tile / scalar - broadcast scalar to tile)
 @noinline function tile_div_scalar(a::Tile{T, S}, b::T)::Tile{T, S} where {T <: AbstractFloat, S}
     Base.donotdelete(a, b)
     Tile{T, S}()
 end
 Base.:(/)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_div_scalar(a, b)
+
+# Also support division by integers (common for mean calculation)
+@noinline function tile_div_int(a::Tile{T, S}, b::Integer)::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+Base.:(/)(a::Tile{T, S}, b::Integer) where {T <: AbstractFloat, S} = tile_div_int(a, b)
+
+# Reciprocal division (scalar / tile)
+@noinline function scalar_div_tile(a::T, b::Tile{T, S})::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+Base.:(/)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = scalar_div_tile(a, b)
+
+# Scalar-tile addition (tile + scalar)
+@noinline function tile_add_scalar(a::Tile{T, S}, b::T)::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+Base.:(+)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_add_scalar(a, b)
+Base.:(+)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_add_scalar(b, a)
+
+# Scalar-tile subtraction (tile - scalar)
+@noinline function tile_sub_scalar(a::Tile{T, S}, b::T)::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+Base.:(-)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_sub_scalar(a, b)
+
+# Scalar - tile
+@noinline function scalar_sub_tile(a::T, b::Tile{T, S})::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+Base.:(-)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = scalar_sub_tile(a, b)
+
+# Scalar-tile multiplication (tile * scalar)
+@noinline function tile_mul_scalar(a::Tile{T, S}, b::T)::Tile{T, S} where {T <: AbstractFloat, S}
+    Base.donotdelete(a, b)
+    Tile{T, S}()
+end
+Base.:(*)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_mul_scalar(a, b)
+Base.:(*)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_mul_scalar(b, a)
 
 #=============================================================================
  Math Operations

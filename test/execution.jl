@@ -367,3 +367,178 @@ end
 end
 
 end
+
+@testset "scalar-tile operations" begin
+
+@testset "tile / scalar" begin
+    function div_by_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = tile / 2.0f0
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(div_by_scalar, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ Array(a) ./ 2.0f0 rtol=1e-5
+end
+
+@testset "tile / integer" begin
+    function div_by_int(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = tile / 4
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(div_by_int, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ Array(a) ./ 4.0f0 rtol=1e-5
+end
+
+@testset "scalar / tile" begin
+    function scalar_div_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = 1.0f0 / tile
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure non-zero
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(scalar_div_tile_kernel, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ 1.0f0 ./ Array(a) rtol=1e-5
+end
+
+@testset "tile + scalar" begin
+    function add_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = tile + 3.5f0
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(add_scalar, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ Array(a) .+ 3.5f0 rtol=1e-5
+end
+
+@testset "scalar + tile" begin
+    function scalar_add_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = 2.5f0 + tile
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(scalar_add_tile_kernel, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ 2.5f0 .+ Array(a) rtol=1e-5
+end
+
+@testset "tile - scalar" begin
+    function sub_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = tile - 1.5f0
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(sub_scalar, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ Array(a) .- 1.5f0 rtol=1e-5
+end
+
+@testset "scalar - tile" begin
+    function scalar_sub_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = 5.0f0 - tile
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(scalar_sub_tile_kernel, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ 5.0f0 .- Array(a) rtol=1e-5
+end
+
+@testset "tile * scalar" begin
+    function mul_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = tile * 2.5f0
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(mul_scalar, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ Array(a) .* 2.5f0 rtol=1e-5
+end
+
+@testset "scalar * tile" begin
+    function scalar_mul_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(0)
+        tile = ct.load(a, pid, (16,))
+        result = 3.0f0 * tile
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(scalar_mul_tile_kernel, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ 3.0f0 .* Array(a) rtol=1e-5
+end
+
+end
