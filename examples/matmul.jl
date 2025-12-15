@@ -33,21 +33,22 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     # Initialize accumulator with Float32 for precision
     acc = ct.full((tm[], tn[]), zero(Float32), Float32)
 
-    # Convert fp32 to tf32 to use tensor cores (like Python cuTile)
-    dtype = T === Float32 ? ct.TFloat32 : T
-
     # K reduction loop - accumulate partial products
     k = Int32(0)
     while k < num_k
-        a = ct.astype(ct.load(A, (bid_m, k), (tm[], tk[])), dtype)
-        b = ct.astype(ct.load(B, (k, bid_n), (tk[], tn[])), dtype)
+        # Load and convert to TF32 for tensor cores (Float32 only)
+        a = ct.load(A, (bid_m, k), (tm[], tk[]))
+        b = ct.load(B, (k, bid_n), (tk[], tn[]))
+        if T === Float32
+            a = convert(ct.Tile{ct.TFloat32}, a)
+            b = convert(ct.Tile{ct.TFloat32}, b)
+        end
         acc = ct.mma(a, b, acc)
         k += Int32(1)
     end
 
     # Convert accumulator to output type and store
-    result = ct.astype(acc, T)
-    ct.store(C, (bid_m, bid_n), result)
+    ct.store(C, (bid_m, bid_n), convert(ct.Tile{T}, acc))
 
     return nothing
 end

@@ -13,14 +13,13 @@ const CC = Core.Compiler
 Tensor Float 32 - a 32-bit floating-point type optimized for tensor core operations.
 Has the same range as Float32 (8 exponent bits) but reduced precision (10 mantissa bits).
 
-Use with `astype()` to convert Float32 tiles to TFloat32 for tensor core acceleration:
+Convert Float32 tiles to TFloat32 for tensor core acceleration:
 ```julia
 a = ct.load(A, (bid_m, k), (tm, tk))
-a_tf32 = ct.astype(a, ct.TFloat32)  # Convert to TF32 for tensor cores
+a_tf32 = convert(ct.Tile{ct.TFloat32}, a)
 ```
 
-Note: This is a compile-time only type for Tile IR code generation. It has no runtime
-representation and cannot be instantiated.
+Note: This is a compile-time only type for Tile IR code generation.
 """
 primitive type TFloat32 <: AbstractFloat 32 end
 
@@ -505,21 +504,25 @@ zeros_tile = ct.full((32, 32), 0, Float32)  # 32x32 tile of zeros
 end
 
 """
+    convert(Tile{T2}, tile::Tile{T1, Shape}) -> Tile{T2, Shape}
     astype(tile::Tile{T1, Shape}, ::Type{T2}) -> Tile{T2, Shape}
 
 Convert a tile's element type from T1 to T2.
-In kernel code, this is compiled to FToFOp (for float conversions).
 
 # Example
 ```julia
-acc = ct.full((64, 64), 0.0f0, Float32)  # Float32 accumulator
-result = ct.astype(acc, Float16)          # Convert to Float16
+acc = ct.full((64, 64), 0.0f0, Float32)
+result = convert(ct.Tile{ct.TFloat32}, acc)  # Convert to TF32 for tensor cores
+result = convert(ct.Tile{Float16}, acc)      # Convert to Float16
 ```
 """
 @noinline function astype(tile::Tile{T1, Shape}, ::Type{T2})::Tile{T2, Shape} where {T1, Shape, T2}
     Base.donotdelete(tile)
     Tile{T2, Shape}()
 end
+
+# Julia-style convert syntax builds on astype
+Base.convert(::Type{Tile{T2}}, tile::Tile{T1, Shape}) where {T1, T2, Shape} = astype(tile, T2)
 
 #=============================================================================
  Array Dimension Operations
