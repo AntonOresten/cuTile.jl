@@ -738,26 +738,57 @@ function emit_intrinsic!(ctx::CodegenContext, ::Type{<:Tile}, args, @nospecializ
     cb = ctx.cb
     tt = ctx.tt
 
-    # Extract the scalar value
-    scalar_val = extract_constant(ctx, args[1])
-    scalar_val === nothing && error("Tile(scalar) requires a compile-time constant value")
-
     # Get element type from result type
     result_type_unwrapped = unwrap_type(result_type)
-    if result_type_unwrapped <: Tile
-        elem_type = result_type_unwrapped.parameters[1]
+    elem_type = if result_type_unwrapped <: Tile
+        result_type_unwrapped.parameters[1]
     else
-        elem_type = typeof(scalar_val)
+        nothing  # Will be determined later
     end
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    # Try to extract as compile-time constant first
+    scalar_val = extract_constant(ctx, args[1])
 
-    # Create 0D scalar constant
-    scalar_type = tile_type!(tt, dtype, Int[])
-    value_bytes = constant_to_bytes(scalar_val, elem_type)
-    scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+    if scalar_val !== nothing
+        # Compile-time constant path
+        if elem_type === nothing
+            elem_type = typeof(scalar_val)
+        end
 
-    TileValue(scalar_const, scalar_type, Tile{elem_type, ()}, Int[])
+        dtype = julia_to_tile_dtype!(tt, elem_type)
+        scalar_type = tile_type!(tt, dtype, Int[])
+        value_bytes = constant_to_bytes(scalar_val, elem_type)
+        scalar_const = encode_ConstantOp!(cb, scalar_type, value_bytes)
+
+        return TileValue(scalar_const, scalar_type, Tile{elem_type, ()}, Int[])
+    end
+
+    # Runtime scalar path - emit the value and use it directly as a 0D tile
+    source = emit_value!(ctx, args[1])
+    source === nothing && error("Cannot resolve source operand for Tile(scalar)")
+
+    if source isa TileValue
+        # Already a tile value, just return it (might need reshape to 0D)
+        if isempty(source.shape)
+            return source
+        else
+            # Reshape to 0D if it's a scalar-sized tile
+            error("Tile(scalar) called with non-scalar tile")
+        end
+    else
+        # source is a raw Value - need to determine the type
+        # The argument type should give us the element type
+        arg_type = ctx.types[args[1]]
+        if elem_type === nothing
+            elem_type = unwrap_type(arg_type)
+        end
+
+        dtype = julia_to_tile_dtype!(tt, elem_type)
+        scalar_type = tile_type!(tt, dtype, Int[])
+
+        # The source is already a scalar value - wrap it as a TileValue
+        return TileValue(source, scalar_type, Tile{elem_type, ()}, Int[])
+    end
 end
 
 #-----------------------------------------------------------------------------
@@ -932,8 +963,65 @@ function emit_intrinsic!(ctx::CodegenContext, func::Core.IntrinsicFunction, args
         return emit_binop!(ctx, args, encode_SubFOp!, encode_SubIOp!)
     elseif func === Base.mul_int
         return emit_binop!(ctx, args, encode_MulFOp!, encode_MulIOp!)
+    elseif func === Base.sitofp
+        return emit_sitofp!(ctx, args)
+    elseif func === Base.uitofp
+        return emit_uitofp!(ctx, args)
+    # Integer comparison intrinsics (signed and unsigned use same predicate, signedness is separate)
+    elseif func === Base.slt_int
+        return emit_int_cmp!(ctx, args, CmpLessThan, SignednessSigned)
+    elseif func === Base.sle_int
+        return emit_int_cmp!(ctx, args, CmpLessThanOrEqual, SignednessSigned)
+    elseif func === Base.ult_int
+        return emit_int_cmp!(ctx, args, CmpLessThan, SignednessUnsigned)
+    elseif func === Base.ule_int
+        return emit_int_cmp!(ctx, args, CmpLessThanOrEqual, SignednessUnsigned)
+    elseif func === Base.eq_int
+        return emit_int_cmp!(ctx, args, CmpEqual, SignednessSigned)
+    elseif func === Base.ne_int
+        return emit_int_cmp!(ctx, args, CmpNotEqual, SignednessSigned)
     end
     missing  # Unknown intrinsic
+end
+
+# Signed integer to floating point conversion
+function emit_sitofp!(ctx::CodegenContext, args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # args[1] is the target type (e.g., Float32), args[2] is the value
+    target_type = args[1]
+    source = emit_value!(ctx, args[2])
+    source === nothing && error("Cannot resolve source operand for sitofp")
+
+    # Get the target float type
+    dtype = julia_to_tile_dtype!(tt, target_type)
+    result_shape = source isa TileValue ? source.shape : Int[]
+    result_type = tile_type!(tt, dtype, result_shape)
+
+    result_v = encode_IToFOp!(cb, result_type, source isa TileValue ? source.v : source;
+                              signedness=SignednessSigned)
+    TileValue(result_v, result_type, target_type, result_shape)
+end
+
+# Unsigned integer to floating point conversion
+function emit_uitofp!(ctx::CodegenContext, args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # args[1] is the target type (e.g., Float32), args[2] is the value
+    target_type = args[1]
+    source = emit_value!(ctx, args[2])
+    source === nothing && error("Cannot resolve source operand for uitofp")
+
+    # Get the target float type
+    dtype = julia_to_tile_dtype!(tt, target_type)
+    result_shape = source isa TileValue ? source.shape : Int[]
+    result_type = tile_type!(tt, dtype, result_shape)
+
+    result_v = encode_IToFOp!(cb, result_type, source isa TileValue ? source.v : source;
+                              signedness=SignednessUnsigned)
+    TileValue(result_v, result_type, target_type, result_shape)
 end
 
 #-----------------------------------------------------------------------------
@@ -941,6 +1029,10 @@ end
 #-----------------------------------------------------------------------------
 
 function emit_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
+    emit_int_cmp!(ctx, args, predicate, SignednessSigned)
+end
+
+function emit_int_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate, signedness::Signedness)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -953,10 +1045,13 @@ function emit_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate)
     # Result type is a boolean (i1) scalar
     result_type = tile_type!(tt, I1(tt), Int[])
 
-    result_v = encode_CmpIOp!(cb, result_type, lhs.v, rhs.v;
-                              predicate=predicate, signedness=SignednessSigned)
+    lhs_v = lhs isa TileValue ? lhs.v : lhs
+    rhs_v = rhs isa TileValue ? rhs.v : rhs
 
-    TileValue(result_v, result_type, Bool)
+    result_v = encode_CmpIOp!(cb, result_type, lhs_v, rhs_v;
+                              predicate=predicate, signedness=signedness)
+
+    TileValue(result_v, result_type, Bool, Int[])
 end
 
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(>)), args, @nospecialize(_)) =

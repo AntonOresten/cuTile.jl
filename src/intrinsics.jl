@@ -166,6 +166,24 @@ Base.Broadcast.broadcastable(t::Tile) = t
 @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2} =
     tile_pow(a, b)
 
+# Tile-Scalar arithmetic (tile .+ scalar, scalar .+ tile, etc.)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(+), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_add(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(+), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_add(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(-), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_sub(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(-), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_sub(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(*), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_mul(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(*), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_mul(Tile(T(a)), b)
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(/), a::Tile{T,S}, b::Number) where {T,S} =
+    tile_div(a, Tile(T(b)))
+@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(/), a::Number, b::Tile{T,S}) where {T,S} =
+    tile_div(Tile(T(a)), b)
+
 # Tile-Scalar power (tile .^ scalar, scalar .^ tile)
 @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Tile{T,S}, b::Number) where {T <: AbstractFloat, S} =
     tile_pow(a, Tile(T(b)))
@@ -332,7 +350,7 @@ end
  Tile Construction
 =============================================================================#
 
-public full, astype
+public full, zeros, astype
 
 """
     full(shape::NTuple{N, Int}, value, dtype::Type{T}) -> Tile{T, shape}
@@ -348,6 +366,18 @@ zeros_tile = ct.full((32, 32), 0, Float32)  # 32x32 tile of zeros
     Base.donotdelete(value)  # shape and T are type parameters, can't be deleted
     Tile{T, shape}()
 end
+
+"""
+    zeros(shape::NTuple{N, Int}, dtype::Type{T}) -> Tile{T, shape}
+
+Create a tile filled with zeros. Equivalent to `full(shape, zero(T), T)`.
+
+# Example
+```julia
+zeros_tile = ct.zeros((32, 32), Float32)  # 32x32 tile of zeros
+```
+"""
+@inline zeros(shape::NTuple{N, Int}, ::Type{T}) where {N, T} = full(shape, zero(T), T)
 
 """
     convert(Tile{T2}, tile::Tile{T1, Shape}) -> Tile{T2, Shape}
@@ -535,7 +565,7 @@ Returns a tile with the specified dimension removed.
 
 # Arguments
 - `tile`: Input tile to reduce
-- `axis`: Axis to reduce along (0-indexed)
+- `axis`: Axis to reduce along (0-indexed). Must be a compile-time constant.
 
 # Example
 ```julia
@@ -543,7 +573,12 @@ Returns a tile with the specified dimension removed.
 sums = ct.reduce_sum(tile, 1)  # Returns (128,) tile
 ```
 """
-@noinline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+    # Forward to Val-based version for type stability
+    reduce_sum(tile, Val(axis))
+end
+
+@noinline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
     # Compute the reduced shape by removing the reduced dimension
     reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
     Base.donotdelete(tile)
@@ -557,9 +592,13 @@ Maximum reduction along the specified axis.
 
 # Arguments
 - `tile`: Input tile to reduce
-- `axis`: Axis to reduce along (0-indexed)
+- `axis`: Axis to reduce along (0-indexed). Must be a compile-time constant.
 """
-@noinline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
+    reduce_max(tile, Val(axis))
+end
+
+@noinline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
     reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
     Base.donotdelete(tile)
     Tile{T, reduced_shape}()

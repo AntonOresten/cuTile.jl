@@ -1211,6 +1211,23 @@ function encode_FToFOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
 end
 
 """
+    encode_IToFOp!(cb, result_type, source; signedness, rounding_mode) -> Value
+
+Integer to float conversion (e.g., i32 to fp32).
+Opcode: 59
+"""
+function encode_IToFOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                        signedness::Signedness=SignednessSigned,
+                        rounding_mode::RoundingMode=RoundingNearestEven)
+    encode_varint!(cb.buf, Opcode.IToFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_enum!(cb.buf, signedness)
+    encode_enum!(cb.buf, rounding_mode)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
     encode_BroadcastOp!(cb, result_type, source) -> Value
 
 Broadcast a scalar or smaller tile to a larger tile shape.

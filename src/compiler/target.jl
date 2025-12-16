@@ -274,8 +274,9 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
 
     # Tile{T, Shape} -> tile type with shape
     if T <: Tile
-        if length(T.parameters) < 2
-            error("Tile type must have both element type and shape, got: $T")
+        if T isa UnionAll || !isa(T, DataType) || length(T.parameters) < 2
+            error("Tile type must be fully specified with element type and shape, got: $T. " *
+                  "This indicates type instability in the kernel - ensure all tile operations have inferrable shapes.")
         end
         elem_type = T.parameters[1]
         shape_param = T.parameters[2]

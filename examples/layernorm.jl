@@ -1,320 +1,135 @@
-# LayerNorm forward pass example - Julia port of cuTile Python's LayerNorm.py sample
+# LayerNorm example - Julia port of cuTile Python's LayerNorm.py sample
 #
-# This example demonstrates the operations needed for LayerNorm:
-# - ct.reduce_sum() - Sum reduction along an axis
-# - ct.sqrt() - Square root
-# - Scalar-tile operations (tile + scalar, tile - scalar, tile / scalar, etc.)
-# - Division of tiles
+# SPDX-License-Identifier: Apache-2.0
 
 using CUDA
 import cuTile as ct
 
-# Simple row-wise affine transform kernel
-# Demonstrates 1D tile operations on 2D data
-# Each block processes one row: Y[m, :] = X[m, :] * W + B
-function row_affine_transform(X::ct.TileArray{Float32, 1}, W::ct.TileArray{Float32, 1},
-                              B::ct.TileArray{Float32, 1}, Y::ct.TileArray{Float32, 1},
-                              N::ct.Constant{Int})
-    bid = ct.bid(0)
+const ConstInt = ct.Constant{Int}
 
-    # Load entire vectors as 1D tiles
-    x = ct.load(X, bid, (N[],))
-    w = ct.load(W, bid, (N[],))
-    b = ct.load(B, bid, (N[],))
+#=============================================================================
+ LayerNorm Forward Kernel
 
-    # Apply affine transform: y = x * w + b
-    y = x * w + b
+ Forward pass: computes mean/var, normalizes input, and applies affine transform.
 
-    # Store result
-    ct.store(Y, bid, y)
+ Args:
+     X: Input tensor (M, N).
+     W: Weight tensor (N,).
+     B: Bias tensor (N,).
+     Y: Output tensor (M, N).
+     Mean: Output mean tensor (M,).
+     Rstd: Output reciprocal standard deviation tensor (M,).
+     eps: Epsilon for numerical stability.
+     TILE_N: Tile size along N dimension.
+=============================================================================#
+function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1},
+                        B::ct.TileArray{Float32, 1}, Y::ct.TileArray{Float32, 2},
+                        Mean::ct.TileArray{Float32, 1}, Rstd::ct.TileArray{Float32, 1},
+                        eps::ct.Constant{Float32}, TILE_N::ConstInt)
+    bid_m = ct.bid(0)
+    num_tiles = ct.num_tiles(X, 1, (1, TILE_N[]))
+    N = X.sizes[2]
 
-    return
-end
+    # Compute mean
+    mean = ct.full((1, TILE_N[]), 0.0f0, Float32)
+    j = Int32(0)
+    while j < num_tiles
+        tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
+        mean = mean .+ tx
+        j += Int32(1)
+    end
+    mean = ct.reduce_sum(mean, 1) / N
+    ct.store(Mean, bid_m, mean)
 
-# Test kernel for scalar-tile operations
-function test_scalar_tile_ops(A::ct.TileArray{Float32, 1}, B::ct.TileArray{Float32, 1},
-                               TILE::ct.Constant{Int})
-    bid = ct.bid(0)
-    tile = ct.load(A, bid, (TILE[],))
+    # Compute variance
+    var = ct.full((1, TILE_N[]), 0.0f0, Float32)
+    j = Int32(0)
+    while j < num_tiles
+        tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
+        mask = ct.broadcast_to((j * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .< N, (1, TILE_N[]))
+        centered_tx = ct.where(mask, tx .- mean, ct.full((1, TILE_N[]), 0.0f0, Float32))
+        var = var .+ (centered_tx .^ 2.0f0)
+        j += Int32(1)
+    end
+    var = ct.reduce_sum(var, 1) / N
+    rstd = 1.0f0 / sqrt(var .+ eps[])
+    ct.store(Rstd, bid_m, rstd)
 
-    # Test: tile + scalar
-    result1 = tile + 1.0f0
+    # Normalize and apply affine transformation
+    j = Int32(0)
+    while j < num_tiles
+        tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
+        tw = ct.load(W, j, (TILE_N[],))
+        tb = ct.load(B, j, (TILE_N[],))
+        ty = (tx .- mean) .* rstd
+        ty = ty .* tw .+ tb
+        ct.store(Y, (bid_m, j), ty)
+        j += Int32(1)
+    end
 
-    # Test: tile - scalar
-    result2 = result1 - 0.5f0
-
-    # Test: tile * scalar
-    result3 = result2 * 2.0f0
-
-    # Test: tile / scalar
-    result4 = result3 / 4.0f0
-
-    ct.store(B, bid, result4)
-    return
-end
-
-# Test kernel for scalar / tile (reciprocal)
-function test_reciprocal(A::ct.TileArray{Float32, 1}, B::ct.TileArray{Float32, 1},
-                         TILE::ct.Constant{Int})
-    bid = ct.bid(0)
-    tile = ct.load(A, bid, (TILE[],))
-
-    # Compute 1 / tile
-    result = 1.0f0 / tile
-
-    ct.store(B, bid, result)
-    return
-end
-
-# Test kernel for tile / integer
-function test_div_by_int(A::ct.TileArray{Float32, 1}, B::ct.TileArray{Float32, 1},
-                         TILE::ct.Constant{Int})
-    bid = ct.bid(0)
-    tile = ct.load(A, bid, (TILE[],))
-
-    # Divide by integer (common for computing mean)
-    result = tile / 128
-
-    ct.store(B, bid, result)
-    return
-end
-
-# Simpler kernel to test reduce_sum
-function test_reduce_sum(A::ct.TileArray{Float32, 2}, B::ct.TileArray{Float32, 1},
-                         TILE_M::ct.Constant{Int}, TILE_N::ct.Constant{Int})
-    bid = ct.bid(0)
-    tile = ct.load(A, (bid, 0), (TILE_M[], TILE_N[]))
-
-    # Sum along axis 1 (columns) - reduces (M, N) -> (M,)
-    sums = ct.reduce_sum(tile, 1)
-
-    ct.store(B, bid, sums)
-    return
-end
-
-function test_sqrt(A::ct.TileArray{Float32, 1}, B::ct.TileArray{Float32, 1},
-                   TILE::ct.Constant{Int})
-    bid = ct.bid(0)
-    tile = ct.load(A, bid, (TILE[],))
-
-    result = sqrt(tile)
-
-    ct.store(B, bid, result)
-    return
-end
-
-function test_div(A::ct.TileArray{Float32, 1}, B::ct.TileArray{Float32, 1},
-                  C::ct.TileArray{Float32, 1}, TILE::ct.Constant{Int})
-    bid = ct.bid(0)
-    tile_a = ct.load(A, bid, (TILE[],))
-    tile_b = ct.load(B, bid, (TILE[],))
-
-    result = tile_a / tile_b
-
-    ct.store(C, bid, result)
     return
 end
 
 #=============================================================================
- Test Functions
+ Test / Validation
 =============================================================================#
 
-function test_reduce_sum_example()
-    println("--- Testing reduce_sum ---")
-    M, N = 4, 128
-    TILE_M, TILE_N = 4, 128
+function main()
+    println("--- Running cuTile LayerNorm Forward Sample ---")
 
-    A = CUDA.rand(Float32, M, N)
-    B = CUDA.zeros(Float32, M)  # 1D output
+    M, N = 1024, 2048
+    TILE_N = 1024
+    eps = 1f-5
 
-    ct.launch(test_reduce_sum, 1, A, B, ct.Constant(TILE_M), ct.Constant(TILE_N))
+    println("Input shape: ($M, $N), dtype: Float32, eps: $eps")
 
-    # Verify: each element of B should be the sum of that row of A
-    A_cpu = Array(A)
-    B_cpu = Array(B)
+    # Input data
+    X = -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, M, N)
+    W = CUDA.randn(Float32, N)
+    B = CUDA.randn(Float32, N)
 
-    for i in 1:M
-        expected = sum(A_cpu[i, :])
-        actual = B_cpu[i]
-        if !isapprox(expected, actual; rtol=1e-3)
-            println("  Row $i: expected=$expected, actual=$actual - FAILED")
-            return false
-        end
-    end
-    println("  All rows match expected sums")
-    return true
-end
+    # Output buffers
+    Y = CUDA.zeros(Float32, M, N)
+    Mean = CUDA.zeros(Float32, M)
+    Rstd = CUDA.zeros(Float32, M)
 
-function test_sqrt_example()
-    println("--- Testing sqrt ---")
-    N = 1024
-    TILE = 1024
+    println("\n--- Executing cuTile LayerNorm Forward ---")
+    ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
+              ct.Constant(eps), ct.Constant(TILE_N))
 
-    A = CUDA.rand(Float32, N) .+ 0.1f0  # Ensure positive
-    B = CUDA.zeros(Float32, N)
+    println("\n--- Running correctness check against reference ---")
 
-    ct.launch(test_sqrt, 1, A, B, ct.Constant(TILE))
-
-    A_cpu = Array(A)
-    B_cpu = Array(B)
-
-    expected = sqrt.(A_cpu)
-    if isapprox(expected, B_cpu; rtol=1e-5)
-        println("  sqrt results match")
-        return true
-    else
-        println("  sqrt results don't match - FAILED")
-        return false
-    end
-end
-
-function test_div_example()
-    println("--- Testing tile division ---")
-    N = 1024
-    TILE = 1024
-
-    A = CUDA.rand(Float32, N)
-    B = CUDA.rand(Float32, N) .+ 0.1f0  # Ensure non-zero
-    C = CUDA.zeros(Float32, N)
-
-    ct.launch(test_div, 1, A, B, C, ct.Constant(TILE))
-
-    A_cpu = Array(A)
-    B_cpu = Array(B)
-    C_cpu = Array(C)
-
-    expected = A_cpu ./ B_cpu
-    if isapprox(expected, C_cpu; rtol=1e-5)
-        println("  division results match")
-        return true
-    else
-        println("  division results don't match - FAILED")
-        return false
-    end
-end
-
-function test_scalar_tile_ops_example()
-    println("--- Testing scalar-tile operations ---")
-    N = 1024
-    TILE = 1024
-
-    A = CUDA.rand(Float32, N)
-    B = CUDA.zeros(Float32, N)
-
-    ct.launch(test_scalar_tile_ops, 1, A, B, ct.Constant(TILE))
-
-    A_cpu = Array(A)
-    B_cpu = Array(B)
-
-    # Expected: ((A + 1.0) - 0.5) * 2.0) / 4.0 = (A + 0.5) * 0.5 = A/2 + 0.25
-    expected = (((A_cpu .+ 1.0f0) .- 0.5f0) .* 2.0f0) ./ 4.0f0
-    if isapprox(expected, B_cpu; rtol=1e-5)
-        println("  scalar-tile operations match")
-        return true
-    else
-        println("  scalar-tile operations don't match - FAILED")
-        max_err = maximum(abs.(expected .- B_cpu))
-        println("  Max error: $max_err")
-        return false
-    end
-end
-
-function test_reciprocal_example()
-    println("--- Testing reciprocal (1/tile) ---")
-    N = 1024
-    TILE = 1024
-
-    A = CUDA.rand(Float32, N) .+ 0.1f0  # Ensure non-zero
-    B = CUDA.zeros(Float32, N)
-
-    ct.launch(test_reciprocal, 1, A, B, ct.Constant(TILE))
-
-    A_cpu = Array(A)
-    B_cpu = Array(B)
-
-    expected = 1.0f0 ./ A_cpu
-    if isapprox(expected, B_cpu; rtol=1e-5)
-        println("  reciprocal results match")
-        return true
-    else
-        println("  reciprocal results don't match - FAILED")
-        return false
-    end
-end
-
-function test_div_by_int_example()
-    println("--- Testing tile / integer ---")
-    N = 1024
-    TILE = 1024
-
-    A = CUDA.rand(Float32, N)
-    B = CUDA.zeros(Float32, N)
-
-    ct.launch(test_div_by_int, 1, A, B, ct.Constant(TILE))
-
-    A_cpu = Array(A)
-    B_cpu = Array(B)
-
-    expected = A_cpu ./ 128.0f0
-    if isapprox(expected, B_cpu; rtol=1e-5)
-        println("  tile/integer results match")
-        return true
-    else
-        println("  tile/integer results don't match - FAILED")
-        return false
-    end
-end
-
-function test_affine_transform_example()
-    println("--- Testing affine transform (y = x * w + b) ---")
-    N = 1024
-    TILE = 1024
-
-    X = CUDA.rand(Float32, N)
-    W = CUDA.rand(Float32, N)
-    B = CUDA.rand(Float32, N)
-    Y = CUDA.zeros(Float32, N)
-
-    ct.launch(row_affine_transform, 1, X, W, B, Y, ct.Constant(TILE))
-
+    # Compute expected values on CPU
     X_cpu = Array(X)
     W_cpu = Array(W)
     B_cpu = Array(B)
+
+    expected_mean = vec(sum(X_cpu, dims=2) ./ N)
+    expected_var = vec(sum((X_cpu .- expected_mean) .^ 2, dims=2) ./ N)
+    expected_rstd = 1.0f0 ./ sqrt.(expected_var .+ eps)
+    normalized = (X_cpu .- expected_mean) .* expected_rstd
+    expected_Y = normalized .* W_cpu' .+ B_cpu'
+
+    # Verify results
+    Mean_cpu = Array(Mean)
+    Rstd_cpu = Array(Rstd)
     Y_cpu = Array(Y)
 
-    # Verify output: y = x * w + b
-    expected = X_cpu .* W_cpu .+ B_cpu
-    if isapprox(expected, Y_cpu; rtol=1e-5)
-        println("  affine transform results match")
-        return true
+    atol, rtol = 1f-2, 1f-2
+    mean_ok = isapprox(expected_mean, Mean_cpu; rtol, atol)
+    rstd_ok = isapprox(expected_rstd, Rstd_cpu; rtol, atol)
+    y_ok = isapprox(expected_Y, Y_cpu; rtol, atol)
+
+    if mean_ok && rstd_ok && y_ok
+        println("Correctness check passed")
     else
-        println("  affine transform results don't match - FAILED")
-        max_err = maximum(abs.(expected .- Y_cpu))
-        println("  Max error: $max_err")
-        return false
+        println("Correctness check FAILED:")
+        mean_ok || println("  Mean max error: $(maximum(abs.(expected_mean .- Mean_cpu)))")
+        rstd_ok || println("  Rstd max error: $(maximum(abs.(expected_rstd .- Rstd_cpu)))")
+        y_ok || println("  Y max error: $(maximum(abs.(expected_Y .- Y_cpu)))")
     end
-end
 
-function main()
-    println("=== cuTile LayerNorm Operations Tests ===\n")
-
-    results = Bool[]
-
-    push!(results, test_reduce_sum_example())
-    push!(results, test_sqrt_example())
-    push!(results, test_div_example())
-    push!(results, test_scalar_tile_ops_example())
-    push!(results, test_reciprocal_example())
-    push!(results, test_div_by_int_example())
-    push!(results, test_affine_transform_example())
-
-    println()
-    if all(results)
-        println("All tests passed!")
-    else
-        n_failed = count(!identity, results)
-        println("$n_failed test(s) failed!")
-    end
+    println("\n--- cuTile LayerNorm Sample complete ---")
 end
 
 isinteractive() || main()
