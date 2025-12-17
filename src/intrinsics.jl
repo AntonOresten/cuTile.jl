@@ -267,38 +267,65 @@ end
 # The compiler extracts ptr/sizes/strides from the destructured TileArray
 
 """
-    load(arr::TileArray, index, shape) -> Tile
+    load(arr::TileArray, index, shape; padding_mode=PaddingMode.Undetermined) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 The TileArray's sizes and strides are used to construct the TensorView.
+
+# Arguments
+- `arr`: The TileArray to load from
+- `index`: The tile index (0-indexed)
+- `shape`: The tile shape (must be compile-time constants)
+- `padding_mode`: Behavior for out-of-bounds loads (default: Undetermined)
+
+# Padding Modes
+- `PaddingMode.Undetermined`: Unspecified behavior for OOB access
+- `PaddingMode.Zero`: Return zero for OOB elements
+- `PaddingMode.NegZero`: Return negative zero for OOB elements
+- `PaddingMode.Nan`: Return NaN for OOB elements
+- `PaddingMode.PosInf`: Return positive infinity for OOB elements
+- `PaddingMode.NegInf`: Return negative infinity for OOB elements
+
+# Example
+```julia
+tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+```
 """
 # Internal function with shape as type parameter for proper type inference
-@noinline function _load(arr::TileArray{T, N}, index, ::Val{shape}) where {T, N, shape}
-    Base.donotdelete(arr, index)
+# padding_mode is passed as a positional arg so codegen can extract it
+@noinline function _load(arr::TileArray{T, N}, index, ::Val{shape}, padding_mode::Int) where {T, N, shape}
+    Base.donotdelete(arr, index, padding_mode)
     Tile{T, shape}()
 end
 # Public API - inline wrapper that captures shape as type parameter
-@inline load(arr::TileArray{T, N}, index, shape::NTuple{M, Int}) where {T, N, M} = _load(arr, index, Val(shape))
+@inline function load(arr::TileArray{T, N}, index, shape::NTuple{M, Int};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
+    _load(arr, index, Val(shape), padding_mode)
+end
 
 # Load with Constant shape tuple (1D) - extracts value from Constant type parameter
-@inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V}}) where {T, N, V}
-    _load(arr, index, Val((V,)))
+@inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V}};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, V}
+    _load(arr, index, Val((V,)), padding_mode)
 end
 
 # Load with Constant shape tuple (2D)
-@inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V1}, Constant{Int, V2}}) where {T, N, V1, V2}
-    _load(arr, index, Val((V1, V2)))
+@inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V1}, Constant{Int, V2}};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, V1, V2}
+    _load(arr, index, Val((V1, V2)), padding_mode)
 end
 
 # Load with Constant shape tuple (3D)
-@inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V1}, Constant{Int, V2}, Constant{Int, V3}}) where {T, N, V1, V2, V3}
-    _load(arr, index, Val((V1, V2, V3)))
+@inline function load(arr::TileArray{T, N}, index, shape::Tuple{Constant{Int, V1}, Constant{Int, V2}, Constant{Int, V3}};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, V1, V2, V3}
+    _load(arr, index, Val((V1, V2, V3)), padding_mode)
 end
 
-# Keyword argument version for ct.load(arr; index=..., shape=...)
-@inline function load(arr::TileArray{T, N}; index, shape) where {T, N}
+# Keyword argument version for ct.load(arr; index=..., shape=..., padding_mode=...)
+@inline function load(arr::TileArray{T, N}; index, shape,
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
     shape_val = _extract_shape(shape)
-    _load(arr, index, Val(shape_val))
+    _load(arr, index, Val(shape_val), padding_mode)
 end
 
 # Helper to extract compile-time shape from various tuple types
@@ -733,6 +760,28 @@ end
     tile_ne(a, Tile(T(b)))
 @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(!=), a::Number, b::Tile{T,S}) where {T,S} =
     tile_ne(Tile(T(a)), b)
+
+#=============================================================================
+ Padding Mode (for load operations)
+=============================================================================#
+
+"""
+Padding mode for load operations.
+Use these constants with ct.load to specify out-of-bounds behavior.
+
+# Example
+```julia
+tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+```
+"""
+module PaddingMode
+    const Undetermined = 0
+    const Zero = 1
+    const NegZero = 2
+    const Nan = 3
+    const PosInf = 4
+    const NegInf = 5
+end
 
 #=============================================================================
  Memory Ordering (for atomic operations)

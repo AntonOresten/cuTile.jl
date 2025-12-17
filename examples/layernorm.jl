@@ -34,7 +34,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     mean = ct.full((1, TILE_N[]), 0.0f0, Float32)
     j = Int32(0)
     while j < num_tiles
-        tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
+        tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
         mean = mean .+ tx
         j += Int32(1)
     end
@@ -45,7 +45,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     var = ct.full((1, TILE_N[]), 0.0f0, Float32)
     j = Int32(0)
     while j < num_tiles
-        tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
+        tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
         mask = ct.broadcast_to((j * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .< N, (1, TILE_N[]))
         centered_tx = ct.where(mask, tx .- mean, ct.full((1, TILE_N[]), 0.0f0, Float32))
         var = var .+ (centered_tx .^ 2.0f0)
@@ -58,9 +58,9 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     # Normalize and apply affine transformation
     j = Int32(0)
     while j < num_tiles
-        tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
-        tw = ct.load(W, j, (TILE_N[],))
-        tb = ct.load(B, j, (TILE_N[],))
+        tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+        tw = ct.load(W, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+        tb = ct.load(B, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
         ty = (tx .- mean) .* rstd
         ty = ty .* tw .+ tb
         ct.store(Y, (bid_m, j), ty)
@@ -86,9 +86,9 @@ Helper function for backward pass - loads data and computes common terms.
 This gets inlined by Julia's compiler.
 """
 @inline function bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
-    tx = ct.load(X, (bid_m, j), (1, TILE_N))
-    tw = ct.load(W, j, (TILE_N,))
-    tdy = ct.load(DY, (bid_m, j), (1, TILE_N))
+    tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
+    tw = ct.load(W, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
+    tdy = ct.load(DY, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
     xhat = (tx .- mean) .* rstd
     wdy = tw .* tdy
 
@@ -127,8 +127,8 @@ function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float3
     N = X.sizes[2]
 
     # Load mean and rstd for this row
-    mean = ct.load(Mean, bid_m, (1,))
-    rstd = ct.load(Rstd, bid_m, (1,))
+    mean = ct.load(Mean, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
+    rstd = ct.load(Rstd, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
 
     # First pass: compute c1 and c2 reduction terms
     c1 = ct.full((1, TILE_N[]), 0.0f0, Float32)
@@ -186,8 +186,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
     group_bid_m = bid_m % Int32(GROUP_SIZE_M[])
 
     # Load mean and rstd for this row
-    mean = ct.load(Mean, bid_m, (1,))
-    rstd = ct.load(Rstd, bid_m, (1,))
+    mean = ct.load(Mean, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
+    rstd = ct.load(Rstd, bid_m, (1,); padding_mode=ct.PaddingMode.Zero)
 
     # First pass: compute c1 and c2 reduction terms
     c1 = ct.full((1, TILE_N[]), 0.0f0, Float32)
@@ -219,8 +219,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         end
 
         # Critical section: accumulate partial gradients
-        partial_dw = partial_dw .+ ct.load(DW, (group_bid_m, j), (1, TILE_N[]))
-        partial_db = partial_db .+ ct.load(DB, (group_bid_m, j), (1, TILE_N[]))
+        partial_dw = partial_dw .+ ct.load(DW, (group_bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+        partial_db = partial_db .+ ct.load(DB, (group_bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
         ct.store(DW, (group_bid_m, j), partial_dw)
         ct.store(DB, (group_bid_m, j), partial_db)
 
@@ -257,8 +257,8 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
     db = ct.zeros((TILE_M[], TILE_N[]), Float32)
     i = Int32(0)
     while i < num_tiles
-        dw = dw .+ ct.load(DW, (i, bid_n), (TILE_M[], TILE_N[]))
-        db = db .+ ct.load(DB, (i, bid_n), (TILE_M[], TILE_N[]))
+        dw = dw .+ ct.load(DW, (i, bid_n), (TILE_M[], TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+        db = db .+ ct.load(DB, (i, bid_n), (TILE_M[], TILE_N[]); padding_mode=ct.PaddingMode.Zero)
         i += Int32(1)
     end
     sum_dw = ct.reduce_sum(dw, 0)

@@ -1246,6 +1246,26 @@ end
  Load/Store Operations
 =============================================================================#
 
+"""
+Convert integer padding mode value to bytecode PaddingValue enum.
+Maps from cuTile.PaddingMode constants to bytecode PaddingValue.
+"""
+function padding_mode_to_padding_value(mode::Int)
+    if mode == 0  # Undetermined
+        PaddingMissing
+    elseif mode == 1  # Zero
+        PaddingZero
+    elseif mode == 2  # NegZero
+        PaddingNegZero
+    elseif mode == 3  # Nan
+        PaddingNan
+    elseif mode == 4  # PosInf
+        PaddingPosInf
+    else  # 5 = NegInf
+        PaddingNegInf
+    end
+end
+
 function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
     cb = ctx.cb
     tt = ctx.tt
@@ -1283,6 +1303,16 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
 
     ndim = length(tile_shape)
 
+    # Parse padding_mode from args[4] (default: PaddingMode.Undetermined = 0)
+    padding_mode_int = 0  # Default: Undetermined
+    if length(args) >= 4
+        pm = extract_constant(ctx, args[4])
+        if pm isa Integer
+            padding_mode_int = Int(pm)
+        end
+    end
+    padding_value = padding_mode_to_padding_value(padding_mode_int)
+
     # Parse index argument
     index_vals = extract_index_values(ctx, args, 2, ndim)
 
@@ -1299,7 +1329,7 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
 
     # PartitionView type
     dim_map = collect(0:ndim-1)
-    pv_type = partition_view_type!(tt, tile_shape, tv_type, dim_map, PaddingZero)
+    pv_type = partition_view_type!(tt, tile_shape, tv_type, dim_map, padding_value)
 
     scalar_i32 = tile_type!(tt, I32(tt), Int[])
 
