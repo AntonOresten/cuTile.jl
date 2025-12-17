@@ -770,12 +770,13 @@ end
 public atomic_cas, atomic_xchg, atomic_add
 
 """
-    atomic_cas(array::TileArray, index, expected, desired; memory_order, memory_scope) -> Tile
+    atomic_cas(array::TileArray, index, expected, desired; memory_order, memory_scope) -> T
 
 Atomic compare-and-swap. Atomically compares the value at `index` with `expected`,
-and if equal, replaces it with `desired`. Returns the original value.
+and if equal, replaces it with `desired`. Returns the original value as a scalar.
 
-Used for implementing locks and lock-free data structures.
+Used for implementing locks and lock-free data structures. Returns a scalar (not a Tile)
+so that comparisons work naturally in control flow conditions like spinloops.
 
 # Example
 ```julia
@@ -789,11 +790,13 @@ end
                               memory_order::Int=MemoryOrder.AcqRel,
                               memory_scope::Int=MemScope.Device) where {T, N}
     Base.donotdelete(array, index, expected, desired)
-    Tile{T, ()}()
+    # Return scalar (not Tile) so comparisons work in control flow (e.g., spinloops)
+    # Use inferencebarrier to prevent Julia from constant-folding the return value
+    Base.inferencebarrier(zero(T))::T
 end
 
 """
-    atomic_xchg(array::TileArray, index, val; memory_order, memory_scope) -> Tile
+    atomic_xchg(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic exchange. Atomically replaces the value at `index` with `val` and returns
 the original value.
@@ -810,11 +813,11 @@ ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
                                memory_order::Int=MemoryOrder.AcqRel,
                                memory_scope::Int=MemScope.Device) where {T, N}
     Base.donotdelete(array, index, val)
-    Tile{T, ()}()
+    Base.inferencebarrier(zero(T))::T
 end
 
 """
-    atomic_add(array::TileArray, index, val; memory_order, memory_scope) -> Tile
+    atomic_add(array::TileArray, index, val; memory_order, memory_scope) -> T
 
 Atomic addition. Atomically adds `val` to the value at `index` and returns
 the original value.
@@ -828,5 +831,5 @@ old_val = ct.atomic_add(counters, idx, Int32(1))
                               memory_order::Int=MemoryOrder.AcqRel,
                               memory_scope::Int=MemScope.Device) where {T, N}
     Base.donotdelete(array, index, val)
-    Tile{T, ()}()
+    Base.inferencebarrier(zero(T))::T
 end

@@ -280,6 +280,14 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
         end
 
         emit_block!(ctx, op.body)
+
+        # In Tile IR, if the loop body ends with an IfOp (even one with continue/break
+        # in all branches), the if is NOT a terminator. We need an explicit terminator
+        # after the if. Add an unreachable ContinueOp as fallback terminator.
+        # This is only reached if the if doesn't cover all paths (which it should).
+        if op.body.terminator === nothing
+            encode_ContinueOp!(ctx.cb, block_args)
+        end
     end
     results = encode_LoopOp!(body_builder, cb, result_types, init_values)
 
@@ -1078,6 +1086,9 @@ emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(>=)), args, @nospecialize(_
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(<=)), args, @nospecialize(_)) =
     emit_cmp!(ctx, args, CmpLessThanOrEqual)
 
+emit_intrinsic!(ctx::CodegenContext, ::typeof(===), args, @nospecialize(_)) =
+    emit_cmp!(ctx, args, CmpEqual)
+
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(==)), args, @nospecialize(_)) =
     emit_cmp!(ctx, args, CmpEqual)
 
@@ -1505,7 +1516,8 @@ function emit_atomic_cas!(ctx::CodegenContext, args::AbstractVector, @nospeciali
                                          memory_ordering=mem_ordering,
                                          memory_scope=mem_scope)
 
-    TileValue(old_val, result_tile_type, Tile{elem_type, ()}, Int[])
+    # Return scalar type (not Tile) to match the intrinsic signature
+    TileValue(old_val, result_tile_type, elem_type, Int[])
 end
 
 function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type), mode::AtomicRMWMode)
@@ -1579,7 +1591,8 @@ function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospeciali
                                          memory_ordering=mem_ordering,
                                          memory_scope=mem_scope)
 
-    TileValue(old_val, result_tile_type, Tile{elem_type, ()}, Int[])
+    # Return scalar type (not Tile) to match the intrinsic signature
+    TileValue(old_val, result_tile_type, elem_type, Int[])
 end
 
 #=============================================================================

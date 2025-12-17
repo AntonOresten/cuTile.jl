@@ -1409,17 +1409,14 @@ function structurize_with_loops(code::CodeInfo, blocks::Vector{BlockInfo}, loops
     entry = Block(1)
     block_id = Ref(2)
 
-    # Track which blocks have been processed
-    processed_blocks = Set{Int}()
-    for loop in sorted_loops
-        union!(processed_blocks, loop.blocks)
-    end
-
     # Find all blocks that belong to any loop
     all_loop_blocks = Set{Int}()
     for loop in sorted_loops
         union!(all_loop_blocks, loop.blocks)
     end
+
+    # Track which exit blocks have been processed (to avoid duplication)
+    processed_exit_blocks = Set{Int}()
 
     # Process blocks and loops in order
     current_block_idx = 1
@@ -1440,8 +1437,10 @@ function structurize_with_loops(code::CodeInfo, blocks::Vector{BlockInfo}, loops
         max_loop_block = maximum(loop.blocks)
 
         # Process exit blocks of this loop (statements between loop exit and next loop/end)
+        # Track which blocks we've processed to avoid duplication
         for exit_bi in sort(collect(loop.exit_blocks))
-            if exit_bi ∉ all_loop_blocks
+            if exit_bi ∉ all_loop_blocks && exit_bi ∉ processed_exit_blocks
+                push!(processed_exit_blocks, exit_bi)
                 block = blocks[exit_bi]
                 for si in block.range
                     stmt = stmts[si]
@@ -1463,7 +1462,7 @@ function structurize_with_loops(code::CodeInfo, blocks::Vector{BlockInfo}, loops
 
     # Process any remaining blocks after all loops
     while current_block_idx <= length(blocks)
-        if current_block_idx ∉ all_loop_blocks
+        if current_block_idx ∉ all_loop_blocks && current_block_idx ∉ processed_exit_blocks
             block = blocks[current_block_idx]
             for si in block.range
                 stmt = stmts[si]

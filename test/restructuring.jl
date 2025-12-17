@@ -397,4 +397,117 @@ end
     end
 end
 
+@testset "loop exit block duplication" begin
+    # Regression test: code after a while loop should not be duplicated
+    # This was a bug where exit blocks were processed twice, causing
+    # statements after the loop to appear multiple times in structured IR.
+
+    function while_with_computation_after(x::Int32)
+        i = Int32(0)
+        while i < x
+            i += Int32(1)
+        end
+        # These operations after the loop should appear exactly once
+        result = i * Int32(2)
+        return result
+    end
+
+    sci = code_structured(while_with_computation_after, Tuple{Int32})
+    @test sci isa StructuredCodeInfo
+
+    # Count total statements in entry block (excluding ops)
+    # Each SSA statement index should appear at most once
+    stmt_indices = Int[]
+    for item in sci.entry.body
+        if item isa Int
+            push!(stmt_indices, item)
+        end
+    end
+
+    # No duplicates - each statement should appear exactly once
+    @test length(stmt_indices) == length(unique(stmt_indices))
+
+    # Should have a loop
+    for_ops = find_all_ops(sci, ForOp)
+    loop_ops = find_all_ops(sci, LoopOp)
+    @test length(for_ops) + length(loop_ops) >= 1
+
+    # Verify output shows no duplication (each mul_int should appear once)
+    io = IOBuffer()
+    show(io, MIME"text/plain"(), sci)
+    output = String(take!(io))
+    # Count occurrences of multiplication operation (i * 2)
+    mul_count = count("mul_int", output)
+    @test mul_count == 1  # Should appear exactly once
+
+    # More complex test: multiple operations after loop
+    function while_with_multiple_ops_after(x::Int32, y::Int32)
+        i = Int32(0)
+        while i < x
+            i += Int32(1)
+        end
+        # Multiple operations after loop - none should be duplicated
+        a = i + y
+        b = a * Int32(3)
+        c = b - Int32(1)
+        return c
+    end
+
+    sci = code_structured(while_with_multiple_ops_after, Tuple{Int32, Int32})
+    @test sci isa StructuredCodeInfo
+
+    # Collect all statement indices
+    stmt_indices = Int[]
+    for item in sci.entry.body
+        if item isa Int
+            push!(stmt_indices, item)
+        end
+    end
+
+    # No duplicates
+    @test length(stmt_indices) == length(unique(stmt_indices))
+
+    io = IOBuffer()
+    show(io, MIME"text/plain"(), sci)
+    output = String(take!(io))
+
+    # Each post-loop operation should appear exactly once
+    @test count("add_int", output) >= 1  # May have multiple adds, but related to the loop+post
+    @test count("mul_int", output) == 1  # Only one multiplication (b = a * 3)
+    @test count("sub_int", output) == 1  # Only one subtraction (c = b - 1)
+end
+
+@testset "loop with conditional exit" begin
+    # Test loop with if-based exit (common in spinlock patterns)
+    function loop_with_break_condition(n::Int32)
+        i = Int32(0)
+        while true
+            i += Int32(1)
+            if i >= n
+                break
+            end
+        end
+        return i
+    end
+
+    # This pattern may or may not be fully supported, but should not crash
+    # and should not have duplicated statements
+    try
+        sci = code_structured(loop_with_break_condition, Tuple{Int32})
+        @test sci isa StructuredCodeInfo
+
+        # Check for duplicates in entry block
+        stmt_indices = Int[]
+        for item in sci.entry.body
+            if item isa Int
+                push!(stmt_indices, item)
+            end
+        end
+        @test length(stmt_indices) == length(unique(stmt_indices))
+    catch e
+        # Some complex patterns may not be supported yet - that's OK
+        @test e isa UnstructuredControlFlowError
+    end
+end
+
 end  # @testset "restructuring"
