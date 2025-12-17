@@ -802,7 +802,8 @@ end
     # Test atomic_add with Int32: each thread block adds 1 to a counter
     function atomic_add_kernel(counters::ct.TileArray{Int32,1})
         bid = ct.bid(0)
-        ct.atomic_add(counters, Int32(0), Int32(1))
+        ct.atomic_add(counters, Int32(0), Int32(1);
+                     memory_order=ct.MemoryOrder.AcqRel)
         return
     end
 
@@ -819,7 +820,8 @@ end
     # Test atomic_add with Float32
     function atomic_add_f32_kernel(out::ct.TileArray{Float32,1}, val::ct.Constant{Float32})
         bid = ct.bid(0)
-        ct.atomic_add(out, Int32(0), val[])
+        ct.atomic_add(out, Int32(0), val[];
+                     memory_order=ct.MemoryOrder.AcqRel)
         return
     end
 
@@ -837,7 +839,8 @@ end
     # Test atomic_xchg: each thread exchanges, last one wins
     function atomic_xchg_kernel(arr::ct.TileArray{Int32,1})
         bid = ct.bid(0)
-        ct.atomic_xchg(arr, Int32(0), bid + Int32(1))
+        ct.atomic_xchg(arr, Int32(0), bid + Int32(1);
+                      memory_order=ct.MemoryOrder.AcqRel)
         return
     end
 
@@ -856,7 +859,8 @@ end
     function atomic_cas_kernel(locks::ct.TileArray{Int32,1}, success_count::ct.TileArray{Int32,1})
         bid = ct.bid(0)
         # Try to acquire lock (0 -> 1)
-        old = ct.atomic_cas(locks, Int32(0), Int32(0), Int32(1))
+        old = ct.atomic_cas(locks, Int32(0), Int32(0), Int32(1);
+                           memory_order=ct.MemoryOrder.AcqRel)
         # If we got old=0, we succeeded
         # Use atomic_add to count successes (returns a tile, so comparison works)
         # Actually simpler: just increment success_count if old was 0
@@ -881,7 +885,8 @@ end
         val = ct.full((1,), 1.0f0, Float32)
 
         # Spin until we acquire the lock (CAS returns old value, 0 means we got it)
-        while ct.atomic_cas(lock, Int32(0), Int32(0), Int32(1)) == Int32(1)
+        while ct.atomic_cas(lock, Int32(0), Int32(0), Int32(1);
+                           memory_order=ct.MemoryOrder.Acquire) == Int32(1)
         end
 
         # Critical section: load, increment, store
@@ -891,7 +896,8 @@ end
         ct.store(result, Int32(0), updated)
 
         # Release the lock
-        ct.atomic_xchg(lock, Int32(0), Int32(0))
+        ct.atomic_xchg(lock, Int32(0), Int32(0);
+                      memory_order=ct.MemoryOrder.Release)
         return
     end
 
@@ -904,6 +910,56 @@ end
     # Each block should have added 1.0 to the result
     final_result = Array(result)[1]
     @test final_result == Float32(n_blocks)
+end
+
+@testset "explicit memory ordering kwargs" begin
+    # Test that explicit memory_order kwargs work correctly
+    function explicit_ordering_kernel(result::ct.TileArray{Float32,1}, lock::ct.TileArray{Int32,1})
+        bid = ct.bid(0)
+        val = ct.full((1,), 1.0f0, Float32)
+
+        # Spin until we acquire the lock - use explicit Acquire ordering
+        while ct.atomic_cas(lock, Int32(0), Int32(0), Int32(1);
+                           memory_order=ct.MemoryOrder.Acquire) == Int32(1)
+        end
+
+        # Critical section
+        current = ct.load(result, Int32(0), (1,))
+        updated = current .+ val
+        ct.store(result, Int32(0), updated)
+
+        # Release the lock - use explicit Release ordering
+        ct.atomic_xchg(lock, Int32(0), Int32(0); memory_order=ct.MemoryOrder.Release)
+        return
+    end
+
+    n_blocks = 50
+    result = CUDA.zeros(Float32, 1)
+    lock = CUDA.zeros(Int32, 1)
+
+    ct.launch(explicit_ordering_kernel, n_blocks, result, lock)
+
+    final_result = Array(result)[1]
+    @test final_result == Float32(n_blocks)
+end
+
+@testset "atomic_add with explicit kwargs" begin
+    # Test atomic_add with explicit memory ordering
+    function explicit_add_kernel(counters::ct.TileArray{Int32,1})
+        bid = ct.bid(0)
+        ct.atomic_add(counters, Int32(0), Int32(1);
+                     memory_order=ct.MemoryOrder.Relaxed,
+                     memory_scope=ct.MemScope.Device)
+        return
+    end
+
+    n_blocks = 100
+    counters = CUDA.zeros(Int32, 1)
+
+    ct.launch(explicit_add_kernel, n_blocks, counters)
+
+    result = Array(counters)[1]
+    @test result == n_blocks
 end
 
 end

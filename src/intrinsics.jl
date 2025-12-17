@@ -318,9 +318,8 @@ Store a tile to a TileArray at the given index.
 end
 
 # Keyword argument version for ct.store(arr; index=..., tile=...)
-@noinline function store(arr::TileArray{T, N}; index, tile::Tile{T}) where {T, N}
-    Base.donotdelete(arr, index, tile)
-    nothing
+@inline function store(arr::TileArray{T, N}; index, tile::Tile{T}) where {T, N}
+    store(arr, index, tile)
 end
 
 #=============================================================================
@@ -769,6 +768,15 @@ end
 
 public atomic_cas, atomic_xchg, atomic_add
 
+# Inner stub - @noinline, positional-only, appears in IR for codegen
+@noinline function _atomic_cas(array::TileArray{T, N}, index, expected, desired,
+                               memory_order::Int, memory_scope::Int) where {T, N}
+    Base.donotdelete(array, index, expected, desired)
+    # Return scalar (not Tile) so comparisons work in control flow (e.g., spinloops)
+    # Use inferencebarrier to prevent Julia from constant-folding the return value
+    Base.inferencebarrier(zero(T))::T
+end
+
 """
     atomic_cas(array::TileArray, index, expected, desired; memory_order, memory_scope) -> T
 
@@ -786,12 +794,16 @@ while ct.atomic_cas(locks, idx, Int32(0), Int32(1); memory_order=ct.MemoryOrder.
 end
 ```
 """
-@noinline function atomic_cas(array::TileArray{T, N}, index, expected, desired;
-                              memory_order::Int=MemoryOrder.AcqRel,
-                              memory_scope::Int=MemScope.Device) where {T, N}
-    Base.donotdelete(array, index, expected, desired)
-    # Return scalar (not Tile) so comparisons work in control flow (e.g., spinloops)
-    # Use inferencebarrier to prevent Julia from constant-folding the return value
+@inline function atomic_cas(array::TileArray{T, N}, index, expected, desired;
+                            memory_order::Int=MemoryOrder.AcqRel,
+                            memory_scope::Int=MemScope.Device) where {T, N}
+    _atomic_cas(array, index, expected, desired, memory_order, memory_scope)::T
+end
+
+# Inner stub - @noinline, positional-only, appears in IR for codegen
+@noinline function _atomic_xchg(array::TileArray{T, N}, index, val,
+                                memory_order::Int, memory_scope::Int) where {T, N}
+    Base.donotdelete(array, index, val)
     Base.inferencebarrier(zero(T))::T
 end
 
@@ -809,9 +821,15 @@ Used for implementing locks (release) and other synchronization primitives.
 ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 ```
 """
-@noinline function atomic_xchg(array::TileArray{T, N}, index, val;
-                               memory_order::Int=MemoryOrder.AcqRel,
-                               memory_scope::Int=MemScope.Device) where {T, N}
+@inline function atomic_xchg(array::TileArray{T, N}, index, val;
+                             memory_order::Int=MemoryOrder.AcqRel,
+                             memory_scope::Int=MemScope.Device) where {T, N}
+    _atomic_xchg(array, index, val, memory_order, memory_scope)::T
+end
+
+# Inner stub - @noinline, positional-only, appears in IR for codegen
+@noinline function _atomic_add(array::TileArray{T, N}, index, val,
+                               memory_order::Int, memory_scope::Int) where {T, N}
     Base.donotdelete(array, index, val)
     Base.inferencebarrier(zero(T))::T
 end
@@ -827,9 +845,8 @@ the original value.
 old_val = ct.atomic_add(counters, idx, Int32(1))
 ```
 """
-@noinline function atomic_add(array::TileArray{T, N}, index, val;
-                              memory_order::Int=MemoryOrder.AcqRel,
-                              memory_scope::Int=MemScope.Device) where {T, N}
-    Base.donotdelete(array, index, val)
-    Base.inferencebarrier(zero(T))::T
+@inline function atomic_add(array::TileArray{T, N}, index, val;
+                            memory_order::Int=MemoryOrder.AcqRel,
+                            memory_scope::Int=MemScope.Device) where {T, N}
+    _atomic_add(array, index, val, memory_order, memory_scope)::T
 end

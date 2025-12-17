@@ -212,8 +212,9 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         partial_dw = tdy .* xhat
         partial_db = tdy
 
-        # Acquire spinlock (default AcqRel ordering provides necessary semantics)
-        while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1)) == Int32(1)
+        # Acquire spinlock
+        while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
+                           memory_order=ct.MemoryOrder.Acquire) == Int32(1)
             # spin
         end
 
@@ -224,7 +225,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         ct.store(DB, (group_bid_m, j), partial_db)
 
         # Release spinlock
-        ct.atomic_xchg(Locks, group_bid_m, Int32(0))
+        ct.atomic_xchg(Locks, group_bid_m, Int32(0);
+                      memory_order=ct.MemoryOrder.Release)
 
         j += Int32(1)
     end

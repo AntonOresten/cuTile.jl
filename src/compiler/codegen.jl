@@ -545,6 +545,12 @@ function extract_constant(ctx::CodegenContext, node::QuoteNode)
     extract_constant(ctx, node.value)
 end
 
+function extract_constant(ctx::CodegenContext, ref::GlobalRef)
+    # Resolve GlobalRef to its value
+    val = getfield(ref.mod, ref.name)
+    extract_constant(ctx, val)
+end
+
 function extract_constant(ctx::CodegenContext, node::PiNode)
     # PiNode narrows the type. If the narrowed type is Type{T}, extract T
     if node.typ isa Type{<:Type}
@@ -650,11 +656,6 @@ Emit bytecode for a function call.
 function emit_call!(ctx::CodegenContext, expr::Expr, @nospecialize(result_type))
     args = expr.args
     func = resolve_function(ctx, args[1])
-
-    # Handle kwcall
-    if func === Core.kwcall
-        return emit_kwcall!(ctx, args, result_type)
-    end
 
     call_args = args[2:end]
     result = emit_intrinsic!(ctx, func, call_args, result_type)
@@ -763,15 +764,15 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(store), args, @nospeciali
     nothing
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(atomic_cas), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_atomic_cas), args, @nospecialize(result_type))
     emit_atomic_cas!(ctx, args, result_type)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(atomic_xchg), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_atomic_xchg), args, @nospecialize(result_type))
     emit_atomic_rmw!(ctx, args, result_type, AtomicXCHG)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(atomic_add), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_atomic_add), args, @nospecialize(result_type))
     emit_atomic_rmw!(ctx, args, result_type, AtomicADD)
 end
 
@@ -1242,77 +1243,6 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getindex), args, @no
 end
 
 #=============================================================================
- Keyword Call Handling
-=============================================================================#
-
-function emit_kwcall!(ctx::CodegenContext, args::Vector{Any}, @nospecialize(result_type))
-    # args[1] = Core.kwcall
-    # args[2] = kwargs NamedTuple
-    # args[3] = the actual function
-    # args[4:end] = positional arguments
-
-    kwargs_ref = args[2]
-    func_ref = args[3]
-    positional_args = args[4:end]
-
-    func = resolve_function(ctx, func_ref)
-    kwargs = extract_kwargs(ctx, kwargs_ref)
-
-    if func === load || func === _load
-        return emit_load_kwcall!(ctx, positional_args, kwargs, result_type)
-    elseif func === store
-        return emit_store_kwcall!(ctx, positional_args, kwargs, result_type)
-    else
-        error("Unknown kwcall: $func")
-    end
-end
-
-function extract_kwargs(ctx::CodegenContext, @nospecialize(ref))
-    kwargs = Dict{Symbol, Any}()
-
-    if ref isa SSAValue
-        stmt = code(ctx.target)[ref.id]
-        if stmt isa Expr && stmt.head === :new
-            nt_type = stmt.args[1]
-            values = stmt.args[2:end]
-            if nt_type isa Type && nt_type <: NamedTuple
-                names = fieldnames(nt_type)
-                for (name, val) in zip(names, values)
-                    kwargs[name] = val
-                end
-            end
-        end
-    end
-
-    return kwargs
-end
-
-function emit_load_kwcall!(ctx::CodegenContext, positional_args::Vector{Any},
-                           kwargs::Dict{Symbol, Any}, @nospecialize(result_type))
-    array_arg = positional_args[1]
-    index_arg = get(kwargs, :index, nothing)
-    shape_arg = get(kwargs, :shape, nothing)
-
-    index_arg === nothing && error("load() requires index keyword argument")
-    shape_arg === nothing && error("load() requires shape keyword argument")
-
-    emit_load!(ctx, Any[array_arg, index_arg, shape_arg], result_type)
-end
-
-function emit_store_kwcall!(ctx::CodegenContext, positional_args::Vector{Any},
-                            kwargs::Dict{Symbol, Any}, @nospecialize(result_type))
-    array_arg = positional_args[1]
-    index_arg = get(kwargs, :index, nothing)
-    tile_arg = get(kwargs, :tile, nothing)
-
-    index_arg === nothing && error("store() requires index keyword argument")
-    tile_arg === nothing && error("store() requires tile keyword argument")
-
-    emit_store!(ctx, Any[array_arg, index_arg, tile_arg], result_type)
-    nothing
-end
-
-#=============================================================================
  Load/Store Operations
 =============================================================================#
 
@@ -1515,8 +1445,7 @@ function emit_atomic_cas!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (array, index, expected, desired)
-    # Plus keyword args at the end
+    # args: (array, index, expected, desired, memory_order, memory_scope)
     array_arg = args[1]
 
     # Get array info
@@ -1539,10 +1468,11 @@ function emit_atomic_cas!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     desired_tv = emit_value!(ctx, args[4])
     desired_tv === nothing && error("atomic_cas requires desired value")
 
-    # Get memory order and scope
-    # Use Acquire for CAS (typical in spinlock acquisition patterns)
-    memory_order = 2  # Acquire
-    memory_scope = 1  # Device
+    # Get memory order and scope from args
+    memory_order = extract_constant(ctx, args[5])
+    memory_order === nothing && error("atomic_cas requires constant memory_order")
+    memory_scope = extract_constant(ctx, args[6])
+    memory_scope === nothing && error("atomic_cas requires constant memory_scope")
 
     # Create result type (0D tile of element type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
@@ -1590,7 +1520,7 @@ function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (array, index, val)
+    # args: (array, index, val, memory_order, memory_scope)
     array_arg = args[1]
 
     # Get array info
@@ -1611,11 +1541,11 @@ function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     val_tv = emit_value!(ctx, args[3])
     val_tv === nothing && error("atomic operation requires value")
 
-    # Get memory order and scope
-    # Use Release for xchg (typical in spinlock release patterns)
-    # atomic_add uses AcqRel for general use
-    memory_order = (mode == AtomicXCHG) ? 3 : 4  # Release for xchg, AcqRel otherwise
-    memory_scope = 1  # Device
+    # Get memory order and scope from args
+    memory_order = extract_constant(ctx, args[4])
+    memory_order === nothing && error("atomic operation requires constant memory_order")
+    memory_scope = extract_constant(ctx, args[5])
+    memory_scope === nothing && error("atomic operation requires constant memory_scope")
 
     # Create result type (0D tile of element type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
