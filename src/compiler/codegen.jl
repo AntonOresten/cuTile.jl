@@ -84,17 +84,17 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         ctx.arg_flat_values[key] = values
 
         if field === nothing
-            # Regular argument - create concrete TileValue
+            # Regular argument - create concrete CGVal
             @assert length(values) == 1
             val = values[1]
             type_id = tile_type_for_julia!(ctx, target.argtypes[arg_idx])
-            tv = TileValue(val, type_id, target.argtypes[arg_idx])
+            tv = CGVal(val, type_id, target.argtypes[arg_idx])
             ctx[SlotNumber(arg_idx + 1)] = tv
             ctx[Argument(arg_idx + 1)] = tv
         end
     end
 
-    # For destructured args, create lazy TileValues that track the argument index
+    # For destructured args, create lazy CGVals that track the argument index
     for (arg_idx, argtype) in ctx.arg_types
         tv = arg_ref_value(arg_idx, Union{Symbol, Int}[], argtype)
         ctx[SlotNumber(arg_idx + 1)] = tv
@@ -190,7 +190,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::IfOp)
         if i <= length(results) - 1  # Exclude token
             result_type = ssatypes(ctx.target)[result_var.id]
             type_id = tile_type_for_julia!(ctx, result_type)
-            ctx[result_var] = TileValue(results[i], type_id, result_type)
+            ctx[result_var] = CGVal(results[i], type_id, result_type)
         end
     end
 end
@@ -239,7 +239,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
             # First block arg is induction variable
             iv_arg = op.body.args[1]
             iv_type = tile_type!(tt, I32(tt), Int[])
-            iv_tv = TileValue(block_args[1], iv_type, Int32)
+            iv_tv = CGVal(block_args[1], iv_type, Int32)
             ctx[iv_arg] = iv_tv
             # Also map the induction variable phi SSAValue
             ctx[op.iv_ssa] = iv_tv
@@ -248,7 +248,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
             for (i, body_arg) in enumerate(op.body.args[2:end])
                 if i <= length(block_args) - 2 && i <= n_user_results  # -2 for iv and token
                     shape = extract_tile_shape(body_arg.type)
-                    tv = TileValue(block_args[i+1], result_types[i], body_arg.type, shape)
+                    tv = CGVal(block_args[i+1], result_types[i], body_arg.type, shape)
                     ctx[body_arg] = tv
                     # Also map the phi SSAValue so body statements can reference it
                     if i <= length(op.result_vars)
@@ -274,7 +274,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::ForOp)
             result_type = ssatypes(ctx.target)[result_var.id]
             type_id = tile_type_for_julia!(ctx, result_type)
             shape = extract_tile_shape(result_type)
-            ctx[result_var] = TileValue(results[i], type_id, result_type, shape)
+            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
         end
     end
 end
@@ -311,7 +311,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
         for (i, body_arg) in enumerate(op.body.args)
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
                 shape = extract_tile_shape(body_arg.type)
-                ctx[body_arg] = TileValue(block_args[i], result_types[i], body_arg.type, shape)
+                ctx[body_arg] = CGVal(block_args[i], result_types[i], body_arg.type, shape)
             end
         end
 
@@ -322,7 +322,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
             if i <= length(block_args) - 1 && i <= n_user_results  # -1 for token
                 result_type = ssatypes(ctx.target)[result_var.id]
                 shape = extract_tile_shape(result_type)
-                ctx[result_var] = TileValue(block_args[i], result_types[i], result_type, shape)
+                ctx[result_var] = CGVal(block_args[i], result_types[i], result_type, shape)
             end
         end
 
@@ -353,7 +353,7 @@ function emit_control_flow_op!(ctx::CodegenContext, op::LoopOp)
             result_type = ssatypes(ctx.target)[result_var.id]
             type_id = tile_type_for_julia!(ctx, result_type)
             shape = extract_tile_shape(result_type)
-            ctx[result_var] = TileValue(results[i], type_id, result_type, shape)
+            ctx[result_var] = CGVal(results[i], type_id, result_type, shape)
         end
     end
 end
@@ -476,9 +476,9 @@ end
 =============================================================================#
 
 """
-    emit_value!(ctx, ref) -> Union{TileValue, Nothing}
+    emit_value!(ctx, ref) -> Union{CGVal, Nothing}
 
-Emit/resolve a value reference to a TileValue using multiple dispatch.
+Emit/resolve a value reference to a CGVal using multiple dispatch.
 """
 function emit_value!(ctx::CodegenContext, ssa::SSAValue)
     # First try to get from context (already processed)
@@ -496,7 +496,7 @@ function emit_value!(ctx::CodegenContext, val::Integer)
     type_id = tile_type_for_julia!(ctx, Int32)
     bytes = reinterpret(UInt8, [Int32(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    TileValue(v, type_id, Int32, Int[], nothing, val)  # Preserve original type in constant
+    CGVal(v, type_id, Int32, Int[], nothing, val)  # Preserve original type in constant
 end
 
 function emit_value!(ctx::CodegenContext, val::AbstractFloat)
@@ -504,7 +504,7 @@ function emit_value!(ctx::CodegenContext, val::AbstractFloat)
     type_id = tile_type_for_julia!(ctx, jltype)
     bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    TileValue(v, type_id, jltype, Int[], nothing, val)
+    CGVal(v, type_id, jltype, Int[], nothing, val)
 end
 
 function emit_value!(ctx::CodegenContext, node::QuoteNode)
@@ -585,7 +585,7 @@ end
 =============================================================================#
 
 """
-    emit_expr!(ctx, expr::Expr, result_type) -> Union{TileValue, Nothing}
+    emit_expr!(ctx, expr::Expr, result_type) -> Union{CGVal, Nothing}
 
 Emit bytecode for an expression.
 """
@@ -640,7 +640,7 @@ end
 =============================================================================#
 
 """
-    emit_call!(ctx, expr::Expr, result_type) -> Union{TileValue, Nothing}
+    emit_call!(ctx, expr::Expr, result_type) -> Union{CGVal, Nothing}
 
 Emit bytecode for a function call.
 """
@@ -655,7 +655,7 @@ function emit_call!(ctx::CodegenContext, expr::Expr, @nospecialize(result_type))
 end
 
 """
-    emit_invoke!(ctx, expr::Expr, result_type) -> Union{TileValue, Nothing}
+    emit_invoke!(ctx, expr::Expr, result_type) -> Union{CGVal, Nothing}
 
 Emit bytecode for a method invocation.
 """
@@ -731,7 +731,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(bid), args, @nospecialize
     bid_x, bid_y, bid_z = encode_GetTileBlockIdOp!(ctx.cb, res_type, res_type, res_type)
     result = (bid_x, bid_y, bid_z)[axis + 1]
 
-    TileValue(result, res_type, Int32)
+    CGVal(result, res_type, Int32)
 end
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(num_blocks), args, @nospecialize(result_type))
@@ -741,7 +741,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(num_blocks), args, @nospe
     res_type = tile_type!(ctx.tt, I32(ctx.tt), Int[])
     nb_x, nb_y, nb_z = encode_GetNumTileBlocksOp!(ctx.cb, res_type, res_type, res_type)
 
-    TileValue((nb_x, nb_y, nb_z)[axis + 1], res_type, Int32)
+    CGVal((nb_x, nb_y, nb_z)[axis + 1], res_type, Int32)
 end
 
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(_load), args, @nospecialize(result_type))
@@ -863,12 +863,12 @@ function compute_broadcast_shape(s1::Vector{Int}, s2::Vector{Int})
 end
 
 """
-    broadcast_tile_to_shape!(cb, tt, tv::TileValue, target_shape::Vector{Int}, dtype::TypeId) -> Value
+    broadcast_tile_to_shape!(cb, tt, tv::CGVal, target_shape::Vector{Int}, dtype::TypeId) -> Value
 
 Broadcast a tile to a target shape by inserting ReshapeOp (for leading 1s) and BroadcastOp.
 Returns the value after broadcasting, or the original value if shapes already match.
 """
-function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::TileValue,
+function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
                                    target_shape::Vector{Int}, dtype::TypeId)
     src_shape = tv.shape
 
@@ -919,7 +919,7 @@ function emit_binop!(ctx::CodegenContext, args, float_encoder::Function, int_enc
     lhs_tv = emit_value!(ctx, args[1])
     rhs_tv = emit_value!(ctx, args[2])
 
-    # Both operands must resolve to TileValues
+    # Both operands must resolve to CGVals
     if lhs_tv === nothing || rhs_tv === nothing
         return missing
     end
@@ -956,7 +956,7 @@ function emit_binop!(ctx::CodegenContext, args, float_encoder::Function, int_enc
         result_v = int_encoder(cb, result_type_id, lhs_v, rhs_v)
     end
 
-    TileValue(result_v, result_type_id, result_jltype, result_shape)
+    CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
 # Same-shape tile operations - these emit the raw binary op
@@ -997,7 +997,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_pow), args, @nospeci
 
     result_v = encode_PowOp!(cb, result_type_id, lhs_tv.v, rhs_tv.v)
 
-    TileValue(result_v, result_type_id, result_jltype, result_shape)
+    CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
 # Julia integer intrinsics (all are Core.IntrinsicFunction, so dispatch by value)
@@ -1041,12 +1041,12 @@ function emit_sitofp!(ctx::CodegenContext, args)
 
     # Get the target float type
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_shape = source isa TileValue ? source.shape : Int[]
+    result_shape = source isa CGVal ? source.shape : Int[]
     result_type = tile_type!(tt, dtype, result_shape)
 
-    result_v = encode_IToFOp!(cb, result_type, source isa TileValue ? source.v : source;
+    result_v = encode_IToFOp!(cb, result_type, source isa CGVal ? source.v : source;
                               signedness=SignednessSigned)
-    TileValue(result_v, result_type, target_type, result_shape)
+    CGVal(result_v, result_type, target_type, result_shape)
 end
 
 # Unsigned integer to floating point conversion
@@ -1061,12 +1061,12 @@ function emit_uitofp!(ctx::CodegenContext, args)
 
     # Get the target float type
     dtype = julia_to_tile_dtype!(tt, target_type)
-    result_shape = source isa TileValue ? source.shape : Int[]
+    result_shape = source isa CGVal ? source.shape : Int[]
     result_type = tile_type!(tt, dtype, result_shape)
 
-    result_v = encode_IToFOp!(cb, result_type, source isa TileValue ? source.v : source;
+    result_v = encode_IToFOp!(cb, result_type, source isa CGVal ? source.v : source;
                               signedness=SignednessUnsigned)
-    TileValue(result_v, result_type, target_type, result_shape)
+    CGVal(result_v, result_type, target_type, result_shape)
 end
 
 #-----------------------------------------------------------------------------
@@ -1090,13 +1090,13 @@ function emit_int_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicate
     # Result type is a boolean (i1) scalar
     result_type = tile_type!(tt, I1(tt), Int[])
 
-    lhs_v = lhs isa TileValue ? lhs.v : lhs
-    rhs_v = rhs isa TileValue ? rhs.v : rhs
+    lhs_v = lhs isa CGVal ? lhs.v : lhs
+    rhs_v = rhs isa CGVal ? rhs.v : rhs
 
     result_v = encode_CmpIOp!(cb, result_type, lhs_v, rhs_v;
                               predicate=predicate, signedness=signedness)
 
-    TileValue(result_v, result_type, Bool, Int[])
+    CGVal(result_v, result_type, Bool, Int[])
 end
 
 emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.:(>)), args, @nospecialize(_)) =
@@ -1133,7 +1133,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getfield), args, @no
     # Extract field name or index
     field = get_constant(ctx, field_arg)
 
-    # Try to get the object as a TileValue
+    # Try to get the object as a CGVal
     obj_tv = emit_value!(ctx, obj_arg)
 
     # If obj is a lazy arg_ref, extend the chain
@@ -1148,7 +1148,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getfield), args, @no
             if values !== nothing && length(values) == 1
                 # Scalar field - materialize immediately
                 type_id = tile_type_for_julia!(ctx, unwrap_type(result_type))
-                return TileValue(values[1], type_id, unwrap_type(result_type))
+                return CGVal(values[1], type_id, unwrap_type(result_type))
             end
             return arg_ref_value(arg_idx, new_chain, unwrap_type(result_type))
         elseif field isa Integer && !isempty(chain) && chain[end] isa Symbol
@@ -1158,7 +1158,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getfield), args, @no
             values = get_arg_flat_values(ctx, arg_idx, field_name)
             if values !== nothing && 1 <= field <= length(values)
                 type_id = tile_type_for_julia!(ctx, unwrap_type(result_type))
-                return TileValue(values[field], type_id, unwrap_type(result_type))
+                return CGVal(values[field], type_id, unwrap_type(result_type))
             end
         end
     end
@@ -1189,7 +1189,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.getindex), args, @no
     index = get_constant(ctx, index_arg)
     index isa Integer || return nothing
 
-    # Try to get the object as a TileValue
+    # Try to get the object as a CGVal
     obj_tv = emit_value!(ctx, obj_arg)
     obj_tv === nothing && return nothing
 
@@ -1319,7 +1319,7 @@ function emit_load!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     tile_val, new_token = encode_LoadViewTkoOp!(cb, tile_type, token_type, partition, index_vals; token=ctx.token)
     ctx.token = new_token
 
-    TileValue(tile_val, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+    CGVal(tile_val, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
 end
 
 function emit_store!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
@@ -1503,7 +1503,7 @@ function emit_atomic_cas!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     ctx.token = new_token
 
     # Return scalar type (not Tile) to match the intrinsic signature
-    TileValue(old_val, result_tile_type, elem_type, Int[])
+    CGVal(old_val, result_tile_type, elem_type, Int[])
 end
 
 function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type), mode::AtomicRMWMode)
@@ -1579,7 +1579,7 @@ function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     ctx.token = new_token
 
     # Return scalar type (not Tile) to match the intrinsic signature
-    TileValue(old_val, result_tile_type, elem_type, Int[])
+    CGVal(old_val, result_tile_type, elem_type, Int[])
 end
 
 #=============================================================================
@@ -1811,7 +1811,7 @@ function emit_transpose!(ctx::CodegenContext, args::AbstractVector, @nospecializ
 
     result = encode_PermuteOp!(cb, output_tile_type, source.v, permutation)
 
-    TileValue(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
 #=============================================================================
@@ -1829,7 +1829,7 @@ function emit_mma!(ctx::CodegenContext, args::AbstractVector, @nospecialize(resu
 
     result = encode_MmaFOp!(cb, acc.type_id, lhs.v, rhs.v, acc.v)
 
-    TileValue(result, acc.type_id, acc.jltype, acc.shape)
+    CGVal(result, acc.type_id, acc.jltype, acc.shape)
 end
 
 #=============================================================================
@@ -1898,7 +1898,7 @@ function emit_astype!(ctx::CodegenContext, args::AbstractVector, @nospecialize(r
         error("astype() unsupported conversion: $source_elem -> $target_elem")
     end
 
-    TileValue(result, target_tile_type, Tile{target_elem, Tuple(tile_shape)}, tile_shape)
+    CGVal(result, target_tile_type, Tile{target_elem, Tuple(tile_shape)}, tile_shape)
 end
 
 #=============================================================================
@@ -1932,7 +1932,7 @@ function emit_broadcast_to!(ctx::CodegenContext, args::AbstractVector, @nospecia
     result_v = broadcast_tile_to_shape!(cb, tt, source, target_shape, dtype)
     result_type_id = tile_type!(tt, dtype, target_shape)
 
-    TileValue(result_v, result_type_id, Tile{source_elem, Tuple(target_shape)}, target_shape)
+    CGVal(result_v, result_type_id, Tile{source_elem, Tuple(target_shape)}, target_shape)
 end
 
 #=============================================================================
@@ -1978,7 +1978,7 @@ function emit_full!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
 
     result = encode_BroadcastOp!(cb, tile_type, reshaped_val)
 
-    TileValue(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+    CGVal(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
 end
 
 #=============================================================================
@@ -2014,7 +2014,7 @@ function emit_num_tiles!(ctx::CodegenContext, args::AbstractVector, @nospecializ
     sum2 = encode_SubIOp!(cb, scalar_i32, sum1, one_val)
     result = encode_DivIOp!(cb, scalar_i32, sum2, tile_size_val; signedness=SignednessSigned, rounding=RoundingZero)
 
-    TileValue(result, scalar_i32, Int32)
+    CGVal(result, scalar_i32, Int32)
 end
 
 function emit_cdiv!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
@@ -2032,7 +2032,7 @@ function emit_cdiv!(ctx::CodegenContext, args::AbstractVector, @nospecialize(res
     sum2 = encode_SubIOp!(cb, scalar_i32, sum1, one_val)
     result = encode_DivIOp!(cb, scalar_i32, sum2, b; signedness=SignednessSigned, rounding=RoundingZero)
 
-    TileValue(result, scalar_i32, Int32)
+    CGVal(result, scalar_i32, Int32)
 end
 
 function emit_floordiv!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
@@ -2046,7 +2046,7 @@ function emit_floordiv!(ctx::CodegenContext, args::AbstractVector, @nospecialize
 
     result = encode_DivIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned, rounding=RoundingZero)
 
-    TileValue(result, scalar_i32, Int32)
+    CGVal(result, scalar_i32, Int32)
 end
 
 function emit_rem!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
@@ -2060,7 +2060,7 @@ function emit_rem!(ctx::CodegenContext, args::AbstractVector, @nospecialize(resu
 
     result = encode_RemIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
 
-    TileValue(result, scalar_i32, Int32)
+    CGVal(result, scalar_i32, Int32)
 end
 
 function emit_min!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
@@ -2074,7 +2074,7 @@ function emit_min!(ctx::CodegenContext, args::AbstractVector, @nospecialize(resu
 
     result = encode_MinIOp!(cb, scalar_i32, a, b; signedness=SignednessSigned)
 
-    TileValue(result, scalar_i32, Int32)
+    CGVal(result, scalar_i32, Int32)
 end
 
 function resolve_or_constant(ctx::CodegenContext, @nospecialize(arg), type_id::TypeId)
@@ -2099,7 +2099,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Base.sqrt), args, @nospec
 
     result = encode_SqrtOp!(cb, source.type_id, source.v)
 
-    TileValue(result, source.type_id, source.jltype, source.shape)
+    CGVal(result, source.type_id, source.jltype, source.shape)
 end
 
 #=============================================================================
@@ -2128,7 +2128,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(arange), args, @nospecial
     # Emit IotaOp
     result = encode_IotaOp!(cb, tile_type)
 
-    TileValue(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+    CGVal(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
 end
 
 #=============================================================================
@@ -2190,7 +2190,7 @@ function emit_reduce!(ctx::CodegenContext, args, @nospecialize(result_type), red
         encode_YieldOp!(cb, [res])
     end
 
-    TileValue(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
 #=============================================================================
@@ -2209,7 +2209,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(where), args, @nospeciali
 
     result = encode_SelectOp!(cb, x_tv.type_id, cond_tv.v, x_tv.v, y_tv.v)
 
-    TileValue(result, x_tv.type_id, x_tv.jltype, x_tv.shape)
+    CGVal(result, x_tv.type_id, x_tv.jltype, x_tv.shape)
 end
 
 #=============================================================================
@@ -2243,7 +2243,7 @@ function emit_tile_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicat
                        predicate=predicate, signedness=SignednessSigned)
     end
 
-    TileValue(result_v, bool_tile_type, Tile{Bool, Tuple(tile_shape)}, tile_shape)
+    CGVal(result_v, bool_tile_type, Tile{Bool, Tuple(tile_shape)}, tile_shape)
 end
 
 emit_intrinsic!(ctx::CodegenContext, ::typeof(tile_lt), args, @nospecialize(_)) =
@@ -2285,7 +2285,7 @@ function emit_constant!(ctx::CodegenContext, @nospecialize(value), @nospecialize
     bytes = constant_to_bytes(value, result_type_unwrapped)
     v = encode_ConstantOp!(ctx.cb, type_id, bytes)
 
-    TileValue(v, type_id, result_type_unwrapped)
+    CGVal(v, type_id, result_type_unwrapped)
 end
 
 function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))

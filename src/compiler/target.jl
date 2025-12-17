@@ -32,21 +32,21 @@ slottypes(target::TileTarget) = target.ci.slottypes
 nargs(target::TileTarget) = length(target.argtypes)
 
 #=============================================================================
- TileValue: Unified value representation (analogous to Julia's jl_cgval_t)
+ CGVal: Unified value representation (analogous to Julia's jl_cgval_t)
 =============================================================================#
 
 """
-    TileValue
+    CGVal
 
 Represents a value during Tile IR code generation, bundling the IR value
 with its type information and metadata.
 
 Similar to Julia compiler's `jl_cgval_t`, this provides a unified representation
-for all values flowing through codegen. A TileValue can be either:
+for all values flowing through codegen. A CGVal can be either:
 1. A concrete SSA value (v is set, arg_ref is nothing)
 2. A lazy argument reference chain (v is nothing, arg_ref tracks the access path)
 """
-struct TileValue
+struct CGVal
     v::Union{Value, Nothing}  # Tile IR value (nothing for ghost values or lazy refs)
     type_id::Union{TypeId, Nothing}  # Tile IR type (nothing for lazy refs)
     jltype::Any               # Original Julia type
@@ -58,39 +58,39 @@ struct TileValue
 end
 
 # Convenience constructors for concrete values (constant = nothing by default)
-TileValue(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    TileValue(v, type_id, jltype, Int[], nothing, nothing)
+CGVal(v::Value, type_id::TypeId, @nospecialize(jltype)) =
+    CGVal(v, type_id, jltype, Int[], nothing, nothing)
 
-TileValue(v::Value, type_id::TypeId, @nospecialize(jltype), shape::Vector{Int}) =
-    TileValue(v, type_id, jltype, shape, nothing, nothing)
+CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::Vector{Int}) =
+    CGVal(v, type_id, jltype, shape, nothing, nothing)
 
 # Constructor for lazy argument references (never have constants)
 function arg_ref_value(arg_idx::Int, chain::Vector{Union{Symbol, Int}}, @nospecialize(jltype))
-    TileValue(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing)
+    CGVal(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing)
 end
 
 """
-    ghost_value(jltype[, constant]) -> TileValue
+    ghost_value(jltype[, constant]) -> CGVal
 
 Create a ghost value (zero-size singleton with no runtime representation).
 Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = TileValue(nothing, TypeId(-1), jltype, Int[], nothing, nothing)
-ghost_value(@nospecialize(jltype), constant) = TileValue(nothing, TypeId(-1), jltype, Int[], nothing, constant)
+ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, constant)
 
 """
-    is_ghost(tv::TileValue) -> Bool
+    is_ghost(tv::CGVal) -> Bool
 
-Check if a TileValue is a ghost (no runtime representation).
+Check if a CGVal is a ghost (no runtime representation).
 """
-is_ghost(tv::TileValue) = tv.v === nothing && tv.arg_ref === nothing
+is_ghost(tv::CGVal) = tv.v === nothing && tv.arg_ref === nothing
 
 """
-    is_arg_ref(tv::TileValue) -> Bool
+    is_arg_ref(tv::CGVal) -> Bool
 
-Check if a TileValue is a lazy argument reference.
+Check if a CGVal is a lazy argument reference.
 """
-is_arg_ref(tv::TileValue) = tv.arg_ref !== nothing
+is_arg_ref(tv::CGVal) = tv.arg_ref !== nothing
 
 #=============================================================================
  CodegenContext: Compilation context
@@ -100,14 +100,14 @@ is_arg_ref(tv::TileValue) = tv.arg_ref !== nothing
     CodegenContext
 
 Holds all state during Tile IR code generation for a kernel function.
-Maps Julia SSA values to TileValues and manages bytecode emission.
+Maps Julia SSA values to CGVals and manages bytecode emission.
 """
 mutable struct CodegenContext
     # SSA value mappings
-    values::Dict{Int, TileValue}      # SSA id -> TileValue
-    args::Dict{Int, TileValue}        # Argument index -> TileValue
-    slots::Dict{Int, TileValue}       # Slot number -> TileValue
-    block_args::Dict{Int, TileValue}  # BlockArg id -> TileValue (for control flow)
+    values::Dict{Int, CGVal}      # SSA id -> CGVal
+    args::Dict{Int, CGVal}        # Argument index -> CGVal
+    slots::Dict{Int, CGVal}       # Slot number -> CGVal
+    block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
     # Destructured argument handling (for TileArray fields)
     arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
@@ -128,10 +128,10 @@ end
 
 function CodegenContext(writer::BytecodeWriter, target::TileTarget)
     CodegenContext(
-        Dict{Int, TileValue}(),
-        Dict{Int, TileValue}(),
-        Dict{Int, TileValue}(),
-        Dict{Int, TileValue}(),
+        Dict{Int, CGVal}(),
+        Dict{Int, CGVal}(),
+        Dict{Int, CGVal}(),
+        Dict{Int, CGVal}(),
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
         CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
@@ -159,15 +159,15 @@ function Base.getindex(ctx::CodegenContext, slot::SlotNumber)
     get(ctx.slots, slot.id, nothing)
 end
 
-function Base.setindex!(ctx::CodegenContext, tv::TileValue, ssa::SSAValue)
+function Base.setindex!(ctx::CodegenContext, tv::CGVal, ssa::SSAValue)
     ctx.values[ssa.id] = tv
 end
 
-function Base.setindex!(ctx::CodegenContext, tv::TileValue, arg::Argument)
+function Base.setindex!(ctx::CodegenContext, tv::CGVal, arg::Argument)
     ctx.args[arg.n] = tv
 end
 
-function Base.setindex!(ctx::CodegenContext, tv::TileValue, slot::SlotNumber)
+function Base.setindex!(ctx::CodegenContext, tv::CGVal, slot::SlotNumber)
     ctx.slots[slot.id] = tv
 end
 
@@ -175,7 +175,7 @@ function Base.getindex(ctx::CodegenContext, block_arg::BlockArg)
     get(ctx.block_args, block_arg.id, nothing)
 end
 
-function Base.setindex!(ctx::CodegenContext, tv::TileValue, block_arg::BlockArg)
+function Base.setindex!(ctx::CodegenContext, tv::CGVal, block_arg::BlockArg)
     ctx.block_args[block_arg.id] = tv
 end
 
