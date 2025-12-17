@@ -1486,8 +1486,9 @@ function emit_atomic_cas!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     desired_tv = emit_value!(ctx, args[4])
     desired_tv === nothing && error("atomic_cas requires desired value")
 
-    # Get memory order and scope (defaults: AcqRel=4, Device=1)
-    memory_order = 4  # AcqRel
+    # Get memory order and scope
+    # Use Acquire for CAS (typical in spinlock acquisition patterns)
+    memory_order = 2  # Acquire
     memory_scope = 1  # Device
 
     # Create result type (0D tile of element type)
@@ -1556,8 +1557,10 @@ function emit_atomic_rmw!(ctx::CodegenContext, args::AbstractVector, @nospeciali
     val_tv = emit_value!(ctx, args[3])
     val_tv === nothing && error("atomic operation requires value")
 
-    # Get memory order and scope (defaults: AcqRel=4, Device=1)
-    memory_order = 4  # AcqRel
+    # Get memory order and scope
+    # Use Release for xchg (typical in spinlock release patterns)
+    # atomic_add uses AcqRel for general use
+    memory_order = (mode == AtomicXCHG) ? 3 : 4  # Release for xchg, AcqRel otherwise
     memory_scope = 1  # Device
 
     # Create result type (0D tile of element type)

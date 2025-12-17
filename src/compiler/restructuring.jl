@@ -1841,15 +1841,7 @@ function build_loop_op_nested(code::CodeInfo, blocks::Vector{BlockInfo}, all_loo
     block_id[] += 1
     body.args = block_args
 
-    # Process header statements (excluding phi nodes and control flow)
-    for si in header_block.range
-        stmt = stmts[si]
-        if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
-            push!(body.body, si)
-        end
-    end
-
-    # Find the condition for loop exit
+    # Find the condition for loop exit FIRST
     condition = nothing
     for si in header_block.range
         stmt = stmts[si]
@@ -1859,43 +1851,26 @@ function build_loop_op_nested(code::CodeInfo, blocks::Vector{BlockInfo}, all_loo
         end
     end
 
-    # Process loop body blocks in order, handling nested loops
-    sorted_loop_blocks = sort(collect(loop.blocks))
-    child_idx = 1
-
-    for bi in sorted_loop_blocks
-        # Skip header (already processed above)
-        bi == loop.header && continue
-
-        # Check if this block is a child loop header
-        if child_idx <= length(sorted_children) && bi == sorted_children[child_idx].header
-            child_loop = sorted_children[child_idx]
-
-            # Recursively build nested loop
-            nested_loop_op = build_loop_op_nested(code, blocks, all_loops, child_loop, block_id)
-            push!(body.body, nested_loop_op)
-
-            child_idx += 1
-        elseif bi ∉ child_loop_blocks
-            # Process block that's directly part of this loop (not in child loops)
-            block_info = blocks[bi]
-            for si in block_info.range
-                stmt = stmts[si]
-                if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
-                    push!(body.body, si)
-                end
-            end
-        end
-        # Skip blocks that are inside child loops (handled by nested loop op)
-    end
-
-    # Create the conditional structure inside the loop body
+    # For proper while-loop semantics, we need to check the condition FIRST.
+    # Structure: loop { cond = ...; if (!cond) { break }; body...; continue }
+    # This keeps body at loop level (not inside IfOp) to avoid value scoping issues.
     if condition !== nothing
         cond_value = convert_phi_value(condition)
 
+        # Add header statements that compute the condition (at loop body level)
+        for si in header_block.range
+            stmt = stmts[si]
+            if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
+                push!(body.body, si)
+            end
+        end
+
+        # Create IfOp for early break when condition is false
+        # then_block: condition true -> yield (continue to body below)
+        # else_block: condition false -> break out of loop
         then_block = Block(block_id[])
         block_id[] += 1
-        then_block.terminator = ContinueOp(carried_values)
+        then_block.terminator = YieldOp(IRValue[])
 
         else_block = Block(block_id[])
         block_id[] += 1
@@ -1907,7 +1882,71 @@ function build_loop_op_nested(code::CodeInfo, blocks::Vector{BlockInfo}, all_loo
 
         if_op = IfOp(cond_value, then_block, else_block, SSAValue[])
         push!(body.body, if_op)
+
+        # Process loop body blocks in order, handling nested loops
+        # These stay at the loop body level (after the IfOp)
+        sorted_loop_blocks = sort(collect(loop.blocks))
+        child_idx = 1
+
+        for bi in sorted_loop_blocks
+            # Skip header (already processed)
+            bi == loop.header && continue
+
+            # Check if this block is a child loop header
+            if child_idx <= length(sorted_children) && bi == sorted_children[child_idx].header
+                child_loop = sorted_children[child_idx]
+
+                # Recursively build nested loop
+                nested_loop_op = build_loop_op_nested(code, blocks, all_loops, child_loop, block_id)
+                push!(body.body, nested_loop_op)
+
+                child_idx += 1
+            elseif bi ∉ child_loop_blocks
+                # Process block that's directly part of this loop (not in child loops)
+                block_info = blocks[bi]
+                for si in block_info.range
+                    stmt = stmts[si]
+                    if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
+                        push!(body.body, si)
+                    end
+                end
+            end
+            # Skip blocks that are inside child loops (handled by nested loop op)
+        end
+
+        # Loop body terminator: continue with carried values
+        body.terminator = ContinueOp(carried_values)
     else
+        # No condition - process header and body blocks directly
+        for si in header_block.range
+            stmt = stmts[si]
+            if !(stmt isa PhiNode || stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode)
+                push!(body.body, si)
+            end
+        end
+
+        sorted_loop_blocks = sort(collect(loop.blocks))
+        child_idx = 1
+
+        for bi in sorted_loop_blocks
+            bi == loop.header && continue
+
+            if child_idx <= length(sorted_children) && bi == sorted_children[child_idx].header
+                child_loop = sorted_children[child_idx]
+                nested_loop_op = build_loop_op_nested(code, blocks, all_loops, child_loop, block_id)
+                push!(body.body, nested_loop_op)
+                child_idx += 1
+            elseif bi ∉ child_loop_blocks
+                block_info = blocks[bi]
+                for si in block_info.range
+                    stmt = stmts[si]
+                    if !(stmt isa GotoNode || stmt isa GotoIfNot || stmt isa ReturnNode || stmt isa PhiNode)
+                        push!(body.body, si)
+                    end
+                end
+            end
+        end
+
         body.terminator = ContinueOp(carried_values)
     end
 
