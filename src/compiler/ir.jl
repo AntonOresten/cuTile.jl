@@ -672,10 +672,3 @@ end
 function Base.show(io::IO, sci::StructuredCodeInfo)
     print(io, "StructuredCodeInfo(", length(sci.code.code), " stmts, entry=Block#", sci.entry.id, ")")
 end
-
-# Legacy function - delegates to show
-function print_structured_ir(io::IO, sci::StructuredCodeInfo)
-    show(io, MIME"text/plain"(), sci)
-end
-
-print_structured_ir(sci::StructuredCodeInfo) = print_structured_ir(stdout, sci)

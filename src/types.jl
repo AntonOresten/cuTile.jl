@@ -39,9 +39,6 @@ function ArraySpec{N}(alignment::Int, contiguous::Bool) where N
     ArraySpec{N}(alignment, contiguous, ntuple(_ -> 0, N), ntuple(_ -> 0, N))
 end
 
-# Backwards compatibility with boolean aligned
-ArraySpec(aligned::Bool, contiguous::Bool) = ArraySpec(aligned ? 16 : 0, contiguous)
-
 """
     compute_alignment(ptr_int)
 
@@ -119,11 +116,6 @@ function compute_array_spec(ptr::Ptr{T}, sizes::NTuple{N, Int32}, strides::NTupl
     end
 
     ArraySpec{N}(alignment, contiguous, stride_div_by, shape_div_by)
-end
-
-# Backwards compatible version without sizes (no shape_div_by info)
-function compute_array_spec(ptr::Ptr{T}, strides::NTuple{N, Int32}) where {T, N}
-    compute_array_spec(ptr, ntuple(_ -> Int32(0), N), strides)
 end
 
 
