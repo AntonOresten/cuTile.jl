@@ -253,17 +253,30 @@ public extract
 """
     extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{N, Int}) -> Tile{T, shape}
 
-Extract a slice from a tile starting at the given index with the specified shape.
-Both index and shape are 0-indexed tuples matching cuTile Python convention.
+Extract a sub-tile from a tile at the given slice indices.
 
-# Example
+**IMPORTANT:** The `index` parameter specifies SLICE INDICES, not element offsets!
+
+For each dimension, the source tile is divided into `S[i] ÷ shape[i]` non-overlapping slices.
+The `index[i]` selects which slice to extract (0-indexed).
+
+# Example: Extracting quadrants from an 8×8 tile
 ```julia
-# Given a tile with shape (batch, N, 2) where 2 represents real/imag components
+tile = ct.load(arr, (0, 0), (8, 8))
+# 8÷4 = 2 slices per dimension, so valid indices are {0, 1} × {0, 1}
+tl = ct.extract(tile, (0, 0), (4, 4))  # Top-left (rows 0-3, cols 0-3)
+bl = ct.extract(tile, (1, 0), (4, 4))  # Bottom-left (rows 4-7, cols 0-3)
+tr = ct.extract(tile, (0, 1), (4, 4))  # Top-right (rows 0-3, cols 4-7)
+br = ct.extract(tile, (1, 1), (4, 4))  # Bottom-right (rows 4-7, cols 4-7)
+```
+
+# Example: Separating real/imag components (FFT pattern)
+```julia
+# Shape (BS, N, 2) where last dim is real/imag
 tile = ct.load(arr, (0, 0, 0), (BS, N, 2))
-# Extract just the real component (index 0 in last dimension)
-real_part = ct.extract(tile, (0, 0, 0), (BS, N, 1))  # Shape (BS, N, 1)
-# Extract just the imaginary component (index 1 in last dimension)
-imag_part = ct.extract(tile, (0, 0, 1), (BS, N, 1))  # Shape (BS, N, 1)
+# 2÷1 = 2 slices in last dim, valid indices are {0, 1}
+real_part = ct.extract(tile, (0, 0, 0), (BS, N, 1))  # Slice 0 = real
+imag_part = ct.extract(tile, (0, 0, 1), (BS, N, 1))  # Slice 1 = imag
 ```
 """
 @noinline function extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape}

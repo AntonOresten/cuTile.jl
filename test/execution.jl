@@ -294,8 +294,80 @@ end
         end
     end
 
-    # NOTE: Extract with non-zero offsets currently returns zeros
-    # See TODO.md for details. This is a tile IR runtime limitation.
+    @testset "extract with slice indices" begin
+        # Extract uses SLICE INDICES, not offsets!
+        # For shape (8,8) -> (4,4): valid indices are {0,1} x {0,1}
+        # Index (1, 0) extracts rows 4-7 (the second slice in first dimension)
+
+        function extract_all_quadrants_kernel(x::ct.TileArray{Float32,2},
+                                              y0::ct.TileArray{Float32,2},
+                                              y1::ct.TileArray{Float32,2},
+                                              y2::ct.TileArray{Float32,2},
+                                              y3::ct.TileArray{Float32,2})
+            bid = ct.bid(0)
+            tile = ct.load(x, (bid, 0), (8, 8))
+            # Extract all 4 quadrants using slice indices
+            q0 = ct.extract(tile, (0, 0), (4, 4))  # Top-left
+            q1 = ct.extract(tile, (1, 0), (4, 4))  # Bottom-left
+            q2 = ct.extract(tile, (0, 1), (4, 4))  # Top-right
+            q3 = ct.extract(tile, (1, 1), (4, 4))  # Bottom-right
+            ct.store(y0, (bid, 0), q0)
+            ct.store(y1, (bid, 0), q1)
+            ct.store(y2, (bid, 0), q2)
+            ct.store(y3, (bid, 0), q3)
+            return
+        end
+
+        # Create input with different values in each quadrant
+        x = CUDA.zeros(Float32, 8, 8)
+        x[1:4, 1:4] .= 1.0f0   # TL
+        x[5:8, 1:4] .= 2.0f0   # BL
+        x[1:4, 5:8] .= 3.0f0   # TR
+        x[5:8, 5:8] .= 4.0f0   # BR
+
+        y0 = CUDA.zeros(Float32, 4, 4)
+        y1 = CUDA.zeros(Float32, 4, 4)
+        y2 = CUDA.zeros(Float32, 4, 4)
+        y3 = CUDA.zeros(Float32, 4, 4)
+
+        ct.launch(extract_all_quadrants_kernel, 1, x, y0, y1, y2, y3)
+
+        @test all(Array(y0) .≈ 1.0f0)  # Top-left = 1
+        @test all(Array(y1) .≈ 2.0f0)  # Bottom-left = 2
+        @test all(Array(y2) .≈ 3.0f0)  # Top-right = 3
+        @test all(Array(y3) .≈ 4.0f0)  # Bottom-right = 4
+    end
+
+    @testset "extract real/imag pattern (FFT)" begin
+        # This is the pattern used in FFT: shape (BS, N, 2) -> (BS, N, 1)
+        # Real at slice index 0, imag at slice index 1
+
+        function extract_real_imag_kernel(x_ri::ct.TileArray{Float32,3},
+                                          y_real::ct.TileArray{Float32,3},
+                                          y_imag::ct.TileArray{Float32,3})
+            bid = ct.bid(0)
+            tile = ct.load(x_ri, (bid, 0, 0), (2, 8, 2))  # (BS, N, real/imag)
+            # Extract real (slice 0) and imag (slice 1) in last dimension
+            real_part = ct.extract(tile, (0, 0, 0), (2, 8, 1))
+            imag_part = ct.extract(tile, (0, 0, 1), (2, 8, 1))
+            ct.store(y_real, (bid, 0, 0), real_part)
+            ct.store(y_imag, (bid, 0, 0), imag_part)
+            return
+        end
+
+        # Create input: real=1.0, imag=2.0
+        x = CUDA.zeros(Float32, 2, 8, 2)
+        x[:, :, 1] .= 1.0f0  # real
+        x[:, :, 2] .= 2.0f0  # imag
+
+        y_real = CUDA.zeros(Float32, 2, 8, 1)
+        y_imag = CUDA.zeros(Float32, 2, 8, 1)
+
+        ct.launch(extract_real_imag_kernel, 1, x, y_real, y_imag)
+
+        @test all(Array(y_real) .≈ 1.0f0)  # Real component
+        @test all(Array(y_imag) .≈ 2.0f0)  # Imag component
+    end
 end
 
 @testset "cat" begin
