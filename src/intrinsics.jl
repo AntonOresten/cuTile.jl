@@ -374,7 +374,8 @@ In kernel code, this is compiled to GetNumTileBlocksOp.
 @inline num_blocks(axis::Integer)::Int32 = _num_blocks(axis - one(axis))
 
 # Helper: subtract 1 from each element of a tuple, preserving element types
-@inline _sub1(index::NTuple{N, T}) where {N, T} = ntuple(i -> index[i] - one(T), Val(N))
+# Uses map instead of ntuple to support heterogeneous tuples (e.g., Tuple{Int32, Int64})
+@inline _sub1(index::Tuple) = map(i -> i - one(i), index)
 
 """
     load(ptr, index, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -1055,10 +1056,11 @@ while ct.atomic_cas(locks, idx, Int32(0), Int32(1); memory_order=ct.MemoryOrder.
 end
 ```
 """
+# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function atomic_cas(array::TileArray{T, N}, index, expected, desired;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
-    _atomic_cas(array, index, expected, desired, memory_order, memory_scope)::T
+    _atomic_cas(array, index - one(index), expected, desired, memory_order, memory_scope)::T
 end
 
 # Inner stub - @noinline, positional-only, appears in IR for codegen
@@ -1082,10 +1084,11 @@ Used for implementing locks (release) and other synchronization primitives.
 ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 ```
 """
+# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function atomic_xchg(array::TileArray{T, N}, index, val;
                              memory_order::Int=MemoryOrder.AcqRel,
                              memory_scope::Int=MemScope.Device) where {T, N}
-    _atomic_xchg(array, index, val, memory_order, memory_scope)::T
+    _atomic_xchg(array, index - one(index), val, memory_order, memory_scope)::T
 end
 
 # Inner stub - @noinline, positional-only, appears in IR for codegen
@@ -1106,10 +1109,11 @@ the original value.
 old_val = ct.atomic_add(counters, idx, Int32(1))
 ```
 """
+# Public API - inline wrapper that converts 1-indexed to 0-indexed
 @inline function atomic_add(array::TileArray{T, N}, index, val;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
-    _atomic_add(array, index, val, memory_order, memory_scope)::T
+    _atomic_add(array, index - one(index), val, memory_order, memory_scope)::T
 end
 
 #=============================================================================

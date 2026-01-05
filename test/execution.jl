@@ -265,13 +265,13 @@ end
         @test Array(y) ≈ Array(x)
     end
 
-    @testset "extract (0,0) smaller shape" begin
+    @testset "extract (1,1) smaller shape" begin
         function extract_smaller_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             # Load 8x8 tile
             tile = ct.load(x, (bid, 1), (8, 8))
-            # Extract 4x4 at (0, 0) - top-left corner
-            extracted = ct.extract(tile, (2, 2), (4, 4))
+            # Extract 4x4 at (1, 1) - top-left corner (1-indexed slice)
+            extracted = ct.extract(tile, (1, 1), (4, 4))
             ct.store(y, (bid, 1), extracted)
             return
         end
@@ -296,8 +296,8 @@ end
 
     @testset "extract with slice indices" begin
         # Extract uses SLICE INDICES, not offsets!
-        # For shape (8,8) -> (4,4): valid indices are {0,1} x {0,1}
-        # Index (1, 0) extracts rows 4-7 (the second slice in first dimension)
+        # For shape (8,8) -> (4,4): valid indices are {1,2} x {1,2} (1-indexed)
+        # Index (2, 1) extracts rows 5-8 (the second slice in first dimension)
 
         function extract_all_quadrants_kernel(x::ct.TileArray{Float32,2},
                                               y0::ct.TileArray{Float32,2},
@@ -306,8 +306,8 @@ end
                                               y3::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             tile = ct.load(x, (bid, 1), (8, 8))
-            # Extract all 4 quadrants using slice indices
-            q0 = ct.extract(tile, (2, 2), (4, 4))  # Top-left
+            # Extract all 4 quadrants using 1-indexed slice indices
+            q0 = ct.extract(tile, (1, 1), (4, 4))  # Top-left
             q1 = ct.extract(tile, (2, 1), (4, 4))  # Bottom-left
             q2 = ct.extract(tile, (1, 2), (4, 4))  # Top-right
             q3 = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right
@@ -340,18 +340,18 @@ end
 
     @testset "extract real/imag pattern (FFT)" begin
         # This is the pattern used in FFT: shape (BS, N, 2) -> (BS, N, 1)
-        # Real at slice index 0, imag at slice index 1
+        # Real at slice index 1, imag at slice index 2 (1-indexed)
 
         function extract_real_imag_kernel(x_ri::ct.TileArray{Float32,3},
                                           y_real::ct.TileArray{Float32,3},
                                           y_imag::ct.TileArray{Float32,3})
             bid = ct.bid(1)
-            tile = ct.load(x_ri, (bid, 0, 0), (2, 8, 2))  # (BS, N, real/imag)
-            # Extract real (slice 0) and imag (slice 1) in last dimension
+            tile = ct.load(x_ri, (bid, 1, 1), (2, 8, 2))  # (BS, N, real/imag)
+            # Extract real (slice 1) and imag (slice 2) in last dimension (1-indexed)
             real_part = ct.extract(tile, (1, 1, 1), (2, 8, 1))
             imag_part = ct.extract(tile, (1, 1, 2), (2, 8, 1))
-            ct.store(y_real, (bid, 0, 0), real_part)
-            ct.store(y_imag, (bid, 0, 0), imag_part)
+            ct.store(y_real, (bid, 1, 1), real_part)
+            ct.store(y_imag, (bid, 1, 1), imag_part)
             return
         end
 
@@ -410,7 +410,7 @@ end
         end
     end
 
-    @testset "cat along first axis (axis 0)" begin
+    @testset "cat along first axis (axis 1)" begin
         function cat_first_axis_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                                        c::ct.TileArray{Float32,2})
             bid = ct.bid(1)
@@ -455,10 +455,10 @@ end
             bid = ct.bid(1)
             # Load 4x8 tile
             tile = ct.load(x, (bid, 1), (4, 8))
-            # Extract two 4x4 halves (both at 0,0 since non-zero extract is broken)
-            left = ct.extract(tile, (2, 2), (4, 4))
-            right = ct.extract(tile, (2, 2), (4, 4))
-            # Cat them back together
+            # Extract two 4x4 halves using 1-indexed slice indices
+            left = ct.extract(tile, (1, 1), (4, 4))   # rows 1-4, cols 1-4
+            right = ct.extract(tile, (1, 2), (4, 4))  # rows 1-4, cols 5-8
+            # Cat them back together along last axis
             combined = ct.cat((left, right), Val(-1))
             ct.store(y, (bid, 1), combined)
             return
@@ -470,20 +470,16 @@ end
 
         ct.launch(extract_cat_roundtrip_kernel, cld(m, 4), x, y)
 
-        # Since both extracts are at (0,0), the output should be left half duplicated
-        # Just verify we get correct count of elements
+        # Output should match input (roundtrip)
         x_cpu = Array(x)
         y_cpu = Array(y)
 
         for bid in 0:(cld(m, 4)-1)
             start_row = bid * 4 + 1
-            input_left = x_cpu[start_row:(start_row+3), 1:4]
+            input = x_cpu[start_row:(start_row+3), :]
             output = y_cpu[start_row:(start_row+3), :]
 
-            # Output should be left half duplicated (since extract(0,0) used twice)
-            expected = sort(vcat(vec(input_left), vec(input_left)))
-            actual = sort(vec(output))
-            @test actual ≈ expected
+            @test output ≈ input
         end
     end
 end
