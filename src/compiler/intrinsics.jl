@@ -256,35 +256,66 @@ function emit_binop!(ctx::CodegenContext, args, float_encoder::Function, int_enc
     CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
-# Same-shape tile operations - these emit the raw binary op
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_add), args, @nospecialize(_)) =
-    emit_binop!(ctx, args, encode_AddFOp!, encode_AddIOp!)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_sub), args, @nospecialize(_)) =
-    emit_binop!(ctx, args, encode_SubFOp!, encode_SubIOp!)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_mul), args, @nospecialize(_)) =
-    emit_binop!(ctx, args, encode_MulFOp!, encode_MulIOp!)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_div), args, @nospecialize(_)) =
-    emit_binop!(ctx, args, encode_DivFOp!, encode_DivIOp!)
-
-# Power operation (float only)
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_pow), args, @nospecialize(_))
+# Unified arithmetic intrinsic - dispatches on operator function type
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.arith), args, @nospecialize(_))
     cb = ctx.cb
     tt = ctx.tt
 
     lhs_tv = emit_value!(ctx, args[1])
     rhs_tv = emit_value!(ctx, args[2])
 
-    (lhs_tv === nothing || rhs_tv === nothing) && error("Cannot resolve operands for tile_pow")
+    (lhs_tv === nothing || rhs_tv === nothing) && error("Cannot resolve operands for arith")
 
-    # Power is float-only, so we expect tiles with float element types
+    # Get the operator from the third argument (a ghost value with the function)
+    op_tv = emit_value!(ctx, args[3])
+    op = op_tv.constant
+
+    # Power is float-only
+    if op === (^)
+        elem_type = unwrap_type(lhs_tv.jltype)
+        if elem_type <: Tile
+            elem_type = elem_type.parameters[1]
+        end
+        elem_type <: AbstractFloat || error("power (^) only supports float types, got $elem_type")
+
+        result_shape = lhs_tv.shape
+        result_jltype = Tile{elem_type, Tuple(result_shape)}
+
+        dtype = julia_to_tile_dtype!(tt, elem_type)
+        result_type_id = tile_type!(tt, dtype, result_shape)
+
+        result_v = encode_PowOp!(cb, result_type_id, lhs_tv.v, rhs_tv.v)
+
+        return CGVal(result_v, result_type_id, result_jltype, result_shape)
+    end
+
+    # Map operator to encoder functions
+    float_encoder, int_encoder = if op === (+)
+        (encode_AddFOp!, encode_AddIOp!)
+    elseif op === (-)
+        (encode_SubFOp!, encode_SubIOp!)
+    elseif op === (*)
+        (encode_MulFOp!, encode_MulIOp!)
+    elseif op === (/)
+        (encode_DivFOp!, encode_DivIOp!)
+    else
+        error("Unknown arithmetic operator: $op")
+    end
+
+    emit_binop_inner!(ctx, lhs_tv, rhs_tv, float_encoder, int_encoder)
+end
+
+# Helper to emit binary operation with pre-resolved operands
+function emit_binop_inner!(ctx::CodegenContext, lhs_tv::CGVal, rhs_tv::CGVal,
+                           float_encoder::Function, int_encoder::Function)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Determine element type
     elem_type = unwrap_type(lhs_tv.jltype)
     if elem_type <: Tile
         elem_type = elem_type.parameters[1]
     end
-    elem_type <: AbstractFloat || error("tile_pow only supports float types, got $elem_type")
 
     result_shape = lhs_tv.shape
     result_jltype = Tile{elem_type, Tuple(result_shape)}
@@ -292,7 +323,14 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_pow), arg
     dtype = julia_to_tile_dtype!(tt, elem_type)
     result_type_id = tile_type!(tt, dtype, result_shape)
 
-    result_v = encode_PowOp!(cb, result_type_id, lhs_tv.v, rhs_tv.v)
+    lhs_v = lhs_tv.v
+    rhs_v = rhs_tv.v
+
+    result_v = if elem_type <: AbstractFloat
+        float_encoder(cb, result_type_id, lhs_v, rhs_v)
+    else
+        int_encoder(cb, result_type_id, lhs_v, rhs_v)
+    end
 
     CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
@@ -1755,23 +1793,31 @@ function emit_tile_cmp!(ctx::CodegenContext, args, predicate::ComparisonPredicat
     CGVal(result_v, bool_tile_type, Tile{Bool, Tuple(tile_shape)}, tile_shape)
 end
 
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_lt), args, @nospecialize(_)) =
-    emit_tile_cmp!(ctx, args, CmpLessThan)
+# Unified comparison intrinsic - dispatches on comparator function type
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.cmp), args, @nospecialize(_))
+    # Get the comparator from the third argument (a ghost value with the function)
+    cmp_tv = emit_value!(ctx, args[3])
+    cmp_func = cmp_tv.constant
 
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_gt), args, @nospecialize(_)) =
-    emit_tile_cmp!(ctx, args, CmpGreaterThan)
+    # Map comparator to predicate
+    predicate = if cmp_func === (<)
+        CmpLessThan
+    elseif cmp_func === (>)
+        CmpGreaterThan
+    elseif cmp_func === (<=)
+        CmpLessThanOrEqual
+    elseif cmp_func === (>=)
+        CmpGreaterThanOrEqual
+    elseif cmp_func === (==)
+        CmpEqual
+    elseif cmp_func === (!=)
+        CmpNotEqual
+    else
+        error("Unknown comparison operator: $cmp_func")
+    end
 
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_le), args, @nospecialize(_)) =
-    emit_tile_cmp!(ctx, args, CmpLessThanOrEqual)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_ge), args, @nospecialize(_)) =
-    emit_tile_cmp!(ctx, args, CmpGreaterThanOrEqual)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_eq), args, @nospecialize(_)) =
-    emit_tile_cmp!(ctx, args, CmpEqual)
-
-emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.tile_ne), args, @nospecialize(_)) =
-    emit_tile_cmp!(ctx, args, CmpNotEqual)
+    emit_tile_cmp!(ctx, args, predicate)
+end
 
 #=============================================================================
  Constants

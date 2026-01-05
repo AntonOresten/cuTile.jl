@@ -533,30 +533,30 @@ Compute element-wise reciprocal square root (1/sqrt(x)) of a tile.
 @inline rsqrt(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
     Intrinsics.rsqrt(tile)
 
-# Broadcasting arithmetic - different shapes, broadcast then recurse to same-shape
+# Broadcasting arithmetic - different shapes, broadcast then call arith intrinsic
 @inline function tile_add(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_add(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.arith(broadcast_to(a, S), broadcast_to(b, S), +)
 end
 
 @inline function tile_sub(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_sub(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.arith(broadcast_to(a, S), broadcast_to(b, S), -)
 end
 
 @inline function tile_mul(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_mul(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.arith(broadcast_to(a, S), broadcast_to(b, S), *)
 end
 
 @inline function tile_div(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_div(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.arith(broadcast_to(a, S), broadcast_to(b, S), /)
 end
 
 @inline function tile_pow(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_pow(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.arith(broadcast_to(a, S), broadcast_to(b, S), ^)
 end
 
 # Scalar variants convert to 0D tile
@@ -571,10 +571,10 @@ end
 @inline tile_div(a::Tile{T, S}, b::Integer) where {T <: AbstractFloat, S} = tile_div(a, Tile(T(b)))
 
 # Operator overloads (same shape required)
-@inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = Intrinsics.tile_add(a, b)
-@inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = Intrinsics.tile_sub(a, b)
-@inline Base.:(*)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = Intrinsics.tile_mul(a, b)
-@inline Base.:(/)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.tile_div(a, b)
+@inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = Intrinsics.arith(a, b, +)
+@inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = Intrinsics.arith(a, b, -)
+@inline Base.:(*)(a::Tile{T, S}, b::Tile{T, S}) where {T, S} = Intrinsics.arith(a, b, *)
+@inline Base.:(/)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.arith(a, b, /)
 
 # Scalar-tile operators
 @inline Base.:(+)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_add(a, b)
@@ -595,35 +595,35 @@ end
  Comparison
 =============================================================================#
 
-# Broadcasting versions - different shapes
+# Broadcasting versions - different shapes, broadcast then call cmp intrinsic
 @inline function tile_lt(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_lt(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.cmp(broadcast_to(a, S), broadcast_to(b, S), <)
 end
 
 @inline function tile_gt(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_gt(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.cmp(broadcast_to(a, S), broadcast_to(b, S), >)
 end
 
 @inline function tile_le(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_le(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.cmp(broadcast_to(a, S), broadcast_to(b, S), <=)
 end
 
 @inline function tile_ge(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_ge(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.cmp(broadcast_to(a, S), broadcast_to(b, S), >=)
 end
 
 @inline function tile_eq(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_eq(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.cmp(broadcast_to(a, S), broadcast_to(b, S), ==)
 end
 
 @inline function tile_ne(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2}
     S = broadcast_shape(S1, S2)
-    Intrinsics.tile_ne(broadcast_to(a, S), broadcast_to(b, S))
+    Intrinsics.cmp(broadcast_to(a, S), broadcast_to(b, S), !=)
 end
 
 #=============================================================================

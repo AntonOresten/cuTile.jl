@@ -55,40 +55,13 @@ Compiled to cuda_tile.cat.
     Tile{T, result_shape}()
 end
 
-# Comparison operations - compiled to cuda_tile.cmpf / cuda_tile.cmpi
+"""
+    cmp(a, b, comparator)
 
-"""Element-wise less-than. Compiled to cuda_tile.cmpf/cmpi."""
-@noinline function tile_lt(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{Bool, S}()
-end
-
-"""Element-wise greater-than. Compiled to cuda_tile.cmpf/cmpi."""
-@noinline function tile_gt(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{Bool, S}()
-end
-
-"""Element-wise less-than-or-equal. Compiled to cuda_tile.cmpf/cmpi."""
-@noinline function tile_le(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{Bool, S}()
-end
-
-"""Element-wise greater-than-or-equal. Compiled to cuda_tile.cmpf/cmpi."""
-@noinline function tile_ge(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{Bool, S}()
-end
-
-"""Element-wise equality. Compiled to cuda_tile.cmpf/cmpi."""
-@noinline function tile_eq(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{Bool, S}()
-end
-
-"""Element-wise inequality. Compiled to cuda_tile.cmpf/cmpi."""
-@noinline function tile_ne(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
+Element-wise comparison. Comparator is <, >, <=, >=, ==, or !=.
+Compiled to cuda_tile.cmpf for floats, cuda_tile.cmpi for integers.
+"""
+@noinline function cmp(a::Tile{T, S}, b::Tile{T, S}, ::F) where {T, S, F<:Function}
     Base.donotdelete(a, b)
     Tile{Bool, S}()
 end
@@ -271,32 +244,13 @@ end
  cuda_tile.rsqrt, cuda_tile.sqrt, cuda_tile.subf
 =============================================================================#
 
-"""Element-wise addition. Compiled to cuda_tile.addf/addi."""
-@noinline function tile_add(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{T, S}()
-end
+"""
+    arith(a, b, op)
 
-"""Element-wise subtraction. Compiled to cuda_tile.subf/subi."""
-@noinline function tile_sub(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{T, S}()
-end
-
-"""Element-wise multiplication. Compiled to cuda_tile.mulf/muli."""
-@noinline function tile_mul(a::Tile{T, S}, b::Tile{T, S}) where {T, S}
-    Base.donotdelete(a, b)
-    Tile{T, S}()
-end
-
-"""Element-wise division. Compiled to cuda_tile.divf."""
-@noinline function tile_div(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S}
-    Base.donotdelete(a, b)
-    Tile{T, S}()
-end
-
-"""Element-wise power. Compiled to cuda_tile.pow."""
-@noinline function tile_pow(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S}
+Element-wise arithmetic. Op is +, -, *, /, or ^.
+Compiled to cuda_tile.addf/addi, cuda_tile.subf/subi, etc. based on element type.
+"""
+@noinline function arith(a::Tile{T, S}, b::Tile{T, S}, ::F) where {T, S, F<:Function}
     Base.donotdelete(a, b)
     Tile{T, S}()
 end
