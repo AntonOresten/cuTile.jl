@@ -195,6 +195,9 @@ function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
         TF32(table)
     elseif T === Float64
         F64(table)
+    elseif T <: Ptr
+        elem_dtype = julia_to_tile_dtype!(table, eltype(T))
+        pointer_type!(table, elem_dtype)
     else
         error("Unsupported Julia type for Tile IR: $T")
     end

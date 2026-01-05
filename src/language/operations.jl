@@ -164,7 +164,23 @@ tile = ct.gather(arr, indices)
 ```
 """
 @inline function gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
-    Intrinsics.gather(array, indices .- one(I))
+    # Convert to 0-indexed
+    indices_0 = indices .- one(I)
+
+    # Compute pointer tile
+    ptr_tile = Intrinsics.offset(array.ptr, indices_0)
+
+    # Bounds mask: 0 <= indices_0 < size
+    zero_0d = Tile(zero(I))
+    size_0d = Tile(array.sizes[1])
+    ge_zero = tile_ge(indices_0, zero_0d)
+    lt_size = tile_lt(indices_0, size_0d)
+    mask = ge_zero & lt_size
+
+    # Padding for OOB (zero)
+    padding = broadcast_to(Tile(zero(T)), S)
+
+    Intrinsics.load_ptr_tko(ptr_tile, mask, padding)
 end
 
 """
@@ -174,7 +190,45 @@ Gather elements from a 2D array using a tuple of index tiles.
 Indices are 1-indexed. Index tiles are broadcast to a common shape.
 """
 @inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
-    Intrinsics.gather(array, indices[1] .- one(I0), indices[2] .- one(I1))
+    # Convert to 0-indexed
+    idx0_0 = indices[1] .- one(I0)
+    idx1_0 = indices[2] .- one(I1)
+
+    # Broadcast indices to common shape
+    S = broadcast_shape(S0, S1)
+    idx0_bc = broadcast_to(idx0_0, S)
+    idx1_bc = broadcast_to(idx1_0, S)
+
+    # Convert to Int32 for linear index computation
+    idx0_i32 = astype(idx0_bc, Int32)
+    idx1_i32 = astype(idx1_bc, Int32)
+
+    # Get strides and broadcast to tile shape
+    stride0_0d = Tile(array.strides[1])
+    stride1_0d = Tile(array.strides[2])
+    stride0 = broadcast_to(stride0_0d, S)
+    stride1 = broadcast_to(stride1_0d, S)
+
+    # Compute linear index = idx0 * stride0 + idx1 * stride1
+    linear_idx = idx0_i32 * stride0 + idx1_i32 * stride1
+
+    # Compute pointer tile
+    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+
+    # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
+    zero_0d = Tile(Int32(0))
+    zero_bc = broadcast_to(zero_0d, S)
+    size0_bc = broadcast_to(Tile(array.sizes[1]), S)
+    size1_bc = broadcast_to(Tile(array.sizes[2]), S)
+
+    mask0 = tile_ge(idx0_i32, zero_bc) & tile_lt(idx0_i32, size0_bc)
+    mask1 = tile_ge(idx1_i32, zero_bc) & tile_lt(idx1_i32, size1_bc)
+    mask = mask0 & mask1
+
+    # Padding for OOB (zero)
+    padding = broadcast_to(Tile(zero(T)), S)
+
+    Intrinsics.load_ptr_tko(ptr_tile, mask, padding)
 end
 
 """
@@ -191,7 +245,20 @@ ct.scatter(arr, indices, result_tile)
 ```
 """
 @inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
-    Intrinsics.scatter(array, indices .- one(I), tile)
+    # Convert to 0-indexed
+    indices_0 = indices .- one(I)
+
+    # Compute pointer tile
+    ptr_tile = Intrinsics.offset(array.ptr, indices_0)
+
+    # Bounds mask: 0 <= indices_0 < size
+    zero_0d = Tile(zero(I))
+    size_0d = Tile(array.sizes[1])
+    ge_zero = tile_ge(indices_0, zero_0d)
+    lt_size = tile_lt(indices_0, size_0d)
+    mask = ge_zero & lt_size
+
+    Intrinsics.store_ptr_tko(ptr_tile, tile, mask)
 end
 
 """
@@ -201,7 +268,43 @@ Scatter elements to a 2D array at index tile positions.
 Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 """
 @inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
-    Intrinsics.scatter(array, indices[1] .- one(I0), indices[2] .- one(I1), tile)
+    # Convert to 0-indexed
+    idx0_0 = indices[1] .- one(I0)
+    idx1_0 = indices[2] .- one(I1)
+
+    # Broadcast indices to common shape (include value tile shape)
+    S = broadcast_shape(broadcast_shape(S0, S1), Stile)
+    idx0_bc = broadcast_to(idx0_0, S)
+    idx1_bc = broadcast_to(idx1_0, S)
+    tile_bc = broadcast_to(tile, S)
+
+    # Convert to Int32 for linear index computation
+    idx0_i32 = astype(idx0_bc, Int32)
+    idx1_i32 = astype(idx1_bc, Int32)
+
+    # Get strides and broadcast to tile shape
+    stride0_0d = Tile(array.strides[1])
+    stride1_0d = Tile(array.strides[2])
+    stride0 = broadcast_to(stride0_0d, S)
+    stride1 = broadcast_to(stride1_0d, S)
+
+    # Compute linear index = idx0 * stride0 + idx1 * stride1
+    linear_idx = idx0_i32 * stride0 + idx1_i32 * stride1
+
+    # Compute pointer tile
+    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+
+    # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
+    zero_0d = Tile(Int32(0))
+    zero_bc = broadcast_to(zero_0d, S)
+    size0_bc = broadcast_to(Tile(array.sizes[1]), S)
+    size1_bc = broadcast_to(Tile(array.sizes[2]), S)
+
+    mask0 = tile_ge(idx0_i32, zero_bc) & tile_lt(idx0_i32, size0_bc)
+    mask1 = tile_ge(idx1_i32, zero_bc) & tile_lt(idx1_i32, size1_bc)
+    mask = mask0 & mask1
+
+    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, mask)
 end
 
 #=============================================================================
@@ -625,6 +728,16 @@ end
     S = broadcast_shape(S1, S2)
     Intrinsics.cmp(broadcast_to(a, S), broadcast_to(b, S), !=)
 end
+
+#=============================================================================
+ Logical Operations
+=============================================================================#
+
+"""
+Element-wise logical AND for boolean tiles.
+"""
+@inline Base.:(&)(a::Tile{Bool, S}, b::Tile{Bool, S}) where {S} =
+    Intrinsics.logical_and(a, b)
 
 #=============================================================================
  Atomic

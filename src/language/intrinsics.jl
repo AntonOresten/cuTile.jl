@@ -21,7 +21,8 @@ using ..cuTile: Tile, TileArray, Constant
  cuda_tile.broadcast, cuda_tile.cat, cuda_tile.cmpf, cuda_tile.cmpi,
  cuda_tile.constant, cuda_tile.extract, cuda_tile.get_num_tile_blocks,
  cuda_tile.get_tile_block_id, cuda_tile.iota, cuda_tile.mmaf, cuda_tile.mmai,
- cuda_tile.permute, cuda_tile.reduce, cuda_tile.reshape, cuda_tile.select
+ cuda_tile.offset, cuda_tile.permute, cuda_tile.reduce, cuda_tile.reshape,
+ cuda_tile.select
 =============================================================================#
 
 """
@@ -194,6 +195,17 @@ Compiled to cuda_tile.select.
     Tile{T, S}()
 end
 
+"""
+    offset(base, offsets)
+
+Compute base_ptr + offsets for each element of offsets tile (element-scaled).
+Returns a tile of pointers. Compiled to cuda_tile.offset.
+"""
+@noinline function offset(base::Ptr{T}, offsets::Tile{I, S}) where {T, I <: Integer, S}
+    Base.donotdelete(base, offsets)
+    Tile{Ptr{T}, S}()
+end
+
 #=============================================================================
  8.4. Conversions
  cuda_tile.bitcast, cuda_tile.exti, cuda_tile.ftof, cuda_tile.ftoi,
@@ -238,6 +250,33 @@ Compiled to cuda_tile.store_ptr_tko.
     nothing
 end
 
+"""
+    load_ptr_tko(ptrs, mask=nothing, padding=nothing)
+
+Load values from a tile of pointers.
+If mask is provided, masked-out positions return the padding value.
+Compiled to cuda_tile.load_ptr_tko.
+"""
+@noinline function load_ptr_tko(ptrs::Tile{Ptr{T}, S},
+                                 mask::Union{Tile{Bool, S}, Nothing}=nothing,
+                                 padding::Union{Tile{T, S}, Nothing}=nothing) where {T, S}
+    Base.donotdelete(ptrs, mask, padding)
+    Tile{T, S}()
+end
+
+"""
+    store_ptr_tko(ptrs, values, mask=nothing)
+
+Store values to a tile of pointers.
+If mask is provided, masked-out positions are not written.
+Compiled to cuda_tile.store_ptr_tko.
+"""
+@noinline function store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
+                                  mask::Union{Tile{Bool, S}, Nothing}=nothing) where {T, S}
+    Base.donotdelete(ptrs, values, mask)
+    nothing
+end
+
 #=============================================================================
  8.7. Floating Point
  cuda_tile.addf, cuda_tile.divf, cuda_tile.mulf, cuda_tile.pow,
@@ -277,6 +316,17 @@ end
 
 """Floor division: floor(a/b). Compiled to cuda_tile.divi."""
 @noinline floordiv(a::Integer, b::Integer)::Int32 = Base.inferencebarrier(zero(Int32))
+
+#=============================================================================
+ 8.8. Bitwise
+ cuda_tile.andi
+=============================================================================#
+
+"""Element-wise logical AND for boolean tiles. Compiled to cuda_tile.andi."""
+@noinline function logical_and(a::Tile{Bool, S}, b::Tile{Bool, S}) where {S}
+    Base.donotdelete(a, b)
+    Tile{Bool, S}()
+end
 
 #=============================================================================
  8.10. Atomics
@@ -354,53 +404,6 @@ end
  cuTile.jl Extensions
  Higher-level abstractions not directly mapping to single Tile IR operations.
 =============================================================================#
-
-"""
-    gather(array, indices)
-
-Gather elements from a 1D array using index tile (0-indexed).
-Lowered to cuda_tile.load_view_tko with gather semantics.
-"""
-@noinline function gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
-    Base.donotdelete(array, indices)
-    Tile{T, S}()
-end
-
-"""
-    gather(array, idx0, idx1)
-
-Gather elements from a 2D array using index tiles (0-indexed).
-Lowered to cuda_tile.load_view_tko with gather semantics.
-"""
-@noinline function gather(array::TileArray{T, 2}, idx0::Tile{I0, S0}, idx1::Tile{I1, S1}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
-    S = _broadcast_shape(S0, S1)
-    Base.donotdelete(array, idx0, idx1)
-    Tile{T, S}()
-end
-
-"""
-    scatter(array, indices, tile)
-
-Scatter elements to a 1D array at index tile positions (0-indexed).
-Lowered to cuda_tile.store_view_tko with scatter semantics.
-"""
-@noinline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
-    Base.donotdelete(array, indices, tile)
-    nothing
-end
-
-"""
-    scatter(array, idx0, idx1, tile)
-
-Scatter elements to a 2D array at index tile positions (0-indexed).
-Lowered to cuda_tile.store_view_tko with scatter semantics.
-"""
-@noinline function scatter(array::TileArray{T, 2}, idx0::Tile{I0, S0}, idx1::Tile{I1, S1}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
-    S = _broadcast_shape(S0, S1)
-    S == Stile || error("Tile shape $Stile doesn't match broadcast shape $S of indices")
-    Base.donotdelete(array, idx0, idx1, tile)
-    nothing
-end
 
 """
     num_tiles(arr, axis, shape)
