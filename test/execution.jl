@@ -270,7 +270,7 @@ end
             bid = ct.bid(1)
             # Load 8x8 tile
             tile = ct.load(x, (bid, 1), (8, 8))
-            # Extract 4x4 at (1, 1) - top-left corner (1-indexed slice)
+            # Extract 4x4 at (1, 1) - top-left corner
             extracted = ct.extract(tile, (1, 1), (4, 4))
             ct.store(y, (bid, 1), extracted)
             return
@@ -296,7 +296,7 @@ end
 
     @testset "extract with slice indices" begin
         # Extract uses SLICE INDICES, not offsets!
-        # For shape (8,8) -> (4,4): valid indices are {1,2} x {1,2} (1-indexed)
+        # For shape (8,8) -> (4,4): valid indices are {1,2} x {1,2}
         # Index (2, 1) extracts rows 5-8 (the second slice in first dimension)
 
         function extract_all_quadrants_kernel(x::ct.TileArray{Float32,2},
@@ -306,7 +306,7 @@ end
                                               y3::ct.TileArray{Float32,2})
             bid = ct.bid(1)
             tile = ct.load(x, (bid, 1), (8, 8))
-            # Extract all 4 quadrants using 1-indexed slice indices
+            # Extract all 4 quadrants
             q0 = ct.extract(tile, (1, 1), (4, 4))  # Top-left
             q1 = ct.extract(tile, (2, 1), (4, 4))  # Bottom-left
             q2 = ct.extract(tile, (1, 2), (4, 4))  # Top-right
@@ -340,14 +340,14 @@ end
 
     @testset "extract real/imag pattern (FFT)" begin
         # This is the pattern used in FFT: shape (BS, N, 2) -> (BS, N, 1)
-        # Real at slice index 1, imag at slice index 2 (1-indexed)
+        # Real at slice index 1, imag at slice index 2
 
         function extract_real_imag_kernel(x_ri::ct.TileArray{Float32,3},
                                           y_real::ct.TileArray{Float32,3},
                                           y_imag::ct.TileArray{Float32,3})
             bid = ct.bid(1)
             tile = ct.load(x_ri, (bid, 1, 1), (2, 8, 2))  # (BS, N, real/imag)
-            # Extract real (slice 1) and imag (slice 2) in last dimension (1-indexed)
+            # Extract real (slice 1) and imag (slice 2) in last dimension
             real_part = ct.extract(tile, (1, 1, 1), (2, 8, 1))
             imag_part = ct.extract(tile, (1, 1, 2), (2, 8, 1))
             ct.store(y_real, (bid, 1, 1), real_part)
@@ -455,7 +455,7 @@ end
             bid = ct.bid(1)
             # Load 4x8 tile
             tile = ct.load(x, (bid, 1), (4, 8))
-            # Extract two 4x4 halves using 1-indexed slice indices
+            # Extract two 4x4 halves
             left = ct.extract(tile, (1, 1), (4, 4))   # rows 1-4, cols 1-4
             right = ct.extract(tile, (1, 2), (4, 4))  # rows 1-4, cols 5-8
             # Cat them back together along last axis
