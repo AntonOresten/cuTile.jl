@@ -24,13 +24,17 @@ end
 function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArray{T,2},
                        tm::ct.Constant{Int}, tn::ct.Constant{Int}, tk::ct.Constant{Int}) where {T}
     # Use 1D grid with swizzle for better cache locality
-    bid = ct.bid(0)
+    bid = ct.bid(1)
     M = A.sizes[1]
     N = B.sizes[2]
-    bid_m, bid_n = swizzle_2d(M, N, tm[], tn[], 8, bid)
+    # swizzle_2d expects 0-indexed bid, returns 0-indexed tile coords
+    bid_m_0, bid_n_0 = swizzle_2d(M, N, tm[], tn[], 8, bid - Int32(1))
+    # Convert to 1-indexed tile coordinates
+    bid_m = bid_m_0 + Int32(1)
+    bid_n = bid_n_0 + Int32(1)
 
     # Number of K tiles to iterate over
-    num_k = ct.num_tiles(A, 1, (tm[], tk[]))
+    num_k = ct.num_tiles(A, 2, (tm[], tk[]))
 
     # Initialize accumulator with Float32 for precision
     acc = ct.full((tm[], tn[]), zero(Float32), Float32)
@@ -38,8 +42,8 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     # K reduction loop - accumulate partial products
     # NOTE: Uses while-loop pattern. Native `for k in 0:n` syntax generates complex
     # iterator protocol IR that doesn't map cleanly to ForOp. Use while-loops for now.
-    k = Int32(0)
-    while k < num_k
+    k = Int32(1)
+    while k <= num_k
         # Load and convert to TF32 for tensor cores (Float32 only)
         # padding_mode=Zero ensures out-of-bounds reads return zero (for non-aligned dimensions)
         a = ct.load(A, (bid_m, k), (tm[], tk[]); padding_mode=ct.PaddingMode.Zero)

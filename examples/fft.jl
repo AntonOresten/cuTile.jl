@@ -47,42 +47,42 @@ function fft_kernel(
     D = d_const[]
     N2D = n2d_const[]
 
-    bid = ct.bid(0)
+    bid = ct.bid(1)
 
     # --- Load Input Data ---
     # Load packed input, reshape to (BS, N, 2) to separate real/imag
-    X_ri = ct.reshape(ct.load(x_packed_in, (bid, 0, 0), (BS, N2D, D)), (BS, N, 2))
+    X_ri = ct.reshape(ct.load(x_packed_in, (bid, 1, 1), (BS, N2D, D)), (BS, N, 2))
 
-    # Split real and imaginary parts using slice indices
+    # Split real and imaginary parts using slice indices (1-indexed)
     # Shape (BS, N, 2) → (BS, N, 1), then reshape to (BS, F0, F1, F2)
-    X_r = ct.reshape(ct.extract(X_ri, (0, 0, 0), (BS, N, 1)), (BS, F0, F1, F2))
-    X_i = ct.reshape(ct.extract(X_ri, (0, 0, 1), (BS, N, 1)), (BS, F0, F1, F2))
+    X_r = ct.reshape(ct.extract(X_ri, (1, 1, 1), (BS, N, 1)), (BS, F0, F1, F2))
+    X_i = ct.reshape(ct.extract(X_ri, (1, 1, 2), (BS, N, 1)), (BS, F0, F1, F2))
 
     # --- Load Rotation (W) and Twiddle (T) Matrices ---
     # W0 (F0 x F0) - broadcast to (BS, F0, F0) for batched matmul
-    W0_ri = ct.reshape(ct.load(W0, (0, 0, 0), (F0, F0, 2)), (F0, F0, 2))
-    W0_r = ct.broadcast_to(ct.reshape(ct.extract(W0_ri, (0, 0, 0), (F0, F0, 1)), (1, F0, F0)), (BS, F0, F0))
-    W0_i = ct.broadcast_to(ct.reshape(ct.extract(W0_ri, (0, 0, 1), (F0, F0, 1)), (1, F0, F0)), (BS, F0, F0))
+    W0_ri = ct.reshape(ct.load(W0, (1, 1, 1), (F0, F0, 2)), (F0, F0, 2))
+    W0_r = ct.broadcast_to(ct.reshape(ct.extract(W0_ri, (1, 1, 1), (F0, F0, 1)), (1, F0, F0)), (BS, F0, F0))
+    W0_i = ct.broadcast_to(ct.reshape(ct.extract(W0_ri, (1, 1, 2), (F0, F0, 1)), (1, F0, F0)), (BS, F0, F0))
 
     # W1 (F1 x F1) - broadcast to (BS, F1, F1)
-    W1_ri = ct.reshape(ct.load(W1, (0, 0, 0), (F1, F1, 2)), (F1, F1, 2))
-    W1_r = ct.broadcast_to(ct.reshape(ct.extract(W1_ri, (0, 0, 0), (F1, F1, 1)), (1, F1, F1)), (BS, F1, F1))
-    W1_i = ct.broadcast_to(ct.reshape(ct.extract(W1_ri, (0, 0, 1), (F1, F1, 1)), (1, F1, F1)), (BS, F1, F1))
+    W1_ri = ct.reshape(ct.load(W1, (1, 1, 1), (F1, F1, 2)), (F1, F1, 2))
+    W1_r = ct.broadcast_to(ct.reshape(ct.extract(W1_ri, (1, 1, 1), (F1, F1, 1)), (1, F1, F1)), (BS, F1, F1))
+    W1_i = ct.broadcast_to(ct.reshape(ct.extract(W1_ri, (1, 1, 2), (F1, F1, 1)), (1, F1, F1)), (BS, F1, F1))
 
     # W2 (F2 x F2) - broadcast to (BS, F2, F2)
-    W2_ri = ct.reshape(ct.load(W2, (0, 0, 0), (F2, F2, 2)), (F2, F2, 2))
-    W2_r = ct.broadcast_to(ct.reshape(ct.extract(W2_ri, (0, 0, 0), (F2, F2, 1)), (1, F2, F2)), (BS, F2, F2))
-    W2_i = ct.broadcast_to(ct.reshape(ct.extract(W2_ri, (0, 0, 1), (F2, F2, 1)), (1, F2, F2)), (BS, F2, F2))
+    W2_ri = ct.reshape(ct.load(W2, (1, 1, 1), (F2, F2, 2)), (F2, F2, 2))
+    W2_r = ct.broadcast_to(ct.reshape(ct.extract(W2_ri, (1, 1, 1), (F2, F2, 1)), (1, F2, F2)), (BS, F2, F2))
+    W2_i = ct.broadcast_to(ct.reshape(ct.extract(W2_ri, (1, 1, 2), (F2, F2, 1)), (1, F2, F2)), (BS, F2, F2))
 
     # T0 (F0 x F1F2)
-    T0_ri = ct.reshape(ct.load(T0, (0, 0, 0), (F0, F1F2, 2)), (F0, F1F2, 2))
-    T0_r = ct.reshape(ct.extract(T0_ri, (0, 0, 0), (F0, F1F2, 1)), (N, 1))
-    T0_i = ct.reshape(ct.extract(T0_ri, (0, 0, 1), (F0, F1F2, 1)), (N, 1))
+    T0_ri = ct.reshape(ct.load(T0, (1, 1, 1), (F0, F1F2, 2)), (F0, F1F2, 2))
+    T0_r = ct.reshape(ct.extract(T0_ri, (1, 1, 1), (F0, F1F2, 1)), (N, 1))
+    T0_i = ct.reshape(ct.extract(T0_ri, (1, 1, 2), (F0, F1F2, 1)), (N, 1))
 
     # T1 (F1 x F2)
-    T1_ri = ct.reshape(ct.load(T1, (0, 0, 0), (F1, F2, 2)), (F1, F2, 2))
-    T1_r = ct.reshape(ct.extract(T1_ri, (0, 0, 0), (F1, F2, 1)), (F1F2, 1))
-    T1_i = ct.reshape(ct.extract(T1_ri, (0, 0, 1), (F1, F2, 1)), (F1F2, 1))
+    T1_ri = ct.reshape(ct.load(T1, (1, 1, 1), (F1, F2, 2)), (F1, F2, 2))
+    T1_r = ct.reshape(ct.extract(T1_ri, (1, 1, 1), (F1, F2, 1)), (F1F2, 1))
+    T1_i = ct.reshape(ct.extract(T1_ri, (1, 1, 2), (F1, F2, 1)), (F1F2, 1))
 
     # --- CT0: Contract over F0 dimension ---
     X_r = ct.reshape(X_r, (BS, F0, F1F2))
@@ -94,8 +94,8 @@ function fft_kernel(
     # --- Twiddle & Permute 0 ---
     X_r2 = T0_r .* X_r_ .- T0_i .* X_i_
     X_i2 = T0_i .* X_r_ .+ T0_r .* X_i_
-    X_r3 = ct.permute(ct.reshape(X_r2, (BS, F0, F1, F2)), Val((0, 2, 3, 1)))
-    X_i3 = ct.permute(ct.reshape(X_i2, (BS, F0, F1, F2)), Val((0, 2, 3, 1)))
+    X_r3 = ct.permute(ct.reshape(X_r2, (BS, F0, F1, F2)), (1, 3, 4, 2))
+    X_i3 = ct.permute(ct.reshape(X_i2, (BS, F0, F1, F2)), (1, 3, 4, 2))
 
     # --- CT1: Contract over F1 dimension ---
     X_r4 = ct.reshape(X_r3, (BS, F1, F0F2))
@@ -106,8 +106,8 @@ function fft_kernel(
     # --- Twiddle & Permute 1 ---
     X_r6 = T1_r .* X_r5 .- T1_i .* X_i5
     X_i6 = T1_i .* X_r5 .+ T1_r .* X_i5
-    X_r7 = ct.permute(ct.reshape(X_r6, (BS, F1, F2, F0)), Val((0, 2, 3, 1)))
-    X_i7 = ct.permute(ct.reshape(X_i6, (BS, F1, F2, F0)), Val((0, 2, 3, 1)))
+    X_r7 = ct.permute(ct.reshape(X_r6, (BS, F1, F2, F0)), (1, 3, 4, 2))
+    X_i7 = ct.permute(ct.reshape(X_i6, (BS, F1, F2, F0)), (1, 3, 4, 2))
 
     # --- CT2: Contract over F2 dimension ---
     X_r8 = ct.reshape(X_r7, (BS, F2, F0F1))
@@ -116,14 +116,14 @@ function fft_kernel(
     X_i9 = ct.matmul(W2_i, X_r8) + ct.matmul(W2_r, X_i8)
 
     # --- Final Permutation ---
-    X_r_out = ct.permute(ct.reshape(X_r9, (BS, F2, F0, F1)), Val((0, 1, 3, 2)))
-    X_i_out = ct.permute(ct.reshape(X_i9, (BS, F2, F0, F1)), Val((0, 1, 3, 2)))
+    X_r_out = ct.permute(ct.reshape(X_r9, (BS, F2, F0, F1)), (1, 2, 4, 3))
+    X_i_out = ct.permute(ct.reshape(X_i9, (BS, F2, F0, F1)), (1, 2, 4, 3))
     X_r_final = ct.reshape(X_r_out, (BS, N, 1))
     X_i_final = ct.reshape(X_i_out, (BS, N, 1))
 
     # --- Concatenate and Store ---
-    Y_ri = ct.reshape(ct.cat((X_r_final, X_i_final), Val(-1)), (BS, N2D, D))
-    ct.store(y_packed_out, (bid, 0, 0), Y_ri)
+    Y_ri = ct.reshape(ct.cat((X_r_final, X_i_final), -1), (BS, N2D, D))
+    ct.store(y_packed_out, (bid, 1, 1), Y_ri)
 
     return
 end

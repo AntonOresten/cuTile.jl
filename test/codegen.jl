@@ -23,7 +23,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "reshape"
                     reshaped = ct.reshape(tile, (32,))
@@ -36,7 +36,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (64,))
                     @check "reshape"
                     reshaped = ct.reshape(tile, (8, 8))
@@ -49,7 +49,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (2, 4, 8))
                     @check "reshape"
                     reshaped = ct.reshape(tile, (2, 32))
@@ -64,10 +64,10 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "permute"
-                    permuted = ct.permute(tile, (1, 0))
+                    permuted = ct.permute(tile, (2, 1))
                     ct.store(b, pid, permuted)
                     return
                 end
@@ -77,11 +77,11 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (2, 4, 8))
                     @check "permute"
-                    # (2,4,8) with perm (2,0,1) -> (8,2,4)
-                    permuted = ct.permute(tile, (2, 0, 1))
+                    # (2,4,8) with perm (3,1,2) -> (8,2,4)
+                    permuted = ct.permute(tile, (3, 1, 2))
                     ct.store(b, pid, permuted)
                     return
                 end
@@ -91,11 +91,11 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (2, 4, 8))
                     @check "permute"
-                    # (2,4,8) with perm (0,1,2) -> (2,4,8) (identity)
-                    permuted = ct.permute(tile, (0, 1, 2))
+                    # (2,4,8) with perm (1,2,3) -> (2,4,8) (identity)
+                    permuted = ct.permute(tile, (1, 2, 3))
                     ct.store(b, pid, permuted)
                     return
                 end
@@ -107,11 +107,11 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 8))
                     @check "extract"
-                    # Extract 2x4 slice starting at (1, 2)
-                    extracted = ct.extract(tile, (1, 2), (2, 4))
+                    # Extract 2x4 slice starting at (2, 3) (1-indexed)
+                    extracted = ct.extract(tile, (2, 3), (2, 4))
                     ct.store(b, pid, extracted)
                     return
                 end
@@ -121,11 +121,11 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (2, 4, 2))  # (batch, N, real/imag)
                     @check "extract"
-                    # Extract real component (index 0 in last dimension)
-                    real_part = ct.extract(tile, (0, 0, 0), (2, 4, 1))
+                    # Extract real component (index 1 in last dimension, 1-indexed)
+                    real_part = ct.extract(tile, (1, 1, 1), (2, 4, 1))
                     ct.store(b, pid, real_part)
                     return
                 end
@@ -137,7 +137,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile1 = ct.load(a, pid, (4, 4))
                     tile2 = ct.load(b, pid, (4, 4))
                     @check "cat"
@@ -151,11 +151,11 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile1 = ct.load(a, pid, (4, 8))
                     tile2 = ct.load(b, pid, (4, 8))
                     @check "cat"
-                    combined = ct.cat((tile1, tile2), Val(0))  # -> (8, 8)
+                    combined = ct.cat((tile1, tile2), Val(1))  # -> (8, 8)
                     ct.store(a, pid, combined)
                     return
                 end
@@ -166,7 +166,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (1, 16))
                     @check "broadcast"
                     expanded = ct.broadcast_to(tile, (32, 16))
@@ -180,7 +180,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     @check "cmpf"
@@ -196,7 +196,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Int32}, Ptr{Int32}, Ptr{Int32}}) do a::Ptr{Int32}, b::Ptr{Int32}, c::Ptr{Int32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     @check "cmpi"
@@ -212,7 +212,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}}) do a::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     @check "constant"
                     tile = ct.full((16,), 0.0f0, Float32)
                     ct.store(a, pid, tile)
@@ -226,7 +226,7 @@
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}}) do a::Ptr{Float32}
                     @check "get_num_tile_blocks"
-                    nb = ct.num_blocks(0)
+                    nb = ct.num_blocks(1)
                     return
                 end
             end
@@ -237,7 +237,7 @@
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}}) do a::Ptr{Float32}
                     @check "get_tile_block_id"
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     return
                 end
             end
@@ -247,7 +247,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Int32}}) do a::Ptr{Int32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     @check "iota"
                     tile = ct.arange((16,), Int32)
                     ct.store(a, pid, tile)
@@ -260,8 +260,8 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    bidx = ct.bid(0)
-                    bidy = ct.bid(1)
+                    bidx = ct.bid(1)
+                    bidy = ct.bid(2)
                     tile_a = ct.load(a, bidx, (32, 16))
                     tile_b = ct.load(b, bidy, (16, 32))
                     acc = ct.full((32, 32), 0.0f0, Float32)
@@ -277,8 +277,8 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    bidx = ct.bid(0)
-                    bidy = ct.bid(1)
+                    bidx = ct.bid(1)
+                    bidy = ct.bid(2)
                     tile_a = ct.load(a, bidx, (32, 16))
                     tile_b = ct.load(b, bidy, (16, 32))
                     # matmul = mma with zero accumulator
@@ -294,8 +294,8 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    bidx = ct.bid(0)
-                    bidy = ct.bid(1)
+                    bidx = ct.bid(1)
+                    bidy = ct.bid(2)
                     tile = ct.load(a, (bidx, bidy), (32, 64))
                     @check "permute"
                     transposed = ct.transpose(tile)
@@ -309,11 +309,11 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "reduce"
                     @check "addf"
-                    sums = ct.reduce_sum(tile, 1)
+                    sums = ct.reduce_sum(tile, 2)
                     ct.store(b, pid, sums)
                     return
                 end
@@ -322,11 +322,11 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (4, 16))
                     @check "reduce"
                     @check "maxf"
-                    maxes = ct.reduce_max(tile, 1)
+                    maxes = ct.reduce_max(tile, 2)
                     ct.store(b, pid, maxes)
                     return
                 end
@@ -337,7 +337,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     mask = tile_a .> tile_b
@@ -368,7 +368,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float16}}) do a::Ptr{Float32}, b::Ptr{Float16}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
                     converted = ct.astype(tile, Float16)
@@ -381,7 +381,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "ftof"
                     converted = convert(ct.Tile{ct.TFloat32}, tile)
@@ -403,12 +403,12 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Int32}) do a::Ptr{Float32}, b::Ptr{Float32}, n::Int32
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     acc = ct.full((16,), 0.0f0, Float32)
                     @check "for"
-                    k = Int32(0)
-                    while k < n
-                        tile = ct.load(a, pid * n + k, (16,))
+                    k = Int32(1)
+                    while k <= n
+                        tile = ct.load(a, (pid - Int32(1)) * n + k, (16,))
                         acc = acc + tile
                         k += Int32(1)
                     end
@@ -423,7 +423,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Int32,1,spec}, ct.TileArray{Float32,1,spec}}) do locks, data
-                    bid = ct.bid(0)
+                    bid = ct.bid(1)
                     @check "loop"
                     # Spinloop - unbounded iteration
                     while ct.atomic_cas(locks, bid, Int32(0), Int32(1);
@@ -462,7 +462,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     @check "load_view_tko"
                     tile = ct.load(a, pid, (16,))
                     @check "store_view_tko"
@@ -475,8 +475,8 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    bidx = ct.bid(0)
-                    bidy = ct.bid(1)
+                    bidx = ct.bid(1)
+                    bidy = ct.bid(2)
                     @check "load_view_tko"
                     tile = ct.load(a, (bidx, bidy), (32, 32))
                     @check "store_view_tko"
@@ -527,7 +527,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     @check "addf"
@@ -542,7 +542,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     @check "subf"
@@ -557,7 +557,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     @check "mulf"
@@ -572,7 +572,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}, c::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (16,))
                     tile_b = ct.load(b, pid, (16,))
                     @check "divf"
@@ -587,7 +587,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "sqrt"
                     result = sqrt(tile)
@@ -602,7 +602,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "broadcast"
                     @check "addf"
@@ -616,7 +616,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "broadcast"
                     @check "subf"
@@ -630,7 +630,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "broadcast"
                     @check "mulf"
@@ -644,7 +644,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "broadcast"
                     @check "divf"
@@ -675,7 +675,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{Ptr{Int32}, Ptr{Int32}}) do a::Ptr{Int32}, b::Ptr{Int32}
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     tile = ct.load(a, pid, (16,))
                     @check "addi"
                     result = tile + tile
@@ -733,7 +733,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
-                    bid = ct.bid(0)
+                    bid = ct.bid(1)
                     @check "atomic_cas_tko"
                     old = ct.atomic_cas(locks, bid, Int32(0), Int32(1);
                                         memory_order=ct.MemoryOrder.Acquire)
@@ -748,7 +748,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
-                    bid = ct.bid(0)
+                    bid = ct.bid(1)
                     @check "atomic_rmw_tko"
                     ct.atomic_xchg(locks, bid, Int32(0);
                                   memory_order=ct.MemoryOrder.Release)
@@ -761,7 +761,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do counters
-                    bid = ct.bid(0)
+                    bid = ct.bid(1)
                     @check "atomic_rmw_tko"
                     ct.atomic_add(counters, bid, 1.0f0)
                     return
@@ -783,7 +783,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     @check "load_view_tko"
                     tile = ct.load(a, pid, (16,))
                     @check "store_view_tko"
@@ -797,8 +797,8 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b
-                    bidx = ct.bid(0)
-                    bidy = ct.bid(1)
+                    bidx = ct.bid(1)
+                    bidy = ct.bid(2)
                     @check "load_view_tko"
                     tile = ct.load(a, (bidx, bidy), (32, 32))
                     @check "store_view_tko"
@@ -811,7 +811,7 @@
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     @check "load_view_tko"
                     tile = ct.load(a, pid, (16,); padding_mode=ct.PaddingMode.Zero)
                     ct.store(b, pid, tile)
@@ -827,7 +827,7 @@
                 code_tiled(Tuple{ct.TileArray{Float32,2,spec}}) do a
                     @check "addi"
                     @check "divi"
-                    num = ct.num_tiles(a, 0, (32, 32))
+                    num = ct.num_tiles(a, 1, (32, 32))
                     return
                 end
             end
@@ -850,7 +850,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{Ptr{Float32}, Ptr{Float32}}) do a::Ptr{Float32}, b::Ptr{Float32}
-                pid = ct.bid(0)
+                pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 ct.store(b, pid, tile)
                 return
@@ -862,7 +862,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{Ptr{Float64}, Ptr{Float64}}) do a::Ptr{Float64}, b::Ptr{Float64}
-                pid = ct.bid(0)
+                pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "addf"
                 result = tile + tile
@@ -876,7 +876,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{Ptr{Float16}, Ptr{Float16}}) do a::Ptr{Float16}, b::Ptr{Float16}
-                pid = ct.bid(0)
+                pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "addf"
                 result = tile + tile
@@ -890,7 +890,7 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{Ptr{Int32}, Ptr{Int32}}) do a::Ptr{Int32}, b::Ptr{Int32}
-                pid = ct.bid(0)
+                pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 @check "addi"
                 result = tile + tile
@@ -912,7 +912,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, ct.Constant{Int,16}}) do a, b, c, tile
                 @check "get_tile_block_id"
-                bid = ct.bid(0)
+                bid = ct.bid(1)
                 @check "load_view_tko"
                 a_tile = ct.load(a, bid, (tile[],))
                 @check "load_view_tko"
@@ -933,8 +933,8 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.Constant{Int,32}, ct.Constant{Int,32}}) do x, y, tm, tn
                 @check "get_tile_block_id"
-                bidx = ct.bid(0)
-                bidy = ct.bid(1)
+                bidx = ct.bid(1)
+                bidy = ct.bid(2)
                 @check "load_view_tko"
                 input_tile = ct.load(x, (bidx, bidy), (tm[], tn[]))
                 @check "permute"
@@ -952,16 +952,16 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.Constant{Int,32}, ct.Constant{Int,32}, ct.Constant{Int,16}}) do A, B, C, tm, tn, tk
-                bid = ct.bid(0)
-                num_k = ct.num_tiles(A, 1, (tm[], tk[]))
+                bid = ct.bid(1)
+                num_k = ct.num_tiles(A, 2, (tm[], tk[]))
                 @check "broadcast"
                 acc = ct.full((tm[], tn[]), zero(Float32), Float32)
                 # NOTE: Uses while-loop pattern because Julia's for-loop generates
                 # complex iterator IR with PhiNodes that isn't fully supported.
                 # The structurizer upgrades this counting while-loop to a ForOp.
                 @check "for"
-                k = Int32(0)
-                while k < num_k
+                k = Int32(1)
+                while k <= num_k
                     @check "load_view_tko"
                     a = ct.load(A, (bid, k), (tm[], tk[]); padding_mode=ct.PaddingMode.Zero)
                     @check "load_view_tko"
@@ -986,26 +986,26 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec},
                            ct.TileArray{Float32,1,spec1d}, ct.Constant{Int,16}}) do X, Y, Sum, TILE_N
-                bid_m = ct.bid(0)
-                num_tiles = ct.num_tiles(X, 1, (1, TILE_N[]))
+                bid_m = ct.bid(1)
+                num_tiles = ct.num_tiles(X, 2, (1, TILE_N[]))
 
                 # First for loop: compute sum
                 @check "for"
                 acc = ct.full((1, TILE_N[]), 0.0f0, Float32)
-                j = Int32(0)
-                while j < num_tiles
+                j = Int32(1)
+                while j <= num_tiles
                     tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
                     acc = acc .+ tx
                     j += Int32(1)
                 end
                 @check "reduce"
-                sum_val = ct.reduce_sum(acc, 1)
+                sum_val = ct.reduce_sum(acc, 2)
                 ct.store(Sum, bid_m, sum_val)
 
                 # Second for loop: scale output by sum
                 @check "for"
-                j = Int32(0)
-                while j < num_tiles
+                j = Int32(1)
+                while j <= num_tiles
                     tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
                     ty = tx .* sum_val
                     ct.store(Y, (bid_m, j), ty)
@@ -1025,12 +1025,12 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d},
                            ct.TileArray{Int32,1,spec}, Int32, ct.Constant{Int,16}}) do DW, Partial, Locks, group_bid, TILE_N
-                bid = ct.bid(0)
-                num_tiles = ct.num_tiles(DW, 1, (1, TILE_N[]))
+                bid = ct.bid(1)
+                num_tiles = ct.num_tiles(DW, 2, (1, TILE_N[]))
 
                 @check "for"
-                j = Int32(0)
-                while j < num_tiles
+                j = Int32(1)
+                while j <= num_tiles
                     # Load and compute partial result
                     partial = ct.load(Partial, (bid, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
 
@@ -1071,16 +1071,18 @@ end
             @check_label "entry"
             @check "for %loopIdx in"
             @check "loop iter_values"
-            # The store MUST use loopIdx for the column index, not the spinloop result
-            # First index can be any value (direct outer ref or iter_arg), second must be loopIdx
-            @check "store_view_tko{{.*}}[%{{[^,]+}}, %loopIdx]"
+            # The store MUST use a column index derived from loopIdx, not the spinloop result
+            # After 1→0 index conversion, the store uses (loopIdx - 1), captured as [[IDX]]
+            @check "[[IDX:%.+]] = subi %loopIdx"
+            @check "store_view_tko{{.*}}[%{{[^,]+}}, [[IDX]]]"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                            Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
-                bid_m = ct.bid(0)
-                group_bid_m = bid_m % Int32(GROUP_SIZE_M[])
+                bid_m = ct.bid(1)
+                # group_bid_m: 1-indexed group ID
+                group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M[])) + Int32(1)
 
-                j = Int32(0)
-                while j < num_iters
+                j = Int32(1)
+                while j <= num_iters
                     # Nested spinloop - this must not shadow loopIdx
                     while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
@@ -1112,11 +1114,12 @@ end
         @test begin
             tir = code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                                Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
-                bid_m = ct.bid(0)
-                group_bid_m = bid_m % Int32(GROUP_SIZE_M[])
+                bid_m = ct.bid(1)
+                # group_bid_m: 1-indexed group ID
+                group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M[])) + Int32(1)
 
-                j = Int32(0)
-                while j < num_iters
+                j = Int32(1)
+                while j <= num_iters
                     # Spinloop should use group_bid_m for the lock, not j
                     while ct.atomic_cas(Locks, group_bid_m, Int32(0), Int32(1);
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
@@ -1149,7 +1152,7 @@ end
             @check "loop iter_values"
             @check "loop iter_values"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do Locks1, Locks2
-                idx = ct.bid(0)
+                idx = ct.bid(1)
 
                 # Outer spinloop
                 while ct.atomic_cas(Locks1, idx, Int32(0), Int32(1);
@@ -1176,10 +1179,10 @@ end
             @check "for %loopIdx in"
             @check "loop iter_values"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, Int32}) do Locks, num_iters
-                idx = ct.bid(0)
+                idx = ct.bid(1)
 
-                j = Int32(0)
-                while j < num_iters
+                j = Int32(1)
+                while j <= num_iters
                     # Inner spinloop - the presence of this nested loop shouldn't prevent
                     # the outer loop from being detected as a for-loop pattern
                     while ct.atomic_cas(Locks, idx, Int32(0), Int32(1);
@@ -1214,20 +1217,20 @@ end
             code_tiled(Tuple{ct.TileArray{Float32, 2, spec2d}, ct.TileArray{Float32, 2, spec2d},
                            ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
                            ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
-                bid_n = ct.bid(0)
-                num_tiles = ct.num_tiles(DW, 0, (_TILE_M[], _TILE_N[]))
+                bid_n = ct.bid(1)
+                num_tiles = ct.num_tiles(DW, 1, (_TILE_M[], _TILE_N[]))
 
                 dw = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
                 db = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
-                i = Int32(0)
-                while i < num_tiles
+                i = Int32(1)
+                while i <= num_tiles
                     dw = dw .+ ct.load(DW, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
                     db = db .+ ct.load(DB, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
                     i += Int32(1)
                 end
 
-                sum_dw = ct.reduce_sum(dw, 0)
-                sum_db = ct.reduce_sum(db, 0)
+                sum_dw = ct.reduce_sum(dw, 1)
+                sum_db = ct.reduce_sum(db, 1)
 
                 ct.store(FINAL_DW, bid_n, sum_dw)
                 ct.store(FINAL_DB, bid_n, sum_db)
@@ -1253,26 +1256,26 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec},
                            ct.Constant{Int,16}}) do out, inp, TILE_N
-                bid = ct.bid(0)
-                num_tiles = ct.num_tiles(inp, 0, (TILE_N[],))
+                bid = ct.bid(1)
+                num_tiles = ct.num_tiles(inp, 1, (TILE_N[],))
 
                 # First loop: accumulate and reduce
                 @check "for"
                 acc = ct.zeros((TILE_N[],), Float32)
-                i = Int32(0)
-                while i < num_tiles
+                i = Int32(1)
+                while i <= num_tiles
                     tile = ct.load(inp, i, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
                     acc = acc .+ tile
                     i += Int32(1)
                 end
                 @check "reduce"
-                sum_val = ct.reduce_sum(acc, 0)
+                sum_val = ct.reduce_sum(acc, 1)
 
                 # Second loop: use sum_val AND accumulate
                 @check "for"
                 acc2 = ct.zeros((TILE_N[],), Float32)
-                i = Int32(0)
-                while i < num_tiles
+                i = Int32(1)
+                while i <= num_tiles
                     tile = ct.load(inp, i, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
                     @check "subf"
                     acc2 = acc2 .+ (tile .- sum_val)  # Uses sum_val from first loop
@@ -1280,7 +1283,7 @@ end
                 end
                 @check "reduce"
                 @check "store_view_tko"
-                ct.store(out, bid, ct.reduce_sum(acc2, 0))
+                ct.store(out, bid, ct.reduce_sum(acc2, 1))
 
                 return
             end
@@ -1297,7 +1300,7 @@ end
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     # Create index tile (simple: just use arange)
                     @check "iota"
                     indices = ct.arange((16,), Int32)
@@ -1315,7 +1318,7 @@ end
             @test @filecheck begin
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}}) do a, b
-                    pid = ct.bid(0)
+                    pid = ct.bid(1)
                     # Load tile
                     tile = ct.load(a, pid, (16,))
                     # Create index tile (simple: just use arange)

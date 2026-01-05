@@ -15,7 +15,7 @@ emit_intrinsic!(ctx::CodegenContext, ::typeof(isa), args, @nospecialize(result_t
 # cuTile intrinsics
 #-----------------------------------------------------------------------------
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(bid), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_bid), args, @nospecialize(result_type))
     axis = @something get_constant(ctx, args[1]) error("bid() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("bid() axis must be 0, 1, or 2, got $axis")
 
@@ -26,7 +26,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(bid), args, @nospecialize
     CGVal(result, res_type, Int32)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(num_blocks), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_num_blocks), args, @nospecialize(result_type))
     axis = @something get_constant(ctx, args[1]) error("num_blocks() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("num_blocks() axis must be 0, 1, or 2, got $axis")
 
@@ -65,15 +65,15 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(reshape), args, @nospecia
     emit_reshape!(ctx, args, result_type)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(permute), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_permute), args, @nospecialize(result_type))
     emit_permute!(ctx, args, result_type)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(extract), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_extract), args, @nospecialize(result_type))
     emit_extract!(ctx, args, result_type)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(cat), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_cat), args, @nospecialize(result_type))
     emit_cat!(ctx, args, result_type)
 end
 
@@ -85,7 +85,7 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(full), args, @nospecializ
     emit_full!(ctx, args, result_type)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(num_tiles), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_num_tiles), args, @nospecialize(result_type))
     emit_num_tiles!(ctx, args, result_type)
 end
 
@@ -1612,7 +1612,7 @@ end
  Tile Factory Operations
 =============================================================================#
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(arange), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_arange), args, @nospecialize(result_type))
     cb = ctx.cb
     tt = ctx.tt
 
@@ -1641,11 +1641,11 @@ end
  Reduction Operations
 =============================================================================#
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(reduce_sum), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_reduce_sum), args, @nospecialize(result_type))
     emit_reduce!(ctx, args, result_type, :add)
 end
 
-function emit_intrinsic!(ctx::CodegenContext, ::typeof(reduce_max), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(_reduce_max), args, @nospecialize(result_type))
     emit_reduce!(ctx, args, result_type, :max)
 end
 

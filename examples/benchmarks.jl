@@ -96,7 +96,7 @@ end
 
 # cuTile kernel
 function vadd_cutile_kernel(a, b, c, tile_size::ct.Constant{Int})
-    pid = ct.bid(0)
+    pid = ct.bid(1)
     tile_a = ct.load(a, pid, (tile_size[],))
     tile_b = ct.load(b, pid, (tile_size[],))
     result = tile_a + tile_b
@@ -190,8 +190,8 @@ end
 
 # cuTile kernel
 function transpose_cutile_kernel(input, output, tile_m::ct.Constant{Int}, tile_n::ct.Constant{Int})
-    pid_m = ct.bid(0)
-    pid_n = ct.bid(1)
+    pid_m = ct.bid(1)
+    pid_n = ct.bid(2)
     tile = ct.load(input, (pid_m, pid_n), (tile_m[], tile_n[]))
     tile_t = ct.transpose(tile)
     ct.store(output, (pid_n, pid_m), tile_t)
@@ -262,7 +262,7 @@ end
  Matrix Multiplication
 =============================================================================#
 
-# 2D swizzle for better L2 cache locality
+# 2D swizzle for better L2 cache locality (using 0-indexed block IDs)
 @inline function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
     num_bid_m = ct.cdiv(M, Int32(tm))
     num_bid_n = ct.cdiv(N, Int32(tn))
@@ -278,19 +278,21 @@ end
 # cuTile matmul kernel with TF32 tensor cores
 function matmul_cutile_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArray{T,2},
                               tm::ct.Constant{Int}, tn::ct.Constant{Int}, tk::ct.Constant{Int}) where {T}
-    bid = ct.bid(0)
+    bid = ct.bid(1)
     M = A.sizes[1]
     N = B.sizes[2]
-    bid_m, bid_n = swizzle_2d(M, N, tm[], tn[], 8, bid)
+    bid_m_0, bid_n_0 = swizzle_2d(M, N, tm[], tn[], 8, bid - Int32(1))
+    bid_m = bid_m_0 + Int32(1)
+    bid_n = bid_n_0 + Int32(1)
 
-    num_k = ct.num_tiles(A, 1, (tm[], tk[]))
+    num_k = ct.num_tiles(A, 2, (tm[], tk[]))
     acc = ct.full((tm[], tn[]), zero(Float32), Float32)
 
     # Use TF32 for tensor cores
     dtype = T === Float32 ? ct.TFloat32 : T
 
-    k = Int32(0)
-    while k < num_k
+    k = Int32(1)
+    while k <= num_k
         a = ct.astype(ct.load(A, (bid_m, k), (tm[], tk[])), dtype)
         b = ct.astype(ct.load(B, (k, bid_n), (tk[], tn[])), dtype)
         acc = ct.mma(a, b, acc)
@@ -399,38 +401,39 @@ function layernorm_cutile_kernel(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Fl
                                   B::ct.TileArray{Float32, 1}, Y::ct.TileArray{Float32, 2},
                                   Mean::ct.TileArray{Float32, 1}, Rstd::ct.TileArray{Float32, 1},
                                   eps::ct.Constant{Float32}, TILE_N::ct.Constant{Int})
-    bid_m = ct.bid(0)
-    num_tiles = ct.num_tiles(X, 1, (1, TILE_N[]))
+    bid_m = ct.bid(1)
+    num_tiles = ct.num_tiles(X, 2, (1, TILE_N[]))
     N = X.sizes[2]
 
     # Compute mean
     mean = ct.full((1, TILE_N[]), 0.0f0, Float32)
-    j = Int32(0)
-    while j < num_tiles
+    j = Int32(1)
+    while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
         mean = mean .+ tx
         j += Int32(1)
     end
-    mean = ct.reduce_sum(mean, 1) / N
+    mean = ct.reduce_sum(mean, 2) / N
     ct.store(Mean, bid_m, mean)
 
     # Compute variance
     var = ct.full((1, TILE_N[]), 0.0f0, Float32)
-    j = Int32(0)
-    while j < num_tiles
+    j = Int32(1)
+    while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
-        mask = ct.broadcast_to((j * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .< N, (1, TILE_N[]))
+        # Mask for valid elements
+        mask = ct.broadcast_to(((j - Int32(1)) * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .<= N, (1, TILE_N[]))
         centered_tx = ct.where(mask, tx .- mean, ct.full((1, TILE_N[]), 0.0f0, Float32))
         var = var .+ (centered_tx .^ 2.0f0)
         j += Int32(1)
     end
-    var = ct.reduce_sum(var, 1) / N
+    var = ct.reduce_sum(var, 2) / N
     rstd = 1.0f0 / sqrt(var .+ eps[])
     ct.store(Rstd, bid_m, rstd)
 
     # Normalize and apply affine transformation
-    j = Int32(0)
-    while j < num_tiles
+    j = Int32(1)
+    while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]))
         tw = ct.load(W, j, (TILE_N[],))
         tb = ct.load(B, j, (TILE_N[],))

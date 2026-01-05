@@ -5,7 +5,7 @@ using CUDA
 @testset "1D vector add" begin
     function vadd_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                      c::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile_a = ct.load(a, pid, (16,))
         tile_b = ct.load(b, pid, (16,))
         ct.store(c, pid, tile_a + tile_b)
@@ -26,7 +26,7 @@ end
 @testset "1D vector sub" begin
     function vsub_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                      c::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile_a = ct.load(a, pid, (16,))
         tile_b = ct.load(b, pid, (16,))
         ct.store(c, pid, tile_a - tile_b)
@@ -47,7 +47,7 @@ end
 @testset "1D vector mul" begin
     function vmul_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                      c::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile_a = ct.load(a, pid, (16,))
         tile_b = ct.load(b, pid, (16,))
         ct.store(c, pid, tile_a * tile_b)
@@ -68,8 +68,8 @@ end
 @testset "2D matrix add" begin
     function madd_2d(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                      c::ct.TileArray{Float32,2})
-        bidx = ct.bid(0)
-        bidy = ct.bid(1)
+        bidx = ct.bid(1)
+        bidy = ct.bid(2)
         tile_a = ct.load(a, (bidx, bidy), (32, 32))
         tile_b = ct.load(b, (bidx, bidy), (32, 32))
         ct.store(c, (bidx, bidy), tile_a + tile_b)
@@ -89,8 +89,8 @@ end
 
 @testset "transpose" begin
     function transpose_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
-        bidx = ct.bid(0)
-        bidy = ct.bid(1)
+        bidx = ct.bid(1)
+        bidy = ct.bid(2)
         tile = ct.load(x, (bidx, bidy), (32, 32))
         transposed = ct.transpose(tile)
         ct.store(y, (bidy, bidx), transposed)
@@ -110,9 +110,9 @@ end
 @testset "reshape" begin
     @testset "2D -> 1D reshape preserves elements" begin
         function reshape_2d_to_1d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,1})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load a 4x8 tile
-            tile = ct.load(x, (bid, 0), (4, 8))
+            tile = ct.load(x, (bid, 1), (4, 8))
             # Reshape to 32 elements (flat)
             reshaped = ct.reshape(tile, (32,))
             ct.store(y, bid, reshaped)
@@ -140,12 +140,12 @@ end
 
     @testset "1D -> 2D reshape preserves elements" begin
         function reshape_1d_to_2d_kernel(x::ct.TileArray{Float32,1}, y::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load 32 elements
             tile = ct.load(x, bid, (32,))
             # Reshape to 4x8
             reshaped = ct.reshape(tile, (4, 8))
-            ct.store(y, (bid, 0), reshaped)
+            ct.store(y, (bid, 1), reshaped)
             return
         end
 
@@ -170,13 +170,13 @@ end
 
     @testset "reshape roundtrip preserves data" begin
         function reshape_roundtrip_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load 8x4 tile
-            tile = ct.load(x, (bid, 0), (8, 4))
+            tile = ct.load(x, (bid, 1), (8, 4))
             # Reshape to 32, then back to 8x4
             flat = ct.reshape(tile, (32,))
             back = ct.reshape(flat, (8, 4))
-            ct.store(y, (bid, 0), back)
+            ct.store(y, (bid, 1), back)
             return
         end
 
@@ -193,12 +193,12 @@ end
 @testset "permute" begin
     @testset "2D permute (transpose-like)" begin
         function permute_2d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load 8x4 tile
-            tile = ct.load(x, (bid, 0), (8, 4))
+            tile = ct.load(x, (bid, 1), (8, 4))
             # Permute with (1, 0) to swap dimensions: (8, 4) -> (4, 8)
-            permuted = ct.permute(tile, (1, 0))
-            ct.store(y, (bid, 0), permuted)
+            permuted = ct.permute(tile, (2, 1))
+            ct.store(y, (bid, 1), permuted)
             return
         end
 
@@ -223,13 +223,13 @@ end
 
     @testset "permute roundtrip preserves data" begin
         function permute_roundtrip_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load 4x8 tile
-            tile = ct.load(x, (bid, 0), (4, 8))
+            tile = ct.load(x, (bid, 1), (4, 8))
             # Permute with (1, 0), then back with (1, 0)
-            permuted = ct.permute(tile, (1, 0))  # (4, 8) -> (8, 4)
-            back = ct.permute(permuted, (1, 0))  # (8, 4) -> (4, 8)
-            ct.store(y, (bid, 0), back)
+            permuted = ct.permute(tile, (2, 1))  # (4, 8) -> (8, 4)
+            back = ct.permute(permuted, (2, 1))  # (8, 4) -> (4, 8)
+            ct.store(y, (bid, 1), back)
             return
         end
 
@@ -246,12 +246,12 @@ end
 @testset "extract" begin
     @testset "extract identity (0,0) full shape" begin
         function extract_identity_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load 4x8 tile
-            tile = ct.load(x, (bid, 0), (4, 8))
+            tile = ct.load(x, (bid, 1), (4, 8))
             # Extract the full tile starting at (0, 0)
-            extracted = ct.extract(tile, (0, 0), (4, 8))
-            ct.store(y, (bid, 0), extracted)
+            extracted = ct.extract(tile, (2, 2), (4, 8))
+            ct.store(y, (bid, 1), extracted)
             return
         end
 
@@ -265,14 +265,14 @@ end
         @test Array(y) ≈ Array(x)
     end
 
-    @testset "extract (0,0) smaller shape" begin
+    @testset "extract (1,1) smaller shape" begin
         function extract_smaller_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load 8x8 tile
-            tile = ct.load(x, (bid, 0), (8, 8))
-            # Extract 4x4 at (0, 0) - top-left corner
-            extracted = ct.extract(tile, (0, 0), (4, 4))
-            ct.store(y, (bid, 0), extracted)
+            tile = ct.load(x, (bid, 1), (8, 8))
+            # Extract 4x4 at (1, 1) - top-left corner
+            extracted = ct.extract(tile, (1, 1), (4, 4))
+            ct.store(y, (bid, 1), extracted)
             return
         end
 
@@ -296,25 +296,25 @@ end
 
     @testset "extract with slice indices" begin
         # Extract uses SLICE INDICES, not offsets!
-        # For shape (8,8) -> (4,4): valid indices are {0,1} x {0,1}
-        # Index (1, 0) extracts rows 4-7 (the second slice in first dimension)
+        # For shape (8,8) -> (4,4): valid indices are {1,2} x {1,2}
+        # Index (2, 1) extracts rows 5-8 (the second slice in first dimension)
 
         function extract_all_quadrants_kernel(x::ct.TileArray{Float32,2},
                                               y0::ct.TileArray{Float32,2},
                                               y1::ct.TileArray{Float32,2},
                                               y2::ct.TileArray{Float32,2},
                                               y3::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
-            tile = ct.load(x, (bid, 0), (8, 8))
-            # Extract all 4 quadrants using slice indices
-            q0 = ct.extract(tile, (0, 0), (4, 4))  # Top-left
-            q1 = ct.extract(tile, (1, 0), (4, 4))  # Bottom-left
-            q2 = ct.extract(tile, (0, 1), (4, 4))  # Top-right
-            q3 = ct.extract(tile, (1, 1), (4, 4))  # Bottom-right
-            ct.store(y0, (bid, 0), q0)
-            ct.store(y1, (bid, 0), q1)
-            ct.store(y2, (bid, 0), q2)
-            ct.store(y3, (bid, 0), q3)
+            bid = ct.bid(1)
+            tile = ct.load(x, (bid, 1), (8, 8))
+            # Extract all 4 quadrants
+            q0 = ct.extract(tile, (1, 1), (4, 4))  # Top-left
+            q1 = ct.extract(tile, (2, 1), (4, 4))  # Bottom-left
+            q2 = ct.extract(tile, (1, 2), (4, 4))  # Top-right
+            q3 = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right
+            ct.store(y0, (bid, 1), q0)
+            ct.store(y1, (bid, 1), q1)
+            ct.store(y2, (bid, 1), q2)
+            ct.store(y3, (bid, 1), q3)
             return
         end
 
@@ -340,18 +340,18 @@ end
 
     @testset "extract real/imag pattern (FFT)" begin
         # This is the pattern used in FFT: shape (BS, N, 2) -> (BS, N, 1)
-        # Real at slice index 0, imag at slice index 1
+        # Real at slice index 1, imag at slice index 2
 
         function extract_real_imag_kernel(x_ri::ct.TileArray{Float32,3},
                                           y_real::ct.TileArray{Float32,3},
                                           y_imag::ct.TileArray{Float32,3})
-            bid = ct.bid(0)
-            tile = ct.load(x_ri, (bid, 0, 0), (2, 8, 2))  # (BS, N, real/imag)
-            # Extract real (slice 0) and imag (slice 1) in last dimension
-            real_part = ct.extract(tile, (0, 0, 0), (2, 8, 1))
-            imag_part = ct.extract(tile, (0, 0, 1), (2, 8, 1))
-            ct.store(y_real, (bid, 0, 0), real_part)
-            ct.store(y_imag, (bid, 0, 0), imag_part)
+            bid = ct.bid(1)
+            tile = ct.load(x_ri, (bid, 1, 1), (2, 8, 2))  # (BS, N, real/imag)
+            # Extract real (slice 1) and imag (slice 2) in last dimension
+            real_part = ct.extract(tile, (1, 1, 1), (2, 8, 1))
+            imag_part = ct.extract(tile, (1, 1, 2), (2, 8, 1))
+            ct.store(y_real, (bid, 1, 1), real_part)
+            ct.store(y_imag, (bid, 1, 1), imag_part)
             return
         end
 
@@ -374,13 +374,13 @@ end
     @testset "cat along last axis (axis -1)" begin
         function cat_last_axis_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                                       c::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load two (4, 4) tiles
-            tile_a = ct.load(a, (bid, 0), (4, 4))
-            tile_b = ct.load(b, (bid, 0), (4, 4))
+            tile_a = ct.load(a, (bid, 1), (4, 4))
+            tile_b = ct.load(b, (bid, 1), (4, 4))
             # Concatenate along last axis -> (4, 8)
             combined = ct.cat((tile_a, tile_b), Val(-1))
-            ct.store(c, (bid, 0), combined)
+            ct.store(c, (bid, 1), combined)
             return
         end
 
@@ -410,16 +410,16 @@ end
         end
     end
 
-    @testset "cat along first axis (axis 0)" begin
+    @testset "cat along first axis (axis 1)" begin
         function cat_first_axis_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                                        c::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load two (4, 4) tiles
-            tile_a = ct.load(a, (bid, 0), (4, 4))
-            tile_b = ct.load(b, (bid, 0), (4, 4))
+            tile_a = ct.load(a, (bid, 1), (4, 4))
+            tile_b = ct.load(b, (bid, 1), (4, 4))
             # Concatenate along first axis -> (8, 4)
-            combined = ct.cat((tile_a, tile_b), Val(0))
-            ct.store(c, (bid, 0), combined)
+            combined = ct.cat((tile_a, tile_b), Val(1))
+            ct.store(c, (bid, 1), combined)
             return
         end
 
@@ -452,15 +452,15 @@ end
     @testset "cat roundtrip (extract then cat)" begin
         # This tests cat as the inverse of extract: extract splits, cat joins
         function extract_cat_roundtrip_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2})
-            bid = ct.bid(0)
+            bid = ct.bid(1)
             # Load 4x8 tile
-            tile = ct.load(x, (bid, 0), (4, 8))
-            # Extract two 4x4 halves (both at 0,0 since non-zero extract is broken)
-            left = ct.extract(tile, (0, 0), (4, 4))
-            right = ct.extract(tile, (0, 0), (4, 4))
-            # Cat them back together
+            tile = ct.load(x, (bid, 1), (4, 8))
+            # Extract two 4x4 halves
+            left = ct.extract(tile, (1, 1), (4, 4))   # rows 1-4, cols 1-4
+            right = ct.extract(tile, (1, 2), (4, 4))  # rows 1-4, cols 5-8
+            # Cat them back together along last axis
             combined = ct.cat((left, right), Val(-1))
-            ct.store(y, (bid, 0), combined)
+            ct.store(y, (bid, 1), combined)
             return
         end
 
@@ -470,20 +470,16 @@ end
 
         ct.launch(extract_cat_roundtrip_kernel, cld(m, 4), x, y)
 
-        # Since both extracts are at (0,0), the output should be left half duplicated
-        # Just verify we get correct count of elements
+        # Output should match input (roundtrip)
         x_cpu = Array(x)
         y_cpu = Array(y)
 
         for bid in 0:(cld(m, 4)-1)
             start_row = bid * 4 + 1
-            input_left = x_cpu[start_row:(start_row+3), 1:4]
+            input = x_cpu[start_row:(start_row+3), :]
             output = y_cpu[start_row:(start_row+3), :]
 
-            # Output should be left half duplicated (since extract(0,0) used twice)
-            expected = sort(vcat(vec(input_left), vec(input_left)))
-            actual = sort(vec(output))
-            @test actual ≈ expected
+            @test output ≈ input
         end
     end
 end
@@ -492,11 +488,11 @@ end
     @testset "basic matmul" begin
         function matmul_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                                c::ct.TileArray{Float32,2})
-            bidx = ct.bid(0)
-            bidy = ct.bid(1)
+            bidx = ct.bid(1)
+            bidy = ct.bid(2)
             # Load tiles: a is (M, K), b is (K, N)
-            tile_a = ct.load(a, (bidx, 0), (32, 16))
-            tile_b = ct.load(b, (0, bidy), (16, 32))
+            tile_a = ct.load(a, (bidx, 1), (32, 16))
+            tile_b = ct.load(b, (1, bidy), (16, 32))
             # matmul: c = a @ b
             result = ct.matmul(tile_a, tile_b)
             ct.store(c, (bidx, bidy), result)
@@ -529,7 +525,7 @@ end
 @testset "1D with Constant tile size" begin
     function vadd_const_tile(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                              c::ct.TileArray{Float32,1}, tile::ct.Constant{Int})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile_a = ct.load(a, pid, (tile[],))
         tile_b = ct.load(b, pid, (tile[],))
         ct.store(c, pid, tile_a + tile_b)
@@ -551,8 +547,8 @@ end
     function madd_const_tiles(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                               c::ct.TileArray{Float32,2},
                               tx::ct.Constant{Int}, ty::ct.Constant{Int})
-        bidx = ct.bid(0)
-        bidy = ct.bid(1)
+        bidx = ct.bid(1)
+        bidy = ct.bid(2)
         tile_a = ct.load(a, (bidx, bidy), (tx[], ty[]))
         tile_b = ct.load(b, (bidx, bidy), (tx[], ty[]))
         ct.store(c, (bidx, bidy), tile_a + tile_b)
@@ -578,7 +574,7 @@ end
 @testset "Float64" begin
     function vadd_f64(a::ct.TileArray{Float64,1}, b::ct.TileArray{Float64,1},
                       c::ct.TileArray{Float64,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile_a = ct.load(a, pid, (16,))
         tile_b = ct.load(b, pid, (16,))
         ct.store(c, pid, tile_a + tile_b)
@@ -599,7 +595,7 @@ end
 @testset "Float16" begin
     function vadd_f16(a::ct.TileArray{Float16,1}, b::ct.TileArray{Float16,1},
                       c::ct.TileArray{Float16,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile_a = ct.load(a, pid, (16,))
         tile_b = ct.load(b, pid, (16,))
         ct.store(c, pid, tile_a + tile_b)
@@ -621,7 +617,7 @@ end
 
 @testset "compilation cache" begin
     function cached_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         ct.store(b, pid, tile)
         return
@@ -646,7 +642,7 @@ end
 @testset "TileArray auto-conversion" begin
     # Test that CuArrays are automatically converted to TileArray
     function copy_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(src, pid, (16,))
         ct.store(dst, pid, tile)
         return
@@ -668,7 +664,7 @@ end
 @testset "1D vector div" begin
     function vdiv_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                      c::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile_a = ct.load(a, pid, (16,))
         tile_b = ct.load(b, pid, (16,))
         ct.store(c, pid, tile_a / tile_b)
@@ -688,7 +684,7 @@ end
 
 @testset "1D sqrt" begin
     function vsqrt_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         ct.store(b, pid, sqrt(tile))
         return
@@ -710,9 +706,9 @@ end
 
 @testset "reduce_sum along axis 1" begin
     function reduce_sum_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
-        tile = ct.load(a, (pid, 0), (1, 128))  # Load 1x128 tile
-        sums = ct.reduce_sum(tile, 1)           # Sum along axis 1 -> (1,)
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))  # Load 1x128 tile
+        sums = ct.reduce_sum(tile, 2)           # Sum along axis 1 -> (1,)
         ct.store(b, pid, sums)
         return
     end
@@ -733,9 +729,9 @@ end
 
 @testset "reduce_sum along axis 0" begin
     function reduce_sum_axis0_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
-        tile = ct.load(a, (0, pid), (64, 1))   # Load 64x1 tile
-        sums = ct.reduce_sum(tile, 0)           # Sum along axis 0 -> (1,)
+        pid = ct.bid(1)
+        tile = ct.load(a, (1, pid), (64, 1))   # Load 64x1 tile
+        sums = ct.reduce_sum(tile, 1)           # Sum along axis 0 -> (1,)
         ct.store(b, pid, sums)
         return
     end
@@ -756,9 +752,9 @@ end
 
 @testset "reduce_max along axis 1" begin
     function reduce_max_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
-        tile = ct.load(a, (pid, 0), (1, 128))  # Load 1x128 tile
-        maxes = ct.reduce_max(tile, 1)          # Max along axis 1 -> (1,)
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))  # Load 1x128 tile
+        maxes = ct.reduce_max(tile, 2)          # Max along axis 1 -> (1,)
         ct.store(b, pid, maxes)
         return
     end
@@ -783,7 +779,7 @@ end
 
 @testset "tile / scalar" begin
     function div_by_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = tile / 2.0f0
         ct.store(b, pid, result)
@@ -802,7 +798,7 @@ end
 
 @testset "tile / integer" begin
     function div_by_int(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = tile / 4
         ct.store(b, pid, result)
@@ -821,7 +817,7 @@ end
 
 @testset "scalar / tile" begin
     function scalar_div_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = 1.0f0 / tile
         ct.store(b, pid, result)
@@ -840,7 +836,7 @@ end
 
 @testset "tile + scalar" begin
     function add_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = tile + 3.5f0
         ct.store(b, pid, result)
@@ -859,7 +855,7 @@ end
 
 @testset "scalar + tile" begin
     function scalar_add_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = 2.5f0 + tile
         ct.store(b, pid, result)
@@ -878,7 +874,7 @@ end
 
 @testset "tile - scalar" begin
     function sub_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = tile - 1.5f0
         ct.store(b, pid, result)
@@ -897,7 +893,7 @@ end
 
 @testset "scalar - tile" begin
     function scalar_sub_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = 5.0f0 - tile
         ct.store(b, pid, result)
@@ -916,7 +912,7 @@ end
 
 @testset "tile * scalar" begin
     function mul_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = tile * 2.5f0
         ct.store(b, pid, result)
@@ -935,7 +931,7 @@ end
 
 @testset "scalar * tile" begin
     function scalar_mul_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         tile = ct.load(a, pid, (16,))
         result = 3.0f0 * tile
         ct.store(b, pid, result)
@@ -960,9 +956,9 @@ end
     # Test broadcasting a single-element tile to a larger tile
     function broadcast_1d_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                                   c::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         # Load scalar-like tile (1 element)
-        scalar_tile = ct.load(a, 0, (1,))
+        scalar_tile = ct.load(a, 1, (1,))
         # Load full tile (128 elements)
         full_tile = ct.load(b, pid, (128,))
         # Broadcast add: (1,) .+ (128,) -> (128,)
@@ -991,11 +987,11 @@ end
     function broadcast_2d_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                                   c::ct.TileArray{Float32,2})
         # Load row tile (1, 128) and column tile (64, 1)
-        row_tile = ct.load(a, (0, 0), (1, 128))
-        col_tile = ct.load(b, (0, 0), (64, 1))
+        row_tile = ct.load(a, (1, 1), (1, 128))
+        col_tile = ct.load(b, (1, 1), (64, 1))
         # Broadcast add: (1, 128) .+ (64, 1) -> (64, 128)
         result = row_tile .+ col_tile
-        ct.store(c, (0, 0), result)
+        ct.store(c, (1, 1), result)
         return
     end
 
@@ -1017,11 +1013,11 @@ end
 @testset "broadcast mul: (4, 1) .* (1, 8)" begin
     function broadcast_mul_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                                    c::ct.TileArray{Float32,2})
-        col_tile = ct.load(a, (0, 0), (4, 1))
-        row_tile = ct.load(b, (0, 0), (1, 8))
+        col_tile = ct.load(a, (1, 1), (4, 1))
+        row_tile = ct.load(b, (1, 1), (1, 8))
         # Broadcast multiply: (4, 1) .* (1, 8) -> (4, 8)
         result = col_tile .* row_tile
-        ct.store(c, (0, 0), result)
+        ct.store(c, (1, 1), result)
         return
     end
 
@@ -1041,9 +1037,9 @@ end
 @testset "broadcast sub: (128,) .- (1,)" begin
     function broadcast_sub_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                                    c::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         full_tile = ct.load(a, pid, (128,))
-        scalar_tile = ct.load(b, 0, (1,))
+        scalar_tile = ct.load(b, 1, (1,))
         # Broadcast subtract: (128,) .- (1,) -> (128,)
         result = full_tile .- scalar_tile
         ct.store(c, pid, result)
@@ -1068,11 +1064,11 @@ end
     # Divide each row by a scaling vector
     function broadcast_div_kernel(a::ct.TileArray{Float32,2}, scale::ct.TileArray{Float32,2},
                                    c::ct.TileArray{Float32,2})
-        data = ct.load(a, (0, 0), (64, 128))
-        scale_row = ct.load(scale, (0, 0), (1, 128))
+        data = ct.load(a, (1, 1), (64, 128))
+        scale_row = ct.load(scale, (1, 1), (1, 128))
         # Broadcast divide: (64, 128) ./ (1, 128) -> (64, 128)
         result = data ./ scale_row
-        ct.store(c, (0, 0), result)
+        ct.store(c, (1, 1), result)
         return
     end
 
@@ -1094,10 +1090,10 @@ end
     # Test ct.broadcast_to() for explicit shape broadcasting
     function broadcast_to_kernel(a::ct.TileArray{Float32,2}, c::ct.TileArray{Float32,2})
         # Load a row tile (1, 128)
-        row_tile = ct.load(a, (0, 0), (1, 128))
+        row_tile = ct.load(a, (1, 1), (1, 128))
         # Explicitly broadcast to (64, 128)
         expanded = ct.broadcast_to(row_tile, (64, 128))
-        ct.store(c, (0, 0), expanded)
+        ct.store(c, (1, 1), expanded)
         return
     end
 
@@ -1212,8 +1208,8 @@ end
 @testset "atomic_add Int32" begin
     # Test atomic_add with Int32: each thread block adds 1 to a counter
     function atomic_add_kernel(counters::ct.TileArray{Int32,1})
-        bid = ct.bid(0)
-        ct.atomic_add(counters, Int32(0), Int32(1);
+        bid = ct.bid(1)
+        ct.atomic_add(counters, Int32(1), Int32(1);
                      memory_order=ct.MemoryOrder.AcqRel)
         return
     end
@@ -1230,8 +1226,8 @@ end
 @testset "atomic_add Float32" begin
     # Test atomic_add with Float32
     function atomic_add_f32_kernel(out::ct.TileArray{Float32,1}, val::ct.Constant{Float32})
-        bid = ct.bid(0)
-        ct.atomic_add(out, Int32(0), val[];
+        bid = ct.bid(1)
+        ct.atomic_add(out, Int32(1), val[];
                      memory_order=ct.MemoryOrder.AcqRel)
         return
     end
@@ -1249,8 +1245,8 @@ end
 @testset "atomic_xchg" begin
     # Test atomic_xchg: each thread exchanges, last one wins
     function atomic_xchg_kernel(arr::ct.TileArray{Int32,1})
-        bid = ct.bid(0)
-        ct.atomic_xchg(arr, Int32(0), bid + Int32(1);
+        bid = ct.bid(1)
+        ct.atomic_xchg(arr, Int32(1), bid + Int32(1);
                       memory_order=ct.MemoryOrder.AcqRel)
         return
     end
@@ -1268,9 +1264,9 @@ end
 @testset "atomic_cas success" begin
     # Test atomic_cas: only one thread should succeed in setting 0->1
     function atomic_cas_kernel(locks::ct.TileArray{Int32,1}, success_count::ct.TileArray{Int32,1})
-        bid = ct.bid(0)
+        bid = ct.bid(1)
         # Try to acquire lock (0 -> 1)
-        old = ct.atomic_cas(locks, Int32(0), Int32(0), Int32(1);
+        old = ct.atomic_cas(locks, Int32(1), Int32(0), Int32(1);
                            memory_order=ct.MemoryOrder.AcqRel)
         # If we got old=0, we succeeded
         # Use atomic_add to count successes (returns a tile, so comparison works)
@@ -1292,22 +1288,22 @@ end
 @testset "spinlock with token ordering" begin
     # Test that token threading enforces memory ordering in spinlock patterns
     function spinlock_kernel(result::ct.TileArray{Float32,1}, lock::ct.TileArray{Int32,1})
-        bid = ct.bid(0)
+        bid = ct.bid(1)
         val = ct.full((1,), 1.0f0, Float32)
 
         # Spin until we acquire the lock (CAS returns old value, 0 means we got it)
-        while ct.atomic_cas(lock, Int32(0), Int32(0), Int32(1);
+        while ct.atomic_cas(lock, Int32(1), Int32(0), Int32(1);
                            memory_order=ct.MemoryOrder.Acquire) == Int32(1)
         end
 
         # Critical section: load, increment, store
         # With proper token threading, these are ordered after the acquire
-        current = ct.load(result, Int32(0), (1,))
+        current = ct.load(result, Int32(1), (1,))
         updated = current .+ val
-        ct.store(result, Int32(0), updated)
+        ct.store(result, Int32(1), updated)
 
         # Release the lock
-        ct.atomic_xchg(lock, Int32(0), Int32(0);
+        ct.atomic_xchg(lock, Int32(1), Int32(0);
                       memory_order=ct.MemoryOrder.Release)
         return
     end
@@ -1326,21 +1322,21 @@ end
 @testset "explicit memory ordering kwargs" begin
     # Test that explicit memory_order kwargs work correctly
     function explicit_ordering_kernel(result::ct.TileArray{Float32,1}, lock::ct.TileArray{Int32,1})
-        bid = ct.bid(0)
+        bid = ct.bid(1)
         val = ct.full((1,), 1.0f0, Float32)
 
         # Spin until we acquire the lock - use explicit Acquire ordering
-        while ct.atomic_cas(lock, Int32(0), Int32(0), Int32(1);
+        while ct.atomic_cas(lock, Int32(1), Int32(0), Int32(1);
                            memory_order=ct.MemoryOrder.Acquire) == Int32(1)
         end
 
         # Critical section
-        current = ct.load(result, Int32(0), (1,))
+        current = ct.load(result, Int32(1), (1,))
         updated = current .+ val
-        ct.store(result, Int32(0), updated)
+        ct.store(result, Int32(1), updated)
 
         # Release the lock - use explicit Release ordering
-        ct.atomic_xchg(lock, Int32(0), Int32(0); memory_order=ct.MemoryOrder.Release)
+        ct.atomic_xchg(lock, Int32(1), Int32(0); memory_order=ct.MemoryOrder.Release)
         return
     end
 
@@ -1357,8 +1353,8 @@ end
 @testset "atomic_add with explicit kwargs" begin
     # Test atomic_add with explicit memory ordering
     function explicit_add_kernel(counters::ct.TileArray{Int32,1})
-        bid = ct.bid(0)
-        ct.atomic_add(counters, Int32(0), Int32(1);
+        bid = ct.bid(1)
+        ct.atomic_add(counters, Int32(1), Int32(1);
                      memory_order=ct.MemoryOrder.Relaxed,
                      memory_scope=ct.MemScope.Device)
         return
@@ -1376,7 +1372,7 @@ end
 @testset "1D gather - simple" begin
     # Simple 1D gather: copy first 16 elements using gather
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         # Simple indices 0..15
         indices = ct.arange((16,), Int32)
         # Gather from source
@@ -1398,7 +1394,7 @@ end
 @testset "1D scatter - simple" begin
     # Simple 1D scatter: write first 16 elements using scatter
     function scatter_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
-        pid = ct.bid(0)
+        pid = ct.bid(1)
         # Load from source
         tile = ct.load(src, pid, (16,))
         # Simple indices 0..15
