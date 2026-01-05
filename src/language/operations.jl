@@ -103,25 +103,34 @@ tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
 """
 @inline function load(arr::TileArray{T, N}, index, shape::NTuple{M, Int};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
-    Intrinsics.load(arr, Val(shape), padding_mode, _sub1(index)...)
+    tv = Intrinsics.make_tensor_view(arr)
+    pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
+    Intrinsics.load_partition_view(pv, _sub1(index)...)
 end
 
 @inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{M, Int};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
-    Intrinsics.load(arr, Val(shape), padding_mode, index - one(index))
+    tv = Intrinsics.make_tensor_view(arr)
+    pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
+    Intrinsics.load_partition_view(pv, index - one(index))
 end
 
 # Load with Constant shape tuple
 @inline function load(arr::TileArray{T, N}, index, shape::Tuple{Vararg{Constant{Int}}};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N}
-    Intrinsics.load(arr, Val(_extract_shape(shape)), padding_mode, _sub1(index)...)
+    shape_val = _extract_shape(shape)
+    tv = Intrinsics.make_tensor_view(arr)
+    pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
+    Intrinsics.load_partition_view(pv, _sub1(index)...)
 end
 
 # Keyword argument version
 @inline function load(arr::TileArray{T, N}; index, shape,
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N}
     shape_val = _extract_shape(shape)
-    Intrinsics.load(arr, Val(shape_val), padding_mode, _sub1(index)...)
+    tv = Intrinsics.make_tensor_view(arr)
+    pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
+    Intrinsics.load_partition_view(pv, _sub1(index)...)
 end
 
 """
@@ -139,17 +148,38 @@ Store a tile to a pointer at the given index. Index is 1-indexed.
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 """
-@inline function store(arr::TileArray{T, N}, index, tile::Tile{T}) where {T, N}
-    Intrinsics.store(arr, tile, _sub1(index)...)
+# Regular N-D tiles (N >= 1)
+@inline function store(arr::TileArray{T, N}, index, tile::Tile{T, Shape}) where {T, N, Shape}
+    tv = Intrinsics.make_tensor_view(arr)
+    pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
+    Intrinsics.store_partition_view(pv, tile, _sub1(index)...)
 end
 
-@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T}) where {T, N}
-    Intrinsics.store(arr, tile, index - one(index))
+@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, Shape}) where {T, N, Shape}
+    tv = Intrinsics.make_tensor_view(arr)
+    pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
+    Intrinsics.store_partition_view(pv, tile, index - one(index))
 end
 
-# Keyword argument version
-@inline function store(arr::TileArray{T, N}; index, tile::Tile{T}) where {T, N}
-    Intrinsics.store(arr, tile, _sub1(index)...)
+# Special case for 0D (scalar) tiles - reshape to 1D for partition view
+@inline function store(arr::TileArray{T, N}, index, tile::Tile{T, ()}) where {T, N}
+    tv = Intrinsics.make_tensor_view(arr)
+    # Reshape 0D tile to 1D (partition views require at least 1D)
+    tile_1d = Intrinsics.reshape(tile, Val((1,)))
+    pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
+    Intrinsics.store_partition_view(pv, tile_1d, _sub1(index)...)
+end
+
+@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, ()}) where {T, N}
+    tv = Intrinsics.make_tensor_view(arr)
+    tile_1d = Intrinsics.reshape(tile, Val((1,)))
+    pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
+    Intrinsics.store_partition_view(pv, tile_1d, index - one(index))
+end
+
+# Keyword argument version - dispatch to positional version
+@inline function store(arr::TileArray{T, N}; index, tile::Tile{T, Shape}) where {T, N, Shape}
+    store(arr, index, tile)
 end
 
 """

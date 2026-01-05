@@ -412,6 +412,29 @@ Compiled to cuda_tile.get_index_space_shape.
 end
 
 """
+    load_partition_view(pv::PartitionView, index...) -> Tile
+
+Load a tile from a partition view at the given 0-indexed tile coordinates.
+Compiled to cuda_tile.load_view_tko.
+"""
+@noinline function load_partition_view(pv::PartitionView{T, N, Shape}, index::Vararg{Integer})::Tile{T, Shape} where {T, N, Shape}
+    Base.donotdelete(pv)
+    Base.inferencebarrier(Tile{T, Shape}())
+end
+
+"""
+    store_partition_view(pv::PartitionView, tile, index...) -> Nothing
+
+Store a tile to a partition view at the given 0-indexed tile coordinates.
+Compiled to cuda_tile.store_view_tko.
+"""
+@noinline function store_partition_view(pv::PartitionView{T, N, Shape}, tile::Tile{T, Shape}, index::Vararg{Integer})::Nothing where {T, N, Shape}
+    Base.donotdelete(pv)
+    Base.donotdelete(tile)
+    nothing
+end
+
+"""
     load(arr, shape_val, padding_mode, indices...)
 
 Load a tile from a TileArray at the given indices.

@@ -57,6 +57,15 @@ function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.get_index_spac
     emit_get_index_space_shape!(ctx, args, result_type)
 end
 
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.load_partition_view), args, @nospecialize(result_type))
+    emit_load_partition_view!(ctx, args, result_type)
+end
+
+function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.store_partition_view), args, @nospecialize(result_type))
+    emit_store_partition_view!(ctx, args, result_type)
+    nothing
+end
+
 function emit_intrinsic!(ctx::CodegenContext, ::typeof(Intrinsics.atomic_cas), args, @nospecialize(result_type))
     emit_atomic_cas!(ctx, args, result_type)
 end
@@ -970,6 +979,110 @@ function emit_get_index_space_shape!(ctx::CodegenContext, args::AbstractVector, 
     # shape_vals is a single Value when ndim == 1, otherwise a Tuple
     result_val = ndim == 1 ? shape_vals : shape_vals[axis + 1]
     CGVal(result_val, scalar_i32, Int32)
+end
+
+"""
+    emit_load_partition_view!(ctx, args, result_type)
+
+Load a tile from a PartitionView at the given indices.
+Emits LoadViewTkoOp.
+"""
+function emit_load_partition_view!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # args: (partition_view, indices...)
+    pv_arg = emit_value!(ctx, args[1])
+    pv_arg === nothing && error("load_partition_view() requires a PartitionView argument")
+    pv_arg.v === nothing && error("load_partition_view() requires a materialized PartitionView")
+
+    # Get ndim from PartitionView constant field
+    ndim = pv_arg.constant
+    ndim === nothing && error("load_partition_view(): PartitionView missing ndim info")
+
+    # Extract tile shape from result type
+    result_type_unwrapped = unwrap_type(result_type)
+    elem_type = result_type_unwrapped.parameters[1]
+    tile_shape = collect(Int, result_type_unwrapped.parameters[2])
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    tile_type = tile_type!(tt, dtype, tile_shape)
+    token_type = Token(tt)
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    # Extract indices from args[2:end]
+    index_vals = Value[]
+    for i in 2:length(args)
+        tv = emit_value!(ctx, args[i])
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
+    end
+
+    # Pad indices if needed
+    index_vals = pad_indices(ctx, index_vals, ndim, scalar_i32)
+
+    # Load tile with token
+    tile_val, new_token = encode_LoadViewTkoOp!(cb, tile_type, token_type, pv_arg.v, index_vals; token=ctx.token)
+    ctx.token = new_token
+
+    CGVal(tile_val, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
+end
+
+"""
+    emit_store_partition_view!(ctx, args, result_type)
+
+Store a tile to a PartitionView at the given indices.
+Emits StoreViewTkoOp.
+"""
+function emit_store_partition_view!(ctx::CodegenContext, args::AbstractVector, @nospecialize(result_type))
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # args: (partition_view, tile, indices...)
+    pv_arg = emit_value!(ctx, args[1])
+    pv_arg === nothing && error("store_partition_view() requires a PartitionView argument")
+    pv_arg.v === nothing && error("store_partition_view() requires a materialized PartitionView")
+
+    # Get ndim from PartitionView constant field
+    ndim = pv_arg.constant
+    ndim === nothing && error("store_partition_view(): PartitionView missing ndim info")
+
+    # Get tile value
+    tile_tv = emit_value!(ctx, args[2])
+    tile_tv === nothing && error("store_partition_view() requires a tile argument")
+    tile_shape = tile_tv.shape
+    tile_shape === nothing && error("Cannot determine tile shape for store_partition_view()")
+
+    elem_type = unwrap_type(tile_tv.jltype).parameters[1]
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+    scalar_i32 = tile_type!(tt, I32(tt), Int[])
+
+    # Handle 0D scalar stores by reshaping to 1D (partition views require at least 1D)
+    tile_val = tile_tv.v
+    actual_ndim = ndim
+    actual_tile_shape = tile_shape
+    if length(tile_shape) == 0
+        actual_ndim = 1
+        actual_tile_shape = Int[1]
+        tile_1d_type = tile_type!(tt, dtype, actual_tile_shape)
+        tile_val = encode_ReshapeOp!(cb, tile_1d_type, tile_val)
+    end
+
+    # Extract indices from args[3:end]
+    index_vals = Value[]
+    for i in 3:length(args)
+        tv = emit_value!(ctx, args[i])
+        tv !== nothing && tv.v !== nothing && push!(index_vals, tv.v)
+    end
+
+    # Pad indices if needed
+    index_vals = pad_indices(ctx, index_vals, actual_ndim, scalar_i32)
+
+    # Store tile with token
+    token_type = Token(tt)
+    new_token = encode_StoreViewTkoOp!(cb, token_type, tile_val, pv_arg.v, index_vals; token=ctx.token)
+    ctx.token = new_token
+
+    nothing
 end
 
 #=============================================================================
