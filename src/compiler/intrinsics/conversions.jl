@@ -36,7 +36,7 @@ end
 
 ## TODO: cuda_tile.bitcast
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -106,7 +106,7 @@ end
 # These handle the low-level scalar conversion intrinsics (itof, ftoi, ftof, exti, trunci).
 # The high-level astype intrinsic above handles tiles.
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -126,7 +126,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.itof), args, @nospecial
     CGVal(result_v, result_type_id, target_type, result_shape)
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -146,7 +146,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftoi), args, @nospecial
     CGVal(result_v, result_type_id, target_type, result_shape)
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -165,7 +165,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args, @nospecial
     CGVal(result_v, result_type_id, target_type, result_shape)
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -185,7 +185,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.exti), args, @nospecial
     CGVal(result_v, result_type_id, target_type, result_shape)
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.trunci), args)
     cb = ctx.cb
     tt = ctx.tt
 

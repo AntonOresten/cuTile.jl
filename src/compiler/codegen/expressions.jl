@@ -80,8 +80,9 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         return ghost_value(result_type, result_type)
     end
 
-    result = emit_intrinsic!(ctx, func, call_args, result_type)
+    result = emit_intrinsic!(ctx, func, call_args)
     result === missing && error("Unknown function call: $func")
+    validate_result_type(result, result_type, func)
     return result
 end
 
@@ -95,9 +96,28 @@ function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     func = resolve_function(ctx, expr.args[2])
     call_args = expr.args[3:end]
 
-    result = emit_intrinsic!(ctx, func, call_args, result_type)
+    result = emit_intrinsic!(ctx, func, call_args)
     result === missing && error("Unknown function call: $func")
+    validate_result_type(result, result_type, func)
     return result
+end
+
+"""
+    validate_result_type(result, expected_type, func)
+
+Assert that the intrinsic returned a type compatible with what the IR expects.
+"""
+function validate_result_type(@nospecialize(result), @nospecialize(expected_type), @nospecialize(func))
+    result === nothing && return  # void return
+    result isa CGVal || return
+
+    actual = unwrap_type(result.jltype)
+    expected = unwrap_type(expected_type)
+
+    # Check subtype relationship (actual should be at least as specific as expected)
+    actual <: expected && return
+
+    error("Type mismatch in $func: expected $expected, got $actual")
 end
 
 """

@@ -31,12 +31,18 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
 
     if lhs_is_tile && rhs_is_tile
         # Tile + Tile: shapes should be identical
-        elem_type = unwrap_type(lhs_tv.jltype).parameters[1]
+        lhs_elem = unwrap_type(lhs_tv.jltype).parameters[1]
+        rhs_elem = unwrap_type(rhs_tv.jltype).parameters[1]
+        lhs_elem === rhs_elem || error("Binary op type mismatch: lhs element type $lhs_elem != rhs element type $rhs_elem")
+        elem_type = lhs_elem
         result_shape = lhs_tv.shape
         result_jltype = Tile{elem_type, Tuple(result_shape)}
     elseif !lhs_is_tile && !rhs_is_tile
         # Scalar + Scalar: for integer intrinsics on index calculations
-        elem_type = unwrap_type(lhs_tv.jltype)
+        lhs_type = unwrap_type(lhs_tv.jltype)
+        rhs_type = unwrap_type(rhs_tv.jltype)
+        lhs_type === rhs_type || error("Binary op type mismatch: lhs type $lhs_type != rhs type $rhs_type")
+        elem_type = lhs_type
         result_shape = Int[]
         result_jltype = elem_type
     else
@@ -141,14 +147,14 @@ end
 
 ## cuda_tile.addi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addi), args)
     emit_binop!(ctx, args, encode_AddIOp!)
 end
 
 
 ## cuda_tile.divi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divi), args)
     signedness = @something get_constant(ctx, args[3]) error("divi requires compile-time signedness")
     emit_binop!(ctx, args, encode_DivIOp!; signedness, rounding=RoundingZero)
 end
@@ -156,7 +162,7 @@ end
 
 ## cuda_tile.maxi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxi), args)
     signedness = @something get_constant(ctx, args[3]) error("maxi requires compile-time signedness")
     emit_binop!(ctx, args, encode_MaxIOp!; signedness)
 end
@@ -164,7 +170,7 @@ end
 
 ## cuda_tile.mini
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mini), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mini), args)
     signedness = @something get_constant(ctx, args[3]) error("mini requires compile-time signedness")
     emit_binop!(ctx, args, encode_MinIOp!; signedness)
 end
@@ -172,7 +178,7 @@ end
 
 ## cuda_tile.muli
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.muli), args)
     emit_binop!(ctx, args, encode_MulIOp!)
 end
 
@@ -182,14 +188,14 @@ end
 
 ## cuda_tile.negi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negi), args)
     emit_unop!(ctx, args, encode_NegIOp!; overflow=OverflowNone)
 end
 
 
 ## cuda_tile.remi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.remi), args)
     signedness = @something get_constant(ctx, args[3]) error("remi requires compile-time signedness")
     emit_binop!(ctx, args, encode_RemIOp!; signedness)
 end
@@ -197,14 +203,14 @@ end
 
 ## cuda_tile.shli
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shli), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shli), args)
     emit_binop!(ctx, args, encode_ShLIOp!)
 end
 
 
 ## cuda_tile.shri
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shri), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.shri), args)
     signedness = @something get_constant(ctx, args[3]) error("shri requires compile-time signedness")
     emit_binop!(ctx, args, encode_ShRIOp!; signedness)
 end
@@ -212,14 +218,14 @@ end
 
 ## cuda_tile.subi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subi), args)
     emit_binop!(ctx, args, encode_SubIOp!)
 end
 
 
 ## cuda_tile.cmpi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -230,13 +236,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args, @nospecial
 
     (lhs === nothing || rhs === nothing) && error("Cannot resolve operands for cmpi")
 
+    # Validate type match
+    lhs.type_id == rhs.type_id || error("cmpi type mismatch: lhs type $(lhs.jltype) != rhs type $(rhs.jltype)")
+
     result_shape = lhs isa CGVal ? lhs.shape : Int[]
 
     bool_dtype = I1(tt)
     result_type_id = tile_type!(tt, bool_dtype, result_shape)
 
     result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v; predicate, signedness)
-    CGVal(result_v, result_type_id, Bool, result_shape)
+    result_jltype = isempty(result_shape) ? Bool : Tile{Bool, Tuple(result_shape)}
+    CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
 
@@ -281,49 +291,49 @@ end
 
 ## cuda_tile.absf
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.absf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.absf), args)
     emit_unop!(ctx, args, encode_AbsFOp!)
 end
 
 
 ## cuda_tile.addf
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.addf), args)
     emit_binop!(ctx, args, encode_AddFOp!)
 end
 
 
 ## cuda_tile.divf
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.divf), args)
     emit_binop!(ctx, args, encode_DivFOp!)
 end
 
 
 ## cuda_tile.mulf
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mulf), args)
     emit_binop!(ctx, args, encode_MulFOp!)
 end
 
 
 ## cuda_tile.negf
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.negf), args)
     emit_unop!(ctx, args, encode_NegFOp!)
 end
 
 
 ## cuda_tile.subf
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.subf), args)
     emit_binop!(ctx, args, encode_SubFOp!)
 end
 
 
 ## cuda_tile.cmpf
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -333,13 +343,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args, @nospecial
 
     (lhs === nothing || rhs === nothing) && error("Cannot resolve operands for cmpf")
 
+    # Validate type match
+    lhs.type_id == rhs.type_id || error("cmpf type mismatch: lhs type $(lhs.jltype) != rhs type $(rhs.jltype)")
+
     result_shape = lhs isa CGVal ? lhs.shape : Int[]
 
     bool_dtype = I1(tt)
     result_type_id = tile_type!(tt, bool_dtype, result_shape)
 
     result_v = encode_CmpFOp!(cb, result_type_id, lhs.v, rhs.v; predicate)
-    CGVal(result_v, result_type_id, Bool, result_shape)
+    result_jltype = isempty(result_shape) ? Bool : Tile{Bool, Tuple(result_shape)}
+    CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
 
@@ -379,7 +393,7 @@ end
 
 ## cuda_tile.andi
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -387,11 +401,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.andi), args, @nospecial
     rhs = emit_value!(ctx, args[2])
 
     (lhs === nothing || rhs === nothing) && error("andi: cannot resolve arguments")
+    lhs isa CGVal || error("andi: lhs must be a CGVal")
 
-    lhs_v = lhs isa CGVal ? lhs.v : lhs
+    lhs_v = lhs.v
     rhs_v = rhs isa CGVal ? rhs.v : rhs
-    result_shape = lhs isa CGVal ? lhs.shape : Int[]
-    elem_type = lhs isa CGVal ? unwrap_type(lhs.jltype) : unwrap_type(result_type)
+    result_shape = lhs.shape
+    elem_type = unwrap_type(lhs.jltype)
 
     # Determine dtype - Bool uses I1, integers use their respective types
     dtype = if elem_type === Bool || (elem_type <: Tile && elem_type.parameters[1] === Bool)
@@ -408,7 +423,7 @@ end
 
 ## cuda_tile.ori
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -416,11 +431,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ori), args, @nospeciali
     rhs = emit_value!(ctx, args[2])
 
     (lhs === nothing || rhs === nothing) && error("ori: cannot resolve arguments")
+    lhs isa CGVal || error("ori: lhs must be a CGVal")
 
-    lhs_v = lhs isa CGVal ? lhs.v : lhs
+    lhs_v = lhs.v
     rhs_v = rhs isa CGVal ? rhs.v : rhs
-    result_shape = lhs isa CGVal ? lhs.shape : Int[]
-    elem_type = lhs isa CGVal ? unwrap_type(lhs.jltype) : unwrap_type(result_type)
+    result_shape = lhs.shape
+    elem_type = unwrap_type(lhs.jltype)
 
     dtype = if elem_type === Bool || (elem_type <: Tile && elem_type.parameters[1] === Bool)
         I1(tt)
@@ -436,7 +452,7 @@ end
 
 ## cuda_tile.xori
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.xori), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.xori), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -444,11 +460,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.xori), args, @nospecial
     rhs = emit_value!(ctx, args[2])
 
     (lhs === nothing || rhs === nothing) && error("xori: cannot resolve arguments")
+    lhs isa CGVal || error("xori: lhs must be a CGVal")
 
-    lhs_v = lhs isa CGVal ? lhs.v : lhs
+    lhs_v = lhs.v
     rhs_v = rhs isa CGVal ? rhs.v : rhs
-    result_shape = lhs isa CGVal ? lhs.shape : Int[]
-    elem_type = lhs isa CGVal ? unwrap_type(lhs.jltype) : unwrap_type(result_type)
+    result_shape = lhs.shape
+    elem_type = unwrap_type(lhs.jltype)
 
     dtype = if elem_type === Bool || (elem_type <: Tile && elem_type.parameters[1] === Bool)
         I1(tt)

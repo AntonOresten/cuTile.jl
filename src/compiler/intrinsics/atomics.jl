@@ -48,7 +48,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -84,27 +84,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args, @nos
     result_tile_type = tile_type!(tt, dtype, Int[])
     token_type = Token(tt)
 
-    # Create pointer tile - compute pointer to index
-    scalar_i64_type = tile_type!(tt, I64(tt), Int[])
+    # Get index and create pointer type
     index_tv = emit_value!(ctx, args[2])
-
-    # Create pointer type for element
     ptr_type = pointer_type!(tt, dtype)
     ptr_tile_type = tile_type!(tt, ptr_type, Int[])
 
-    # Compute pointer: base + index * sizeof(elem)
-    # Convert pointer to int64, do arithmetic, convert back
-    ptr_as_int = encode_PtrToIntOp!(cb, scalar_i64_type, array_val)
-
-    elem_size = sizeof(elem_type)
-    elem_size_const_tv = emit_constant!(ctx, Int64(elem_size), Int64)
-    elem_size_const = elem_size_const_tv.v
-
-    # Extend index to 64-bit if needed
-    index_i64 = encode_ExtIOp!(cb, scalar_i64_type, index_tv.v; signedness=SignednessSigned)
-    index_scaled = encode_MulIOp!(cb, scalar_i64_type, index_i64, elem_size_const)
-    ptr_int_offset = encode_AddIOp!(cb, scalar_i64_type, ptr_as_int, index_scaled)
-    pointers = encode_IntToPtrOp!(cb, ptr_tile_type, ptr_int_offset)
+    # Compute pointer using OffsetOp (handles any integer index type)
+    pointers = encode_OffsetOp!(cb, ptr_tile_type, array_val, index_tv.v)
 
     # Emit atomic CAS
     mem_ordering = memory_order_to_semantics(memory_order)
@@ -152,15 +138,15 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args, @nospecialize(result_type))
-    emit_atomic_rmw!(ctx, args, result_type, AtomicXCHG)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
+    emit_atomic_rmw!(ctx, args, AtomicXCHG)
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_add), args, @nospecialize(result_type))
-    emit_atomic_rmw!(ctx, args, result_type, AtomicADD)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_add), args)
+    emit_atomic_rmw!(ctx, args, AtomicADD)
 end
 
-function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, @nospecialize(result_type), mode::AtomicRMWMode)
+function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -194,26 +180,13 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, @nospecialize(result
     result_tile_type = tile_type!(tt, dtype, Int[])
     token_type = Token(tt)
 
-    # Create pointer tile
-    scalar_i64_type = tile_type!(tt, I64(tt), Int[])
+    # Get index and create pointer type
     index_tv = emit_value!(ctx, args[2])
-
     ptr_type = pointer_type!(tt, dtype)
     ptr_tile_type = tile_type!(tt, ptr_type, Int[])
 
-    # Compute pointer: base + index * sizeof(elem)
-    # Convert pointer to int64, do arithmetic, convert back
-    ptr_as_int = encode_PtrToIntOp!(cb, scalar_i64_type, array_val)
-
-    elem_size = sizeof(elem_type)
-    elem_size_const_tv = emit_constant!(ctx, Int64(elem_size), Int64)
-    elem_size_const = elem_size_const_tv.v
-
-    # Extend index to 64-bit if needed
-    index_i64 = encode_ExtIOp!(cb, scalar_i64_type, index_tv.v; signedness=SignednessSigned)
-    index_scaled = encode_MulIOp!(cb, scalar_i64_type, index_i64, elem_size_const)
-    ptr_int_offset = encode_AddIOp!(cb, scalar_i64_type, ptr_as_int, index_scaled)
-    pointers = encode_IntToPtrOp!(cb, ptr_tile_type, ptr_int_offset)
+    # Compute pointer using OffsetOp (handles any integer index type)
+    pointers = encode_OffsetOp!(cb, ptr_tile_type, array_val, index_tv.v)
 
     # Use float add mode for floating point types
     actual_mode = mode

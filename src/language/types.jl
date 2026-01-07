@@ -317,3 +317,27 @@ const ScalarOrTileInt = Union{ScalarInt, TileInt}
 
 """Floating-point values (scalar or tile)."""
 const ScalarOrTileFloat = Union{ScalarFloat, TileFloat}
+
+
+#=============================================================================
+ One Singleton
+
+ Singleton that adopts the type of the other operand in arithmetic.
+ `x - One()` returns the same type as `x`, enabling clean index normalization
+ with `promote(index...) .- One()`.
+=============================================================================#
+
+"""
+    One()
+
+Singleton that adopts the type of the other operand in arithmetic.
+`x - One()` returns the same type as `x`.
+
+Used internally for 1-to-0 index conversion that preserves types after promotion.
+"""
+struct One end
+@inline Base.:-(x::T, ::One) where {T<:Integer} = x - one(T)
+@inline Base.:+(x::T, ::One) where {T<:Integer} = x + one(T)
+@inline Base.:-(::One, x::T) where {T<:Integer} = one(T) - x
+@inline Base.:+(::One, x::T) where {T<:Integer} = one(T) + x
+@inline Base.Broadcast.broadcastable(o::One) = Ref(o)

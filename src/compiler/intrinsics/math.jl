@@ -40,7 +40,7 @@
     @noinline maxf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (Base.donotdelete(a, b); Tile{T, S}())
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxf), args)
     emit_binop!(ctx, args, encode_MaxFOp!)
 end
 
@@ -54,7 +54,7 @@ end
     @noinline minf(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (Base.donotdelete(a, b); Tile{T, S}())
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.minf), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.minf), args)
     emit_binop!(ctx, args, encode_MinFOp!)
 end
 
@@ -69,7 +69,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -97,7 +97,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.rsqrt), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.rsqrt), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])
@@ -125,7 +125,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sqrt), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.sqrt), args)
     cb = ctx.cb
 
     source = emit_value!(ctx, args[1])

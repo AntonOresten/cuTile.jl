@@ -10,7 +10,11 @@ using ..cuTile: ComparisonPredicate, CmpLessThan, CmpLessThanOrEqual, CmpGreater
 
 end
 
-emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args, @nospecialize(result_type)) = missing
+# NOTE: Due to JuliaLang/julia#60583, intrinsics may be called during constant evaluation.
+#       Because of that, such intrinsics (such as basic arithmetic) need to provide an
+#       implementation that actually computes a valid result using Julia intrinsics.
+
+emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
 
 include("intrinsics/core.jl")
 include("intrinsics/conversions.jl")

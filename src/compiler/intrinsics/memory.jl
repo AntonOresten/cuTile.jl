@@ -26,7 +26,7 @@
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -36,9 +36,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args, @n
     pointers = ptrs_tv.v
     tile_shape = ptrs_tv.shape
 
-    # Get element type from result_type (Tile{T, S})
-    result_type_unwrapped = unwrap_type(result_type)
-    elem_type = result_type_unwrapped.parameters[1]
+    # Get element type from pointer tile type (Tile{Ptr{T}, S})
+    ptrs_type = unwrap_type(ptrs_tv.jltype)
+    ptr_type = ptrs_type.parameters[1]  # Ptr{T}
+    elem_type = eltype(ptr_type)  # T from Ptr{T}
     dtype = julia_to_tile_dtype!(tt, elem_type)
     result_tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
@@ -69,7 +70,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args, @n
     end
     ctx.token = new_token
 
-    CGVal(tile_val, result_tile_type, result_type_unwrapped, tile_shape)
+    result_jltype = Tile{elem_type, Tuple(tile_shape)}
+    CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
 end
 
 
@@ -93,7 +95,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     cb = ctx.cb
     tt = ctx.tt
 

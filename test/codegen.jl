@@ -800,6 +800,7 @@
             end
 
             # 4D (requires TileArray with explicit sizes since grid only provides 3D)
+            # Mixed Int32/Int64 indices are promoted to Int64 by _sub1
             spec4d = ct.ArraySpec{4}(16, true)
             @test @filecheck begin
                 @check_label "entry"
@@ -1341,6 +1342,24 @@ end
                     ct.scatter(b, indices, tile)
                     return
                 end
+            end
+        end
+    end
+
+    #=========================================================================
+     Type Validation
+    =========================================================================#
+    @testset "type validation" begin
+        spec = ct.ArraySpec{1}(16, true)
+
+        @testset "binary op type mismatch errors in Julia" begin
+            # This should fail with a Julia error (not tileiras), since the intrinsic
+            # is invoked with mismatched types (Int32 + Int64)
+            @test_throws ErrorException code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                pid = ct.bid(1)  # Int32
+                # Force type mismatch by calling addi with different types
+                result = ct.Intrinsics.addi(pid, Int64(1))
+                return
             end
         end
     end

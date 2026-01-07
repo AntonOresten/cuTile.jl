@@ -46,7 +46,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -96,7 +96,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -109,10 +109,10 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
     ndim = pv_arg.constant
     ndim === nothing && error("load_partition_view(): PartitionView missing ndim info")
 
-    # Extract tile shape from result type
-    result_type_unwrapped = unwrap_type(result_type)
-    elem_type = result_type_unwrapped.parameters[1]
-    tile_shape = collect(Int, result_type_unwrapped.parameters[2])
+    # Extract tile shape from PartitionView type (PartitionView{T, N, Shape})
+    pv_type = unwrap_type(pv_arg.jltype)
+    elem_type = pv_type.parameters[1]
+    tile_shape = collect(Int, pv_type.parameters[3])
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -160,7 +160,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -230,7 +230,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
 
     # Return CGVal with partition view value
     # Store ndim in constant for get_index_space_shape to use
-    CGVal(partition, pv_type, unwrap_type(result_type), Int[], nothing, ndim)
+    result_jltype = PartitionView{elem_type, ndim, Tuple(tile_shape)}
+    CGVal(partition, pv_type, result_jltype, Int[], nothing, ndim)
 end
 
 function get_array_spec(@nospecialize(T))
@@ -343,7 +344,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args)
     array_arg = args[1]
 
     # Extract TileArray argument index
@@ -351,9 +352,15 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     (arg_idx === nothing || !is_destructured_arg(ctx, arg_idx)) &&
         error("make_tensor_view() requires a TileArray argument")
 
+    # Get TensorView type from the TileArray type
+    tilearray_type = get_arg_type(ctx, arg_idx)
+    elem_type = eltype(tilearray_type)
+    ndim = ndims(tilearray_type)
+    result_jltype = TensorView{elem_type, ndim}
+
     # Return ghost value with arg_idx stored as constant
     # The actual MakeTensorViewOp will be emitted by make_partition_view
-    ghost_value(unwrap_type(result_type), arg_idx)
+    ghost_value(result_jltype, arg_idx)
 end
 
 
@@ -373,7 +380,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt
 

@@ -21,10 +21,11 @@ emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
 emit_value!(ctx::CGCtx, block_arg::BlockArg) = ctx[block_arg]
 
 function emit_value!(ctx::CGCtx, val::Integer)
-    type_id = tile_type_for_julia!(ctx, Int32)
-    bytes = reinterpret(UInt8, [Int32(val)])
+    jltype = typeof(val)
+    type_id = tile_type_for_julia!(ctx, jltype)
+    bytes = reinterpret(UInt8, [jltype(val)])
     v = encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
-    CGVal(v, type_id, Int32, Int[], nothing, val)  # Preserve original type in constant
+    CGVal(v, type_id, jltype, Int[], nothing, val)
 end
 
 function emit_value!(ctx::CGCtx, val::AbstractFloat)

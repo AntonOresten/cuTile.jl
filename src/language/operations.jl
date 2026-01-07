@@ -3,8 +3,6 @@
 # Mimcs, and organized according to, the cuTile Python API:
 # https://docs.nvidia.com/cuda/cutile-python/operations.html
 
-# Helper: subtract 1 from each element of a tuple, preserving element types
-@inline _sub1(index::Tuple) = map(i -> i - one(i), index)
 
 # Helper to extract compile-time shape from various tuple types
 @inline _extract_shape(s::NTuple{N, Int}) where N = s
@@ -37,14 +35,14 @@ end
 Get the block ID along the given axis (1=x, 2=y, 3=z).
 Returns 1-indexed block ID.
 """
-@inline bid(axis::Integer)::Int32 = Intrinsics.get_tile_block_id(axis - one(axis)) + Int32(1)
+@inline bid(axis::Integer) = Intrinsics.get_tile_block_id(axis - One()) + One()
 
 """
     num_blocks(axis) -> Int32
 
 Get the grid size along the given axis (1=x, 2=y, 3=z).
 """
-@inline num_blocks(axis::Integer)::Int32 = Intrinsics.get_num_tile_blocks(axis - one(axis))
+@inline num_blocks(axis::Integer) = Intrinsics.get_num_tile_blocks(axis - One())
 
 """
     num_tiles(arr::TileArray, axis::Integer, shape::NTuple{M, Int}) -> Int32
@@ -59,10 +57,10 @@ Axis is 1-indexed. Equivalent to cdiv(arr.sizes[axis], shape[axis]).
 # num_tiles(arr, 2, (32, 32)) returns cdiv(768, 32) = 24
 ```
 """
-@inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{M, Int})::Int32 where {T, N, M}
+@inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{M, Int}) where {T, N, M}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined)
-    Intrinsics.get_index_space_shape(pv, axis - 1)  # convert to 0-indexed
+    Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
 end
 
 """
@@ -88,14 +86,14 @@ tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, _sub1(index)...)
+    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
 end
 
 @inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{M, Int};
                       padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, index - one(index))
+    Intrinsics.load_partition_view(pv, index - One())
 end
 
 # Load with Constant shape tuple
@@ -104,7 +102,7 @@ end
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, _sub1(index)...)
+    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
 end
 
 # Keyword argument version
@@ -113,7 +111,7 @@ end
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, _sub1(index)...)
+    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
 end
 
 """
@@ -125,13 +123,13 @@ Store a tile to a TileArray at the given index. Index is 1-indexed.
 @inline function store(arr::TileArray{T, N}, index, tile::Tile{T, Shape}) where {T, N, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, _sub1(index)...)
+    Intrinsics.store_partition_view(pv, tile, (promote(index...) .- One())...)
 end
 
 @inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, Shape}) where {T, N, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, index - one(index))
+    Intrinsics.store_partition_view(pv, tile, index - One())
 end
 
 # Special case for 0D (scalar) tiles - reshape to 1D for partition view
@@ -140,14 +138,14 @@ end
     # Reshape 0D tile to 1D (partition views require at least 1D)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, _sub1(index)...)
+    Intrinsics.store_partition_view(pv, tile_1d, (promote(index...) .- One())...)
 end
 
 @inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, ()}) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, index - one(index))
+    Intrinsics.store_partition_view(pv, tile_1d, index - One())
 end
 
 # Keyword argument version - dispatch to positional version
@@ -821,7 +819,7 @@ end
 @inline function atomic_cas(array::TileArray{T, N}, index, expected, desired;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_cas(array, index - one(index), expected, desired, memory_order, memory_scope)::T
+    Intrinsics.atomic_cas(array, index - One(), expected, desired, memory_order, memory_scope)::T
 end
 
 """
@@ -839,7 +837,7 @@ ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 @inline function atomic_xchg(array::TileArray{T, N}, index, val;
                              memory_order::Int=MemoryOrder.AcqRel,
                              memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_xchg(array, index - one(index), val, memory_order, memory_scope)::T
+    Intrinsics.atomic_xchg(array, index - One(), val, memory_order, memory_scope)::T
 end
 
 """
@@ -856,5 +854,5 @@ old_val = ct.atomic_add(counters, idx, Int32(1))
 @inline function atomic_add(array::TileArray{T, N}, index, val;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_add(array, index - one(index), val, memory_order, memory_scope)::T
+    Intrinsics.atomic_add(array, index - One(), val, memory_order, memory_scope)::T
 end

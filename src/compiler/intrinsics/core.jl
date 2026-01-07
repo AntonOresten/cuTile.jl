@@ -15,7 +15,7 @@
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -107,7 +107,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -180,7 +180,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -192,12 +192,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args, @nospe
     # Extract value
     value = @something get_constant(ctx, args[2]) error("full() value must be a compile-time constant")
 
-    # Extract dtype from result type
-    result_type_unwrapped = unwrap_type(result_type)
-    elem_type = Float32
-    if result_type_unwrapped <: Tile
-        elem_type = result_type_unwrapped.parameters[1]
-    end
+    # Extract dtype from Type{T} argument
+    elem_type = @something get_constant(ctx, args[3]) error("constant() requires a compile-time element type")
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -240,7 +236,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -298,7 +294,7 @@ end
     @noinline get_num_tile_blocks(axis::Integer)::Int32 = Base.compilerbarrier(:const, zero(Int32))
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), args)
     axis = @something get_constant(ctx, args[1]) error("get_num_tile_blocks() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("get_num_tile_blocks() axis must be 0, 1, or 2, got $axis")
 
@@ -321,7 +317,7 @@ end
     @noinline get_tile_block_id(axis::Integer)::Int32 = Base.compilerbarrier(:const, zero(Int32))
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), args)
     axis = @something get_constant(ctx, args[1]) error("get_tile_block_id() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("get_tile_block_id() axis must be 0, 1, or 2, got $axis")
 
@@ -350,7 +346,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -359,12 +355,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args, @nospecial
     shape isa Tuple || error("iota() shape must be a compile-time constant tuple")
     tile_shape = collect(Int, shape)
 
-    # Extract dtype from result type
-    result_type_unwrapped = unwrap_type(result_type)
-    elem_type = Int32
-    if result_type_unwrapped <: Tile
-        elem_type = result_type_unwrapped.parameters[1]
-    end
+    # Extract dtype from Type{T} argument
+    elem_type = @something get_constant(ctx, args[2]) error("iota() requires a compile-time element type")
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
@@ -390,7 +382,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
     cb = ctx.cb
 
     lhs = emit_value!(ctx, args[1])
@@ -422,7 +414,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -437,9 +429,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args, @nospeci
     offsets = offsets_tv.v
     tile_shape = offsets_tv.shape
 
-    # Get pointer element type from result_type (Tile{Ptr{T}, S})
-    result_type_unwrapped = unwrap_type(result_type)
-    ptr_elem_type = eltype(result_type_unwrapped.parameters[1])  # T from Ptr{T}
+    # Get pointer element type from base pointer type (Ptr{T})
+    base_ptr_type = unwrap_type(base_ptr_tv.jltype)
+    ptr_elem_type = eltype(base_ptr_type)  # T from Ptr{T}
     elem_dtype = julia_to_tile_dtype!(tt, ptr_elem_type)
     ptr_dtype = pointer_type!(tt, elem_dtype)
     ptr_tile_type = tile_type!(tt, ptr_dtype, tile_shape)
@@ -458,7 +450,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args, @nospeci
     # Compute offset pointers: base_ptr + offsets (element offset)
     pointers = encode_OffsetOp!(cb, ptr_tile_type, base_ptr_tile, offsets)
 
-    CGVal(pointers, ptr_tile_type, result_type_unwrapped, tile_shape)
+    result_jltype = Tile{Ptr{ptr_elem_type}, Tuple(tile_shape)}
+    CGVal(pointers, ptr_tile_type, result_jltype, tile_shape)
 end
 
 
@@ -481,7 +474,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -534,7 +527,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -589,15 +582,15 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_sum), args, @nospecialize(result_type))
-    emit_reduce!(ctx, args, result_type, :add)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_sum), args)
+    emit_reduce!(ctx, args, :add)
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_max), args, @nospecialize(result_type))
-    emit_reduce!(ctx, args, result_type, :max)
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_max), args)
+    emit_reduce!(ctx, args, :max)
 end
 
-function emit_reduce!(ctx::CGCtx, args, @nospecialize(result_type), reduce_fn::Symbol)
+function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -662,7 +655,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     cb = ctx.cb
     tt = ctx.tt
 
@@ -707,7 +700,7 @@ end
     end
 end
 
-function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args, @nospecialize(result_type))
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     cb = ctx.cb
 
     cond_tv = emit_value!(ctx, args[1])
