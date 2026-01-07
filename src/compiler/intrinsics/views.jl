@@ -40,7 +40,7 @@ end
     Get the number of tiles along the given axis (0-indexed).
     Compiled to cuda_tile.get_index_space_shape.
     """
-    @noinline function get_index_space_shape(pv::PartitionView{T, N, Shape}, axis::Integer)::Int32 where {T, N, Shape}
+    @noinline function get_index_space_shape(pv::PartitionView{T, N, Shape}, axis::Integer) where {T, N, Shape}
         Base.donotdelete(pv)
         Base.compilerbarrier(:const, zero(Int32))
     end
@@ -90,7 +90,7 @@ end
     Load a tile from a partition view at the given 0-indexed tile coordinates.
     Compiled to cuda_tile.load_view_tko.
     """
-    @noinline function load_partition_view(pv::PartitionView{T, N, Shape}, index::Vararg{Integer})::Tile{T, Shape} where {T, N, Shape}
+    @noinline function load_partition_view(pv::PartitionView{T, N, Shape}, index::Vararg{Integer}) where {T, N, Shape}
         Base.donotdelete(pv)
         Tile{T, Shape}()
     end
@@ -373,7 +373,7 @@ end
     Store a tile to a partition view at the given 0-indexed tile coordinates.
     Compiled to cuda_tile.store_view_tko.
     """
-    @noinline function store_partition_view(pv::PartitionView{T, N, Shape}, tile::Tile{T, Shape}, index::Vararg{Integer})::Nothing where {T, N, Shape}
+    @noinline function store_partition_view(pv::PartitionView{T, N, Shape}, tile::Tile{T, Shape}, index::Vararg{Integer}) where {T, N, Shape}
         Base.donotdelete(pv)
         Base.donotdelete(tile)
         nothing

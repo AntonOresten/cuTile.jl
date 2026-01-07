@@ -291,7 +291,7 @@ end
     Get the grid size along the given axis (0=x, 1=y, 2=z).
     Compiled to cuda_tile.get_num_tile_blocks.
     """
-    @noinline get_num_tile_blocks(axis::Integer)::Int32 = Base.compilerbarrier(:const, zero(Int32))
+    @noinline get_num_tile_blocks(axis::Integer) = Base.compilerbarrier(:const, zero(Int32))
 end
 
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), args)
@@ -314,7 +314,7 @@ end
     Get the block ID along the given axis (0=x, 1=y, 2=z).
     Compiled to cuda_tile.get_tile_block_id.
     """
-    @noinline get_tile_block_id(axis::Integer)::Int32 = Base.compilerbarrier(:const, zero(Int32))
+    @noinline get_tile_block_id(axis::Integer) = Base.compilerbarrier(:const, zero(Int32))
 end
 
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), args)

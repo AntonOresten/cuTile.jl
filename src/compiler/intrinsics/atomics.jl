@@ -121,7 +121,7 @@ end
     @noinline function atomic_xchg(array::TileArray{T, N}, index, val,
                                     memory_order::Int, memory_scope::Int) where {T, N}
         Base.donotdelete(array, index, val)
-        Base.compilerbarrier(:const, zero(T))::T
+        Base.compilerbarrier(:const, zero(T))
     end
 
     """
@@ -134,7 +134,7 @@ end
     @noinline function atomic_add(array::TileArray{T, N}, index, val,
                                    memory_order::Int, memory_scope::Int) where {T, N}
         Base.donotdelete(array, index, val)
-        Base.compilerbarrier(:const, zero(T))::T
+        Base.compilerbarrier(:const, zero(T))
     end
 end
 

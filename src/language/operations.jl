@@ -712,8 +712,8 @@ end
 @inline Base.:(/)(a::Tile{T, S}, b::Integer) where {T <: AbstractFloat, S} = tile_div(a, b)
 
 # Base overloads for Int32 (special intrinsics)
-@noinline Base.rem(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
-@noinline Base.min(a::Int32, b::Int32)::Int32 = Base.inferencebarrier(zero(Int32))
+@noinline Base.rem(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
+@noinline Base.min(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
 
 #=============================================================================
  Comparison
@@ -819,7 +819,7 @@ end
 @inline function atomic_cas(array::TileArray{T, N}, index, expected, desired;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_cas(array, index - One(), expected, desired, memory_order, memory_scope)::T
+    Intrinsics.atomic_cas(array, index - One(), expected, desired, memory_order, memory_scope)
 end
 
 """
@@ -837,7 +837,7 @@ ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 @inline function atomic_xchg(array::TileArray{T, N}, index, val;
                              memory_order::Int=MemoryOrder.AcqRel,
                              memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_xchg(array, index - One(), val, memory_order, memory_scope)::T
+    Intrinsics.atomic_xchg(array, index - One(), val, memory_order, memory_scope)
 end
 
 """
@@ -854,5 +854,5 @@ old_val = ct.atomic_add(counters, idx, Int32(1))
 @inline function atomic_add(array::TileArray{T, N}, index, val;
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_add(array, index - One(), val, memory_order, memory_scope)::T
+    Intrinsics.atomic_add(array, index - One(), val, memory_order, memory_scope)
 end
