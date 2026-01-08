@@ -108,7 +108,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     ctx.token = encode_MakeTokenOp!(cb, token_type)
 
     # Lower to structured IR
-    sci = StructuredCodeInfo(target.ci)
+    sci = StructuredIRCode(target.ir)
     structurize!(sci)
 
     # Emit the structured IR (uses original Julia SSA indices everywhere)
