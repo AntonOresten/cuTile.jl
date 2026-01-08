@@ -292,6 +292,8 @@ for i in 1:n
 end
 ```
 
+Also make sure `i`, `n`, and the increment all have the same type.
+
 ### Keyword arguments
 
 `load` and `store` use positional arguments instead of keyword arguments:
