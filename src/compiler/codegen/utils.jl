@@ -16,7 +16,8 @@ function resolve_or_constant(ctx::CGCtx, @nospecialize(arg), type_id::TypeId)
     # If we have a runtime value, use it
     tv.v !== nothing && return tv.v
     # Otherwise emit a constant from the compile-time value
-    val = @something tv.constant error("Cannot resolve argument")
+    tv.constant === nothing && error("Cannot resolve argument")
+    val = something(tv.constant)
     bytes = reinterpret(UInt8, [Int32(val)])
     encode_ConstantOp!(ctx.cb, type_id, collect(bytes))
 end
