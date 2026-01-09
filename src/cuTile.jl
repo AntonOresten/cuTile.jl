@@ -5,6 +5,7 @@ using IRStructurizer: Block, ControlFlowOp, BlockArg,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
                       IfOp, ForOp, WhileOp, LoopOp
 
+using Base: compilerbarrier, donotdelete
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
             ReturnNode, PiNode, QuoteNode, GlobalRef
 using Core.Compiler
@@ -30,8 +31,11 @@ include("compiler/reflection.jl")
 
 # Language implementation
 include("language/broadcast.jl")
-include("language/operations.jl")
 include("language/overlays.jl")
+include("language/arithmetic.jl")
+include("language/math.jl")
+include("language/operations.jl")
+include("language/atomics.jl")
 
 public launch
 launch() = error("Please import CUDA.jl before using `cuTile.launch`.")

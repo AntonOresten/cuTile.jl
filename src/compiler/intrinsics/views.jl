@@ -1,14 +1,4 @@
-#=============================================================================
- 8.11. Views
- cuda_tile.get_index_space_shape, cuda_tile.get_tensor_shape,
- cuda_tile.load_view_tko, cuda_tile.make_partition_view,
- cuda_tile.make_tensor_view, cuda_tile.store_view_tko
-=============================================================================#
-
-
-#-----------------------------------------------------------------------------
-# Helpers
-#-----------------------------------------------------------------------------
+# views
 
 """
 Convert integer padding mode value to bytecode PaddingValue enum.
@@ -42,9 +32,7 @@ function get_padding_value(ctx::CGCtx, args)
     padding_mode_to_padding_value(mode)
 end
 
-
-## cuda_tile.get_index_space_shape
-
+# cuda_tile.get_index_space_shape
 @eval Intrinsics begin
     """
         get_index_space_shape(pv::PartitionView, axis) -> Int32
@@ -53,11 +41,10 @@ end
     Compiled to cuda_tile.get_index_space_shape.
     """
     @noinline function get_index_space_shape(pv::PartitionView{T, N, Shape}, axis::Integer) where {T, N, Shape}
-        Base.donotdelete(pv)
-        Base.compilerbarrier(:const, zero(Int32))
+        donotdelete(pv)
+        compilerbarrier(:const, zero(Int32))
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -89,12 +76,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_index_space_shape),
     CGVal(result_val, scalar_i32, Int32)
 end
 
+# TODO: cuda_tile.get_tensor_shape
 
-## TODO: cuda_tile.get_tensor_shape
-
-
-## cuda_tile.load_view_tko
-
+# cuda_tile.load_view_tko
 @eval Intrinsics begin
     """
         load_partition_view(pv::PartitionView, index...) -> Tile
@@ -103,11 +87,10 @@ end
     Compiled to cuda_tile.load_view_tko.
     """
     @noinline function load_partition_view(pv::PartitionView{T, N, Shape}, index::Vararg{Integer}) where {T, N, Shape}
-        Base.donotdelete(pv)
+        donotdelete(pv)
         Tile{T, Shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -163,9 +146,7 @@ function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type:
     return index_vals
 end
 
-
-## cuda_tile.make_partition_view
-
+# cuda_tile.make_partition_view
 @eval Intrinsics begin
     """
         make_partition_view(tv::TensorView, shape_val, padding_mode) -> PartitionView
@@ -174,11 +155,10 @@ end
     Compiled to cuda_tile.make_partition_view.
     """
     @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int)::PartitionView{T, N, Shape} where {T, N, Shape}
-        Base.donotdelete(tv)
+        donotdelete(tv)
         PartitionView{T, N, Shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && error("make_partition_view() requires a TensorView argument")
@@ -363,9 +343,7 @@ function get_size_stride_vals(ctx::CGCtx, arg_idx, is_tilearray::Bool, ndim::Int
     return size_vals, stride_vals
 end
 
-
-## cuda_tile.make_tensor_view
-
+# cuda_tile.make_tensor_view
 @eval Intrinsics begin
     """
         make_tensor_view(arr::TileArray) -> TensorView
@@ -374,11 +352,10 @@ end
     Compiled to cuda_tile.make_tensor_view.
     """
     @noinline function make_tensor_view(arr::TileArray{T, N})::TensorView{T, N} where {T, N}
-        Base.donotdelete(arr)
+        donotdelete(arr)
         TensorView{T, N}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args)
     array_arg = args[1]
 
@@ -397,9 +374,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     CGVal(tensor_view, tv_type, result_jltype)
 end
 
-
-## cuda_tile.store_view_tko
-
+# cuda_tile.store_view_tko
 @eval Intrinsics begin
     """
         store_partition_view(pv::PartitionView, tile, index...) -> Nothing
@@ -408,12 +383,11 @@ end
     Compiled to cuda_tile.store_view_tko.
     """
     @noinline function store_partition_view(pv::PartitionView{T, N, Shape}, tile::Tile{T, Shape}, index::Vararg{Integer}) where {T, N, Shape}
-        Base.donotdelete(pv)
-        Base.donotdelete(tile)
+        donotdelete(pv)
+        donotdelete(tile)
         nothing
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_partition_view), args)
     cb = ctx.cb
     tt = ctx.tt

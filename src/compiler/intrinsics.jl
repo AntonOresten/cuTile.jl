@@ -4,6 +4,7 @@
 
 module Intrinsics
 
+using Base: compilerbarrier, donotdelete
 using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView
 using ..cuTile: Signedness, SignednessSigned, SignednessUnsigned
 using ..cuTile: ComparisonPredicate, CmpLessThan, CmpLessThanOrEqual, CmpGreaterThan, CmpGreaterThanOrEqual, CmpEqual, CmpNotEqual
@@ -13,6 +14,10 @@ end
 # NOTE: Due to JuliaLang/julia#60583, intrinsics may be called during constant evaluation.
 #       Because of that, such intrinsics (such as basic arithmetic) need to provide an
 #       implementation that actually computes a valid result using Julia intrinsics.
+#
+#       Sometimes that's not possible, e.g., because the functionality required for that is
+#       overlayed by methods calling back into the intrinsic (e.g. `sin`), so for those
+#       intrinsics we disable constant folding using a `compilerbarrier(:const)`
 
 emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
 

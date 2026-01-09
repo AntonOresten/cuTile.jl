@@ -1,9 +1,7 @@
 # miscellaneous intrinsics
 
-
-## cuda_tile.assume
-
-# Used internally for optimization hints. Should probably become a pass.
+# XXX: cuda_tile.assume
+# make this a pass?
 function emit_assume_ops!(ctx::CGCtx, array_val::Value, size_vals::Vector{Value},
                           stride_vals::Vector{Value}, array_spec::ArraySpec, dtype::TypeId, scalar_type::TypeId;
                           tv_strides::Union{Vector{Int64}, Nothing}=nothing)
@@ -53,5 +51,4 @@ function emit_assume_ops!(ctx::CGCtx, array_val::Value, size_vals::Vector{Value}
     return array_val, size_vals, stride_vals
 end
 
-
-## TODO: cuda_tile.print_tko
+# TODO: cuda_tile.print_tko

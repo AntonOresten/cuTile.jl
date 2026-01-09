@@ -1,8 +1,6 @@
 # core Tile IR intrinsics
 
-
-## cuda_tile.broadcast
-
+# cuda_tile.broadcast
 @eval Intrinsics begin
     """
         broadcast(tile, shape_val)
@@ -10,11 +8,10 @@
     Explicitly broadcast a tile to a target shape.
     Compiled to cuda_tile.broadcast.
     """
-    @noinline function broadcast(tile::Tile{T, S}, ::Val{Shape}) where {T, S, Shape}
+    @noinline function broadcast(tile::Tile{T}, ::Val{Shape}) where {T, Shape}
         Tile{T, Shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.broadcast), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -82,10 +79,7 @@ function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
     current_val
 end
 
-
-
-## cuda_tile.cat
-
+# cuda_tile.cat
 @eval Intrinsics begin
     """
         cat(tiles, axis_val)
@@ -106,7 +100,6 @@ end
         Tile{T, result_shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -154,9 +147,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cat), args)
     CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
-
-## cuda_tile.constant
-
+# cuda_tile.constant
 @eval Intrinsics begin
     """
         constant(shape, value, T)
@@ -168,7 +159,6 @@ end
         Tile{T, shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -207,12 +197,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     CGVal(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
 end
 
+# TODO: cuda_tile.entry
 
-## TODO: cuda_tile.entry
-
-
-## cuda_tile.extract
-
+# cuda_tile.extract
 @eval Intrinsics begin
     """
         extract(tile, index_val, shape_val)
@@ -220,11 +207,10 @@ end
     Extract a sub-tile from tile at 0-indexed slice indices.
     Compiled to cuda_tile.extract.
     """
-    @noinline function extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape}
+    @noinline function extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape}
         Tile{T, Shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -267,12 +253,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.extract), args)
     CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
+# TODO: cuda_tile.get_global
 
-## TODO: cuda_tile.get_global
-
-
-## cuda_tile.get_num_tile_blocks
-
+# cuda_tile.get_num_tile_blocks
 @eval Intrinsics begin
     """
         get_num_tile_blocks(axis)::Int32
@@ -280,9 +263,8 @@ end
     Get the grid size along the given axis (0=x, 1=y, 2=z).
     Compiled to cuda_tile.get_num_tile_blocks.
     """
-    @noinline get_num_tile_blocks(axis::Integer) = Base.compilerbarrier(:const, zero(Int32))
+    @noinline get_num_tile_blocks(axis::Integer) = compilerbarrier(:const, zero(Int32))
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), args)
     axis = @something get_constant(ctx, args[1]) error("get_num_tile_blocks() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("get_num_tile_blocks() axis must be 0, 1, or 2, got $axis")
@@ -293,9 +275,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_num_tile_blocks), a
     CGVal((nb_x, nb_y, nb_z)[axis + 1], res_type, Int32)
 end
 
-
-## cuda_tile.get_tile_block_id
-
+# cuda_tile.get_tile_block_id
 @eval Intrinsics begin
     """
         get_tile_block_id(axis)::Int32
@@ -303,9 +283,8 @@ end
     Get the block ID along the given axis (0=x, 1=y, 2=z).
     Compiled to cuda_tile.get_tile_block_id.
     """
-    @noinline get_tile_block_id(axis::Integer) = Base.compilerbarrier(:const, zero(Int32))
+    @noinline get_tile_block_id(axis::Integer) = compilerbarrier(:const, zero(Int32))
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), args)
     axis = @something get_constant(ctx, args[1]) error("get_tile_block_id() axis must be a compile-time constant")
     axis in (0, 1, 2) || error("get_tile_block_id() axis must be 0, 1, or 2, got $axis")
@@ -317,12 +296,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.get_tile_block_id), arg
     CGVal(result, res_type, Int32)
 end
 
+# TODO: cuda_tile.global
 
-## TODO: cuda_tile.global
-
-
-## cuda_tile.iota
-
+# cuda_tile.iota
 @eval Intrinsics begin
     """
         iota(shape, T)
@@ -334,7 +310,6 @@ end
         Tile{T, shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -356,9 +331,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.iota), args)
     CGVal(result, tile_type, Tile{elem_type, Tuple(tile_shape)}, tile_shape)
 end
 
-
-## cuda_tile.mmaf, cuda_tile.mmai
-
+# cuda_tile.mmaf, cuda_tile.mmai
 @eval Intrinsics begin
     """
         mma(a, b, acc)
@@ -366,11 +339,10 @@ end
     Matrix-multiply-accumulate: result = a @ b + acc.
     Compiled to cuda_tile.mmaf or cuda_tile.mmai.
     """
-    @noinline function mma(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC}
+    @noinline function mma(a::Tile{T1}, b::Tile{T2}, acc::Tile{T3, SC}) where {T1, T2, T3, SC}
         Tile{T3, SC}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
     cb = ctx.cb
 
@@ -385,12 +357,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.mma), args)
     CGVal(result, acc.type_id, acc.jltype, acc.shape)
 end
 
+# TODO: cuda_tile.module
 
-## TODO: cuda_tile.module
-
-
-## cuda_tile.offset
-
+# cuda_tile.offset
 @eval Intrinsics begin
     """
         offset(base, offsets)
@@ -402,7 +371,6 @@ end
         Tile{Ptr{T}, S}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -443,12 +411,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.offset), args)
     CGVal(pointers, ptr_tile_type, result_jltype, tile_shape)
 end
 
+# TODO: cudatile.pack
 
-## TODO: cudatile.pack
-
-
-## cuda_tile.permute
-
+# cuda_tile.permute
 @eval Intrinsics begin
     """
         permute(tile, perm_val)
@@ -462,7 +427,6 @@ end
         Tile{T, permuted_shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -501,9 +465,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.permute), args)
     CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
-
-## XXX: cuda_tile.transpose
-
+# cuda_tile.transpose
 @eval Intrinsics begin
     """
         transpose(tile)
@@ -515,7 +477,6 @@ end
         Tile{T, reverse(S)}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.transpose), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -546,7 +507,6 @@ end
 
 
 ## XXX: cuda_tile.reduce
-
 @eval Intrinsics begin
     """
         reduce_sum(tile, axis_val)
@@ -570,15 +530,12 @@ end
         Tile{T, reduced_shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_sum), args)
     emit_reduce!(ctx, args, :add)
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce_max), args)
     emit_reduce!(ctx, args, :max)
 end
-
 function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     cb = ctx.cb
     tt = ctx.tt
@@ -630,8 +587,7 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
 end
 
 
-## cuda_tile.reshape
-
+# cuda_tile.reshape
 @eval Intrinsics begin
     """
         reshape(tile, shape_val)
@@ -639,11 +595,10 @@ end
     Reshape a tile to a new shape (same total elements).
     Compiled to cuda_tile.reshape.
     """
-    @noinline function reshape(tile::Tile{T, S}, ::Val{Shape}) where {T, S, Shape}
+    @noinline function reshape(tile::Tile{T}, ::Val{Shape}) where {T, Shape}
         Tile{T, Shape}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -671,12 +626,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     CGVal(result_v, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
 end
 
+# TODO: cuda_tile.scan
 
-## TODO: cuda_tile.scan
-
-
-## cuda_tile.select
-
+# cuda_tile.select
 @eval Intrinsics begin
     """
         select(cond, x, y)
@@ -688,7 +640,6 @@ end
         Tile{T, S}()
     end
 end
-
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     cb = ctx.cb
 
@@ -704,5 +655,4 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     CGVal(result, x_tv.type_id, x_tv.jltype, x_tv.shape)
 end
 
-
-## TODO: cuda_tile.unpack
+# TODO: cuda_tile.unpack

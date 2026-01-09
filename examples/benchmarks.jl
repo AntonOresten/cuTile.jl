@@ -264,14 +264,14 @@ end
 
 # 2D swizzle for better L2 cache locality (using 0-indexed block IDs)
 @inline function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
-    num_bid_m = ct.cdiv(M, Int32(tm))
-    num_bid_n = ct.cdiv(N, Int32(tn))
+    num_bid_m = cld(M, Int32(tm))
+    num_bid_n = cld(N, Int32(tn))
     num_bid_in_group = Int32(GROUP_SIZE_M) * num_bid_n
-    group_id = ct.floordiv(bid, num_bid_in_group)
+    group_id = fld(bid, num_bid_in_group)
     first_bid_m = group_id * Int32(GROUP_SIZE_M)
     group_size_m = min(num_bid_m - first_bid_m, Int32(GROUP_SIZE_M))
     bid_m = first_bid_m + rem(bid, group_size_m)
-    bid_n = ct.floordiv(rem(bid, num_bid_in_group), group_size_m)
+    bid_n = fld(rem(bid, num_bid_in_group), group_size_m)
     return bid_m, bid_n
 end
 
@@ -295,7 +295,7 @@ function matmul_cutile_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.
     while k <= num_k
         a = ct.astype(ct.load(A, (bid_m, k), (tm[], tk[])), dtype)
         b = ct.astype(ct.load(B, (k, bid_n), (tk[], tn[])), dtype)
-        acc = ct.mma(a, b, acc)
+        acc = muladd(a, b, acc)
         k += Int32(1)
     end
 
@@ -437,7 +437,7 @@ function layernorm_cutile_kernel(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Fl
         j += Int32(1)
     end
     var = ct.reduce_sum(var, 2) / N
-    rstd = 1.0f0 / sqrt(var .+ eps[])
+    rstd = 1.0f0 ./ sqrt.(var .+ eps[])
     ct.store(Rstd, bid_m, rstd)
 
     # Normalize and apply affine transformation
@@ -520,7 +520,7 @@ function batchmatmul_cutile_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C
     pid_batch = ct.bid(3)
 
     K = A.sizes[2]
-    num_k = ct.cdiv(K, Int32(tk[]))
+    num_k = cld(K, Int32(tk[]))
 
     acc = ct.full((tm[], tn[]), zero(Float32), Float32)
 
@@ -539,7 +539,7 @@ function batchmatmul_cutile_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C
             b_2d = convert(ct.Tile{ct.TFloat32}, b_2d)
         end
 
-        acc = ct.mma(a_2d, b_2d, acc)
+        acc = muladd(a_2d, b_2d, acc)
         k += Int32(1)
     end
 

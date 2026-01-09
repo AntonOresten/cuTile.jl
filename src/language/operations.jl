@@ -1,8 +1,4 @@
 # cuTile DSL operations
-#
-# Mimcs, and organized according to, the cuTile Python API:
-# https://docs.nvidia.com/cuda/cutile-python/operations.html
-
 
 # Helper to extract compile-time shape from various tuple types
 @inline _extract_shape(s::NTuple{N, Int}) where N = s
@@ -48,16 +44,16 @@ Get the grid size along the given axis (1=x, 2=y, 3=z).
     num_tiles(arr::TileArray, axis::Integer, shape::NTuple{M, Int}) -> Int32
 
 Get the number of tiles along a specific axis of an array, given the tile shape.
-Axis is 1-indexed. Equivalent to cdiv(arr.sizes[axis], shape[axis]).
+Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
 
 # Example
 ```julia
 # For a 1024x768 matrix with 32x32 tiles:
-# num_tiles(arr, 1, (32, 32)) returns cdiv(1024, 32) = 32
-# num_tiles(arr, 2, (32, 32)) returns cdiv(768, 32) = 24
+# num_tiles(arr, 1, (32, 32)) returns cld(1024, 32) = 32
+# num_tiles(arr, 2, (32, 32)) returns cld(768, 32) = 24
 ```
 """
-@inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{M, Int}) where {T, N, M}
+@inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{<:Any, Int}) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined)
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
@@ -82,15 +78,15 @@ Index is 1-indexed. Shape must be compile-time constant.
 tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
 ```
 """
-@inline function load(arr::TileArray{T, N}, index, shape::NTuple{M, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
+@inline function load(arr::TileArray{T, N}, index, shape::NTuple{<:Any, Int};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
     Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
 end
 
-@inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{M, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
+@inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{<:Any, Int};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
     Intrinsics.load_partition_view(pv, index - One())
@@ -120,20 +116,20 @@ end
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 """
 # Regular N-D tiles (N >= 1)
-@inline function store(arr::TileArray{T, N}, index, tile::Tile{T, Shape}) where {T, N, Shape}
+@inline function store(arr::TileArray{T}, index, tile::Tile{T, Shape}) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile, (promote(index...) .- One())...)
 end
 
-@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, Shape}) where {T, N, Shape}
+@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, Shape}) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile, index - One())
 end
 
 # Special case for 0D (scalar) tiles - reshape to 1D for partition view
-@inline function store(arr::TileArray{T, N}, index, tile::Tile{T, ()}) where {T, N}
+@inline function store(arr::TileArray{T}, index, tile::Tile{T, ()}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
     # Reshape 0D tile to 1D (partition views require at least 1D)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
@@ -141,7 +137,7 @@ end
     Intrinsics.store_partition_view(pv, tile_1d, (promote(index...) .- One())...)
 end
 
-@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, ()}) where {T, N}
+@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, ()}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
@@ -149,7 +145,7 @@ end
 end
 
 # Keyword argument version - dispatch to positional version
-@inline function store(arr::TileArray{T, N}; index, tile::Tile{T, Shape}) where {T, N, Shape}
+@inline function store(arr::TileArray{T}; index, tile::Tile{T, Shape}) where {T, Shape}
     store(arr, index, tile)
 end
 
@@ -179,9 +175,9 @@ tile = ct.gather(arr, indices)
     # Bounds mask: 0 <= indices_i32 < size
     zero_0d = Tile(Int32(0))
     size_0d = Tile(array.sizes[1])  # Already Int32
-    ge_zero = indices_i32 >= zero_0d
-    lt_size = indices_i32 < size_0d
-    mask = ge_zero & lt_size
+    ge_zero = indices_i32 .>= zero_0d
+    lt_size = indices_i32 .< size_0d
+    mask = ge_zero .& lt_size
 
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
@@ -227,9 +223,9 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     size0_bc = broadcast_to(Tile(array.sizes[1]), S)
     size1_bc = broadcast_to(Tile(array.sizes[2]), S)
 
-    mask0 = (idx0_i32 >= zero_bc) & (idx0_i32 < size0_bc)
-    mask1 = (idx1_i32 >= zero_bc) & (idx1_i32 < size1_bc)
-    mask = mask0 & mask1
+    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
+    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
+    mask = mask0 .& mask1
 
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
@@ -263,9 +259,9 @@ ct.scatter(arr, indices, result_tile)
     # Bounds mask: 0 <= indices_i32 < size
     zero_0d = Tile(Int32(0))
     size_0d = Tile(array.sizes[1])  # Already Int32
-    ge_zero = indices_i32 >= zero_0d
-    lt_size = indices_i32 < size_0d
-    mask = ge_zero & lt_size
+    ge_zero = indices_i32 .>= zero_0d
+    lt_size = indices_i32 .< size_0d
+    mask = ge_zero .& lt_size
 
     Intrinsics.store_ptr_tko(ptr_tile, tile, mask)
 end
@@ -309,9 +305,9 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     size0_bc = broadcast_to(Tile(array.sizes[1]), S)
     size1_bc = broadcast_to(Tile(array.sizes[2]), S)
 
-    mask0 = (idx0_i32 >= zero_bc) & (idx0_i32 < size0_bc)
-    mask1 = (idx1_i32 >= zero_bc) & (idx1_i32 < size1_bc)
-    mask = mask0 & mask1
+    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
+    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
+    mask = mask0 .& mask1
 
     Intrinsics.store_ptr_tko(ptr_tile, tile_bc, mask)
 end
@@ -407,7 +403,7 @@ row = ct.load(arr, (1, 1), (1, 128))  # Shape (1, 128)
 expanded = ct.broadcast_to(row, (64, 128))  # Shape (64, 128)
 ```
 """
-@inline broadcast_to(tile::Tile{T, S}, shape::NTuple{N, Int}) where {T, S, N} =
+@inline broadcast_to(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
     Intrinsics.broadcast(tile, Val(shape))
 
 """
@@ -421,7 +417,7 @@ tile = ct.load(arr, (1, 1), (4, 8))  # Shape (4, 8), 32 elements
 reshaped = ct.reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
 ```
 """
-@inline reshape(tile::Tile{T, S}, shape::NTuple{N, Int}) where {T, S, N} =
+@inline reshape(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
     Intrinsics.reshape(tile, Val(shape))
 
 """
@@ -437,9 +433,9 @@ tile = ct.load(arr, (1, 1, 1), (2, 3, 4))  # Shape (2, 3, 4)
 permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
 ```
 """
-@inline permute(tile::Tile{T, S}, perm::NTuple{N, Int}) where {T, S, N} =
+@inline permute(tile::Tile{T}, perm::NTuple{<:Any, Int}) where {T} =
     Intrinsics.permute(tile, Val(map(p -> p - 1, perm)))
-@inline permute(tile::Tile{T, S}, ::Val{Perm}) where {T, S, Perm} =
+@inline permute(tile::Tile{T}, ::Val{Perm}) where {T, Perm} =
     Intrinsics.permute(tile, Val(map(p -> p - 1, Perm)))
 
 """
@@ -447,7 +443,7 @@ permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
 
 Transpose a 2D tile, swapping its dimensions.
 """
-@inline transpose(tile::Tile{T, S}) where {T, S} =
+@inline transpose(tile::Tile{T}) where {T} =
     Intrinsics.transpose(tile)
 
 """
@@ -514,32 +510,12 @@ end
  Matmul
 =============================================================================#
 
-public mma, matmul
-
-"""
-    mma(a::Tile{T1, (M, K)}, b::Tile{T2, (K, N)}, acc::Tile{T3, (M, N)}) -> Tile{T3, (M, N)}
-
-Perform matrix-multiply-accumulate: result = a @ b + acc.
-Uses tensor cores when available.
-"""
-@inline mma(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
+# Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
+# Uses tensor cores when available.
+@inline Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
     Intrinsics.mma(a, b, acc)
 
-"""
-    matmul(a::Tile{T1, S}, b::Tile{T2, S}) -> Tile{T1, S}
-
-Perform matrix multiplication: result = a @ b.
-Equivalent to `mma(a, b, zeros(output_shape, T1))`.
-
-Supports both 2D and 3D (batched) inputs:
-- 2D: a:(M, K) × b:(K, N) → (M, N)
-- 3D: a:(B, M, K) × b:(B, K, N) → (B, M, N)
-
-# Example
-```julia
-c = ct.matmul(a, b)  # c = a @ b
-```
-"""
+# Internal matmul helper (used by * operator)
 @inline function matmul(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
     _matmul(a, b, Val(length(SA)))
 end
@@ -549,7 +525,7 @@ end
     M = SA[1]
     N = SB[2]
     acc = zeros((M, N), T1)
-    mma(a, b, acc)
+    muladd(a, b, acc)
 end
 
 # 3D batched matmul: (B, M, K) × (B, K, N) → (B, M, N)
@@ -558,7 +534,7 @@ end
     M = SA[2]
     N = SB[3]
     acc = zeros((B, M, N), T1)
-    mma(a, b, acc)
+    muladd(a, b, acc)
 end
 
 #=============================================================================
@@ -602,274 +578,18 @@ tr = ct.extract(tile, (1, 2), (4, 4))  # Top-right (rows 1-4, cols 5-8)
 br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
 ```
 """
-@inline extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{M, Int}) where {T, S, N, M} =
+@inline extract(tile::Tile{T}, index::NTuple{<:Any, Int}, shape::NTuple{<:Any, Int}) where {T} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, index)), Val(shape))
-@inline extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape} =
+@inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
 
 #=============================================================================
- Math
+ Matrix Multiplication
 =============================================================================#
 
-public cdiv, floordiv, sqrt, rsqrt
-
-"""
-    cdiv(a::Integer, b::Integer)
-
-Ceiling division: ⌈a/b⌉ = (a + b - 1) ÷ b
-Useful for computing grid dimensions from array sizes and tile sizes.
-"""
-@inline cdiv(a::T, b::T) where {T<:Integer} =
-    Intrinsics.divi(Intrinsics.subi(Intrinsics.addi(a, b), one(T)), b, SignednessSigned)
-@inline cdiv(a::Integer, b::Integer) = cdiv(promote(a, b)...)
-
-"""
-    floordiv(a::Integer, b::Integer)
-
-Floor division: ⌊a/b⌋
-Equivalent to `a ÷ b` but provided for consistency with the cuTile API.
-"""
-@inline floordiv(a::T, b::T) where {T<:Integer} = Intrinsics.divi(a, b, SignednessSigned)
-@inline floordiv(a::Integer, b::Integer) = floordiv(promote(a, b)...)
-
-"""
-    sqrt(tile::Tile{T, S}) -> Tile{T, S}
-
-Compute element-wise square root of a tile.
-"""
-@inline Base.sqrt(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
-    Intrinsics.sqrt(tile)
-
-"""
-    rsqrt(tile::Tile{T, S}) -> Tile{T, S}
-
-Compute element-wise reciprocal square root (1/sqrt(x)) of a tile.
-"""
-@inline rsqrt(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
-    Intrinsics.rsqrt(tile)
-
-# Broadcasting arithmetic - different shapes, broadcast then call intrinsic
-@inline function tile_add(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.addf(broadcast_to(a, S), broadcast_to(b, S))
-end
-@inline function tile_add(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: Integer, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.addi(broadcast_to(a, S), broadcast_to(b, S))
-end
-
-@inline function tile_sub(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.subf(broadcast_to(a, S), broadcast_to(b, S))
-end
-@inline function tile_sub(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: Integer, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.subi(broadcast_to(a, S), broadcast_to(b, S))
-end
-
-@inline function tile_mul(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.mulf(broadcast_to(a, S), broadcast_to(b, S))
-end
-@inline function tile_mul(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: Integer, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.muli(broadcast_to(a, S), broadcast_to(b, S))
-end
-
-@inline function tile_div(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.divf(broadcast_to(a, S), broadcast_to(b, S))
-end
-
-@inline function tile_pow(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}
-    S = broadcast_shape(S1, S2)
-    Intrinsics.pow(broadcast_to(a, S), broadcast_to(b, S))
-end
-
-# Scalar variants convert to 0D tile
-@inline tile_add(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_add(a, Tile(b))
-@inline tile_add(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_add(Tile(a), b)
-@inline tile_sub(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_sub(a, Tile(b))
-@inline tile_sub(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_sub(Tile(a), b)
-@inline tile_mul(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_mul(a, Tile(b))
-@inline tile_mul(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_mul(Tile(a), b)
-@inline tile_div(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_div(a, Tile(b))
-@inline tile_div(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_div(Tile(a), b)
-@inline tile_div(a::Tile{T, S}, b::Integer) where {T <: AbstractFloat, S} = tile_div(a, Tile(T(b)))
-
-# Operator overloads (same shape required)
-@inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.addf(a, b)
-@inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.addi(a, b)
-@inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.subf(a, b)
-@inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.subi(a, b)
-@inline Base.:(*)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.mulf(a, b)
-@inline Base.:(*)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.muli(a, b)
-@inline Base.:(/)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.divf(a, b)
-
-# Scalar-tile operators
-@inline Base.:(+)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_add(a, b)
-@inline Base.:(+)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_add(a, b)
-@inline Base.:(-)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_sub(a, b)
-@inline Base.:(-)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_sub(a, b)
-@inline Base.:(*)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_mul(a, b)
-@inline Base.:(*)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_mul(a, b)
-@inline Base.:(/)(a::Tile{T, S}, b::T) where {T <: AbstractFloat, S} = tile_div(a, b)
-@inline Base.:(/)(a::T, b::Tile{T, S}) where {T <: AbstractFloat, S} = tile_div(a, b)
-@inline Base.:(/)(a::Tile{T, S}, b::Integer) where {T <: AbstractFloat, S} = tile_div(a, b)
+# Matrix multiplication (A * B like Julia arrays)
+@inline Base.:(*)(a::Tile, b::Tile) = matmul(a, b)
 
 # Base overloads for Int32 (special intrinsics)
 @noinline Base.rem(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
 @noinline Base.min(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
-
-#=============================================================================
- Comparison
-
- Integer comparisons use cmpi with signedness.
- Float comparisons use cmpf.
-=============================================================================#
-
-# Integer tile comparisons (same shape)
-@inline Base.:(<)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
-    Intrinsics.cmpi(a, b, CmpLessThan, SignednessSigned)
-@inline Base.:(>)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
-    Intrinsics.cmpi(a, b, CmpGreaterThan, SignednessSigned)
-@inline Base.:(<=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
-    Intrinsics.cmpi(a, b, CmpLessThanOrEqual, SignednessSigned)
-@inline Base.:(>=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
-    Intrinsics.cmpi(a, b, CmpGreaterThanOrEqual, SignednessSigned)
-@inline Base.:(==)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
-    Intrinsics.cmpi(a, b, CmpEqual, SignednessSigned)
-@inline Base.:(!=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:Integer, S} =
-    Intrinsics.cmpi(a, b, CmpNotEqual, SignednessSigned)
-
-# Float tile comparisons (same shape)
-@inline Base.:(<)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
-    Intrinsics.cmpf(a, b, CmpLessThan)
-@inline Base.:(>)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
-    Intrinsics.cmpf(a, b, CmpGreaterThan)
-@inline Base.:(<=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
-    Intrinsics.cmpf(a, b, CmpLessThanOrEqual)
-@inline Base.:(>=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
-    Intrinsics.cmpf(a, b, CmpGreaterThanOrEqual)
-@inline Base.:(==)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
-    Intrinsics.cmpf(a, b, CmpEqual)
-@inline Base.:(!=)(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} =
-    Intrinsics.cmpf(a, b, CmpNotEqual)
-
-# Broadcasting versions - different shapes
-@inline Base.:(<)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
-    broadcast_to(a, broadcast_shape(S1, S2)) < broadcast_to(b, broadcast_shape(S1, S2))
-@inline Base.:(>)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
-    broadcast_to(a, broadcast_shape(S1, S2)) > broadcast_to(b, broadcast_shape(S1, S2))
-@inline Base.:(<=)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
-    broadcast_to(a, broadcast_shape(S1, S2)) <= broadcast_to(b, broadcast_shape(S1, S2))
-@inline Base.:(>=)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
-    broadcast_to(a, broadcast_shape(S1, S2)) >= broadcast_to(b, broadcast_shape(S1, S2))
-@inline Base.:(==)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
-    broadcast_to(a, broadcast_shape(S1, S2)) == broadcast_to(b, broadcast_shape(S1, S2))
-@inline Base.:(!=)(a::Tile{T, S1}, b::Tile{T, S2}) where {T, S1, S2} =
-    broadcast_to(a, broadcast_shape(S1, S2)) != broadcast_to(b, broadcast_shape(S1, S2))
-
-# Mixed-type integer comparisons - promote to common type
-# Helper to compute result type at compile time via dispatch
-@inline _promote_cmp(op, a::Tile{T1, S1}, b::Tile{T2, S2}, ::Type{T}, ::Val{S}) where {T1, T2, S1, S2, T, S} =
-    op(astype(broadcast_to(a, S), T), astype(broadcast_to(b, S), T))
-
-for op in (:<, :>, :<=, :>=, :(==), :(!=))
-    @eval @inline function Base.$op(a::Tile{T1, S1}, b::Tile{T2, S2}) where {T1<:Integer, T2<:Integer, S1, S2}
-        _promote_cmp($op, a, b, promote_type(T1, T2), Val(broadcast_shape(S1, S2)))
-    end
-end
-
-#=============================================================================
- Logical Operations
-=============================================================================#
-
-"""
-Element-wise logical AND for boolean tiles.
-"""
-@inline Base.:(&)(a::Tile{Bool, S}, b::Tile{Bool, S}) where {S} =
-    Intrinsics.andi(a, b)
-
-#=============================================================================
- Atomic
-=============================================================================#
-
-public atomic_cas, atomic_xchg, atomic_add
-
-"""
-Memory ordering for atomic operations.
-Use these constants with atomic_cas, atomic_xchg, etc.
-"""
-module MemoryOrder
-    const Weak = 0
-    const Relaxed = 1
-    const Acquire = 2
-    const Release = 3
-    const AcqRel = 4
-end
-
-"""
-Memory scope for atomic operations.
-"""
-module MemScope
-    const Block = 0
-    const Device = 1
-    const System = 2
-end
-
-"""
-    atomic_cas(array::TileArray, index, expected, desired; memory_order, memory_scope) -> T
-
-Atomic compare-and-swap. Atomically compares the value at `index` with `expected`,
-and if equal, replaces it with `desired`. Returns the original value.
-Index is 1-indexed.
-
-# Example
-```julia
-# Spin-lock acquisition
-while ct.atomic_cas(locks, idx, Int32(0), Int32(1); memory_order=ct.MemoryOrder.Acquire) == Int32(1)
-    # spin
-end
-```
-"""
-@inline function atomic_cas(array::TileArray{T, N}, index, expected::T, desired::T;
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_cas(array, index - One(), expected, desired, memory_order, memory_scope)
-end
-
-"""
-    atomic_xchg(array::TileArray, index, val; memory_order, memory_scope) -> T
-
-Atomic exchange. Atomically replaces the value at `index` with `val` and returns
-the original value. Index is 1-indexed.
-
-# Example
-```julia
-# Spin-lock release
-ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
-```
-"""
-@inline function atomic_xchg(array::TileArray{T, N}, index, val::T;
-                             memory_order::Int=MemoryOrder.AcqRel,
-                             memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_xchg(array, index - One(), val, memory_order, memory_scope)
-end
-
-"""
-    atomic_add(array::TileArray, index, val; memory_order, memory_scope) -> T
-
-Atomic addition. Atomically adds `val` to the value at `index` and returns
-the original value. Index is 1-indexed.
-
-# Example
-```julia
-old_val = ct.atomic_add(counters, idx, Int32(1))
-```
-"""
-@inline function atomic_add(array::TileArray{T, N}, index, val::T;
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T, N}
-    Intrinsics.atomic_add(array, index - One(), val, memory_order, memory_scope)
-end

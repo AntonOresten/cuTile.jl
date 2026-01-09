@@ -1,9 +1,10 @@
 # Broadcasting Infrastructure for Tiles
 #
-# Enables Julia's broadcasting syntax (a .+ b, a .< b, etc.) for Tile types.
-# Broadcasting with different shapes is handled by automatic broadcast_to calls.
+# Defines the broadcast style and shape computation for Tile types.
+# Actual broadcasted operations are defined in arithmetic.jl and math.jl.
 
 import Base.Broadcast: BroadcastStyle, Broadcasted, broadcastable
+
 
 #=============================================================================
  Broadcast Shape Computation
@@ -41,6 +42,7 @@ broadcast_shape((16, 32), (16, 32)) # => (16, 32)
     end
 end
 
+
 #=============================================================================
  Custom BroadcastStyle for Tiles
 =============================================================================#
@@ -56,55 +58,3 @@ Base.Broadcast.BroadcastStyle(::TileStyle, ::Base.Broadcast.DefaultArrayStyle{0}
 
 # Tiles are already broadcastable - return as-is
 Base.Broadcast.broadcastable(t::Tile) = t
-
-#=============================================================================
- Broadcasted Arithmetic Operators
-=============================================================================#
-
-# Tile-Tile arithmetic (a .+ b becomes broadcasted(+, a, b))
-for (op, tile_op) in ((:+, :tile_add), (:-, :tile_sub), (:*, :tile_mul), (:/, :tile_div))
-    @eval @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
-        $tile_op(a, b)
-end
-@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Tile{T,S1}, b::Tile{T,S2}) where {T<:AbstractFloat,S1,S2} =
-    tile_pow(a, b)
-
-# Tile-Scalar arithmetic (tile .+ scalar, scalar .+ tile)
-for (op, tile_op) in ((:+, :tile_add), (:-, :tile_sub), (:*, :tile_mul), (:/, :tile_div))
-    @eval begin
-        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S}, b::Number) where {T,S} =
-            $tile_op(a, Tile(T(b)))
-        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Number, b::Tile{T,S}) where {T,S} =
-            $tile_op(Tile(T(a)), b)
-    end
-end
-@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Tile{T,S}, b::Number) where {T<:AbstractFloat,S} =
-    tile_pow(a, Tile(T(b)))
-@inline Base.Broadcast.broadcasted(::TileStyle, ::typeof(^), a::Number, b::Tile{T,S}) where {T<:AbstractFloat,S} =
-    tile_pow(Tile(T(a)), b)
-
-#=============================================================================
- Broadcasted Comparison Operators
-=============================================================================#
-
-# Tile-Tile comparisons (uses Base overloads with broadcasting)
-for op in (:<, :>, :<=, :>=, :(==), :(!=))
-    @eval @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S1}, b::Tile{T,S2}) where {T,S1,S2} =
-        $op(a, b)
-end
-
-# Mixed-type integer comparisons (delegate to Base overloads which handle promotion)
-for op in (:<, :>, :<=, :>=, :(==), :(!=))
-    @eval @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T1,S1}, b::Tile{T2,S2}) where {T1<:Integer,T2<:Integer,S1,S2} =
-        $op(a, b)
-end
-
-# Tile-Scalar comparisons (convert scalar to 0D tile, then broadcast)
-for op in (:<, :>, :<=, :>=, :(==), :(!=))
-    @eval begin
-        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Tile{T,S}, b::Number) where {T,S} =
-            $op(a, Tile(T(b)))
-        @inline Base.Broadcast.broadcasted(::TileStyle, ::typeof($op), a::Number, b::Tile{T,S}) where {T,S} =
-            $op(Tile(T(a)), b)
-    end
-end

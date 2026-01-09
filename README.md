@@ -127,9 +127,10 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Arithmetic
 | Operation | Description |
 |-----------|-------------|
-| `+`, `-`, `*`, `/` | Element-wise (same shape) |
+| `+`, `-` | Element-wise (same shape only) |
+| `tile * scalar`, `tile / scalar` | Scalar multiply/divide |
 | `.+`, `.-`, `.*`, `./` | Broadcasting element-wise |
-| `^`, `.^` | Power (float only) |
+| `.^` | Power (float only, broadcast) |
 
 ### Construction
 | Operation | Description |
@@ -151,8 +152,8 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Matrix
 | Operation | Description |
 |-----------|-------------|
-| `mma(a, b, acc)` | Matrix multiply-accumulate: `a @ b + acc` |
-| `matmul(a, b)` | Matrix multiplication: `a @ b` |
+| `a * b` | Matrix multiplication: `a @ b` |
+| `muladd(a, b, acc)` | Matrix multiply-accumulate: `a * b + acc` |
 
 ### Reductions
 | Operation | Description |
@@ -163,8 +164,16 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Math
 | Operation | Description |
 |-----------|-------------|
-| `sqrt(tile)` | Element-wise square root |
-| `rsqrt(tile)` | Element-wise reciprocal square root |
+| `sqrt.(tile)`, `sqrt(x)` | Square root (tile broadcast or scalar) |
+| `rsqrt.(tile)`, `rsqrt(x)` | Reciprocal square root |
+| `exp.(tile)`, `exp(x)` | Natural exponential |
+| `exp2.(tile)`, `exp2(x)` | Base-2 exponential |
+| `log.(tile)`, `log(x)` | Natural logarithm |
+| `log2.(tile)`, `log2(x)` | Base-2 logarithm |
+| `sin.(tile)`, `cos.(tile)`, etc. | Trigonometric functions |
+| `fma.(a, b, c)`, `fma(x, y, z)` | Fused multiply-add (tile broadcast or scalar) |
+| `abs.(tile)`, `abs(x)` | Absolute value |
+| `max(a, b)`, `min(a, b)` | Maximum/minimum (scalars) |
 
 ### Comparison
 | Operation | Description |
@@ -182,8 +191,10 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Integer Arithmetic
 | Operation | Description |
 |-----------|-------------|
-| `cdiv(a, b)` | Ceiling division |
-| `floordiv(a, b)` | Floor division |
+| `cld(a, b)` | Ceiling division |
+| `fld(a, b)` | Floor division |
+| `div(a, b)` | Truncating division |
+| `mul_hi.(tile_a, tile_b)`, `mul_hi(x, y)` | High bits of integer multiply (use `Base.mul_hi` on Julia 1.13+) |
 
 ### Atomics
 | Operation | Description |
@@ -285,22 +296,32 @@ end
 ct.launch(kernel, grid, a, b, ct.Constant(16))
 ```
 
-### Broadcasting
+### Broadcasting and Math Functions
 
-Python's binary operators automatically broadcast different shapes. Julia uses standard broadcast syntax:
+Python's operators and math functions work directly on tiles with automatic broadcasting.
+Julia cuTile follows standard Julia conventions: Operators and math functions can generally only be applied to scalars, while elementwise application requires broadcast syntax (`.+`, `exp.(...)`, etc).
+
+Some exceptions:
+
+- Scaling operations (`*` and `/`) can be applied directly to tiles and scalars.
+- Addition and subtraction can be applied directly to tiles with matching shapes.
 
 ```python
 # Python
-a + b  # Automatically broadcasts (16,) + (1, 16) → (1, 16)
+a + b              # Automatically broadcasts (16,) + (1, 16) → (1, 16)
+a * b              # Element-wise multiply
+result = ct.exp(tile)
 ```
 
 ```julia
 # Julia
-a + b   # Same shape only
-a .+ b  # Broadcasts different shapes
+a + b              # Same shape only
+a .+ b             # Broadcasts different shapes
+a .* b             # Element-wise multiply (broadcast)
+a * b              # Matrix multiplication
+tile * 2.0f0       # Scalar multiply
+result = exp.(tile)
 ```
-
-This matches how regular Julia arrays behave.
 
 
 ## Limitations

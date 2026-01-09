@@ -1,13 +1,7 @@
-# high-level intrinsics
-#
-# These handle Julia built-ins and map them to Tile IR intrinsics.
-
-
-## Julia intrinsics
+# Julia intrinsics
 
 # Handle Julia Core.Intrinsics that IRStructurizer uses for control flow transformations.
 # These are: add_int (loop increments), slt_int, sle_int, ult_int (loop bounds).
-
 function emit_intrinsic!(ctx::CGCtx, func::Core.IntrinsicFunction, args)
     if func === Core.Intrinsics.add_int
         emit_intrinsic!(ctx, Intrinsics.addi, args)
@@ -24,11 +18,7 @@ function emit_intrinsic!(ctx::CGCtx, func::Core.IntrinsicFunction, args)
     end
 end
 
-
-## Built-in functions
-
-# We cannot overlay built-in functions
-
+# built-in: ===
 function emit_intrinsic!(ctx::CGCtx, ::typeof(===), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -50,16 +40,16 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(===), args)
     CGVal(result_v, result_type_id, Bool, Int[])
 end
 
+# built-in: tuple
 emit_intrinsic!(ctx::CGCtx, ::typeof(Core.tuple), args) = nothing
 
+# built-in: isa
 emit_intrinsic!(ctx::CGCtx, ::typeof(isa), args) = nothing
 
-emit_intrinsic!(ctx::CGCtx, ::typeof(Base.donotdelete), args) = nothing
+# built-in: donotdelete
+emit_intrinsic!(ctx::CGCtx, ::typeof(donotdelete), args) = nothing
 
-
-## Other
-
-## XXX: Tile constructor
+# XXX: Tile constructor
 function emit_intrinsic!(ctx::CGCtx, func::Type{<:Tile}, args)
     # Emit the scalar value
     source = emit_value!(ctx, args[1])
