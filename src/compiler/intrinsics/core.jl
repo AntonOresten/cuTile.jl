@@ -10,7 +10,7 @@
     Explicitly broadcast a tile to a target shape.
     Compiled to cuda_tile.broadcast.
     """
-    @noinline function broadcast(tile::Tile{T, S}, ::Val{Shape}) where {T, S, Shape}
+    @noinline function broadcast(tile::Tile{T}, ::Val{Shape}) where {T, Shape}
         Tile{T, Shape}()
     end
 end
@@ -220,7 +220,7 @@ end
     Extract a sub-tile from tile at 0-indexed slice indices.
     Compiled to cuda_tile.extract.
     """
-    @noinline function extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape}
+    @noinline function extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape}
         Tile{T, Shape}()
     end
 end
@@ -366,7 +366,7 @@ end
     Matrix-multiply-accumulate: result = a @ b + acc.
     Compiled to cuda_tile.mmaf or cuda_tile.mmai.
     """
-    @noinline function mma(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC}
+    @noinline function mma(a::Tile{T1}, b::Tile{T2}, acc::Tile{T3, SC}) where {T1, T2, T3, SC}
         Tile{T3, SC}()
     end
 end
@@ -639,7 +639,7 @@ end
     Reshape a tile to a new shape (same total elements).
     Compiled to cuda_tile.reshape.
     """
-    @noinline function reshape(tile::Tile{T, S}, ::Val{Shape}) where {T, S, Shape}
+    @noinline function reshape(tile::Tile{T}, ::Val{Shape}) where {T, Shape}
         Tile{T, Shape}()
     end
 end

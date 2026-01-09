@@ -57,7 +57,7 @@ Axis is 1-indexed. Equivalent to cdiv(arr.sizes[axis], shape[axis]).
 # num_tiles(arr, 2, (32, 32)) returns cdiv(768, 32) = 24
 ```
 """
-@inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{M, Int}) where {T, N, M}
+@inline function num_tiles(arr::TileArray{T, N}, axis::Integer, shape::NTuple{<:Any, Int}) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined)
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
@@ -82,15 +82,15 @@ Index is 1-indexed. Shape must be compile-time constant.
 tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
 ```
 """
-@inline function load(arr::TileArray{T, N}, index, shape::NTuple{M, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
+@inline function load(arr::TileArray{T, N}, index, shape::NTuple{<:Any, Int};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
     Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
 end
 
-@inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{M, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N, M}
+@inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{<:Any, Int};
+                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
     Intrinsics.load_partition_view(pv, index - One())
@@ -120,20 +120,20 @@ end
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 """
 # Regular N-D tiles (N >= 1)
-@inline function store(arr::TileArray{T, N}, index, tile::Tile{T, Shape}) where {T, N, Shape}
+@inline function store(arr::TileArray{T}, index, tile::Tile{T, Shape}) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile, (promote(index...) .- One())...)
 end
 
-@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, Shape}) where {T, N, Shape}
+@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, Shape}) where {T, Shape}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
     Intrinsics.store_partition_view(pv, tile, index - One())
 end
 
 # Special case for 0D (scalar) tiles - reshape to 1D for partition view
-@inline function store(arr::TileArray{T, N}, index, tile::Tile{T, ()}) where {T, N}
+@inline function store(arr::TileArray{T}, index, tile::Tile{T, ()}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
     # Reshape 0D tile to 1D (partition views require at least 1D)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
@@ -141,7 +141,7 @@ end
     Intrinsics.store_partition_view(pv, tile_1d, (promote(index...) .- One())...)
 end
 
-@inline function store(arr::TileArray{T, N}, index::Integer, tile::Tile{T, ()}) where {T, N}
+@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, ()}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
     tile_1d = Intrinsics.reshape(tile, Val((1,)))
     pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
@@ -149,7 +149,7 @@ end
 end
 
 # Keyword argument version - dispatch to positional version
-@inline function store(arr::TileArray{T, N}; index, tile::Tile{T, Shape}) where {T, N, Shape}
+@inline function store(arr::TileArray{T}; index, tile::Tile{T, Shape}) where {T, Shape}
     store(arr, index, tile)
 end
 
@@ -407,7 +407,7 @@ row = ct.load(arr, (1, 1), (1, 128))  # Shape (1, 128)
 expanded = ct.broadcast_to(row, (64, 128))  # Shape (64, 128)
 ```
 """
-@inline broadcast_to(tile::Tile{T, S}, shape::NTuple{N, Int}) where {T, S, N} =
+@inline broadcast_to(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
     Intrinsics.broadcast(tile, Val(shape))
 
 """
@@ -421,7 +421,7 @@ tile = ct.load(arr, (1, 1), (4, 8))  # Shape (4, 8), 32 elements
 reshaped = ct.reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
 ```
 """
-@inline reshape(tile::Tile{T, S}, shape::NTuple{N, Int}) where {T, S, N} =
+@inline reshape(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
     Intrinsics.reshape(tile, Val(shape))
 
 """
@@ -437,9 +437,9 @@ tile = ct.load(arr, (1, 1, 1), (2, 3, 4))  # Shape (2, 3, 4)
 permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
 ```
 """
-@inline permute(tile::Tile{T, S}, perm::NTuple{N, Int}) where {T, S, N} =
+@inline permute(tile::Tile{T}, perm::NTuple{<:Any, Int}) where {T} =
     Intrinsics.permute(tile, Val(map(p -> p - 1, perm)))
-@inline permute(tile::Tile{T, S}, ::Val{Perm}) where {T, S, Perm} =
+@inline permute(tile::Tile{T}, ::Val{Perm}) where {T, Perm} =
     Intrinsics.permute(tile, Val(map(p -> p - 1, Perm)))
 
 """
@@ -447,7 +447,7 @@ permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
 
 Transpose a 2D tile, swapping its dimensions.
 """
-@inline transpose(tile::Tile{T, S}) where {T, S} =
+@inline transpose(tile::Tile{T}) where {T} =
     Intrinsics.transpose(tile)
 
 """
@@ -582,9 +582,9 @@ tr = ct.extract(tile, (1, 2), (4, 4))  # Top-right (rows 1-4, cols 5-8)
 br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
 ```
 """
-@inline extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{M, Int}) where {T, S, N, M} =
+@inline extract(tile::Tile{T}, index::NTuple{<:Any, Int}, shape::NTuple{<:Any, Int}) where {T} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, index)), Val(shape))
-@inline extract(tile::Tile{T, S}, ::Val{Index}, ::Val{Shape}) where {T, S, Index, Shape} =
+@inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
 
 #=============================================================================
