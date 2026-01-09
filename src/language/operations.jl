@@ -611,7 +611,7 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
  Math
 =============================================================================#
 
-public cdiv, floordiv, sqrt, rsqrt
+public cdiv, floordiv, sqrt, rsqrt, exp, exp2, log, log2, ceil, floor, sin, sinh, cos, cosh, tan, tanh, fma, rem
 
 """
     cdiv(a::Integer, b::Integer)
@@ -647,6 +647,119 @@ Compute element-wise reciprocal square root (1/sqrt(x)) of a tile.
 """
 @inline rsqrt(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
     Intrinsics.rsqrt(tile)
+
+"""
+    exp(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise exponential of a tile.
+"""
+@inline Base.exp(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.exp(tile)
+
+"""
+    exp2(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise base-2 exponential of a tile.
+"""
+@inline Base.exp2(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.exp2(tile)
+
+"""
+    log(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise natural logarithm of a tile.
+"""
+@inline Base.log(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.log(tile)
+
+"""
+    log2(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise base-2 logarithm of a tile.
+"""
+@inline Base.log2(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.log2(tile)
+
+"""
+    ceil(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise ceiling of a tile.
+"""
+@inline Base.ceil(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.ceil(tile)
+
+"""
+    floor(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise floor of a tile.
+"""
+@inline Base.floor(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.floor(tile)
+
+"""
+    sin(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise sine of a tile.
+"""
+@inline Base.sin(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.sin(tile)
+
+"""
+    sinh(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise hyperbolic sine of a tile.
+"""
+@inline Base.sinh(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.sinh(tile)
+
+"""
+    cos(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise cosine of a tile.
+"""
+@inline Base.cos(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.cos(tile)
+
+"""
+    cosh(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise hyperbolic cosine of a tile.
+"""
+@inline Base.cosh(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.cosh(tile)
+
+"""
+    tan(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise tangent of a tile.
+"""
+@inline Base.tan(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.tan(tile)
+
+"""
+    tanh(tile::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise hyperbolic tangent of a tile.
+"""
+@inline Base.tanh(tile::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.tanh(tile)
+
+"""
+    fma(a::Tile{T, S}, b::Tile{T, S}, c::Tile{T, S}) -> Tile{T, S}
+
+Fused multiply-add: a * b + c.
+Compute element-wise fused multiply-add of a tile.
+"""
+@inline Base.fma(a::Tile{T, S}, b::Tile{T, S}, c::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.fma(a, b, c)
+
+"""
+    rem(a::Tile{T, S}, b::Tile{T, S}) -> Tile{T, S}
+
+Compute element-wise remainder of a tile.
+"""
+@inline Base.rem(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} =
+    Intrinsics.remf(a, b)
 
 # Broadcasting arithmetic - different shapes, broadcast then call intrinsic
 @inline function tile_add(a::Tile{T, S1}, b::Tile{T, S2}) where {T <: AbstractFloat, S1, S2}

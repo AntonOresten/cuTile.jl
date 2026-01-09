@@ -709,6 +709,27 @@ end
     @test Array(c) ≈ Array(a) ./ Array(b) rtol=1e-5
 end
 
+@testset "1D rem" begin
+    function vrem_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                     c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        ct.store(c, pid, rem(tile_a, tile_b))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 10.0f0
+    b = CUDA.rand(Float32, n) .* 2.0f0 .+ 0.5f0  # Ensure non-zero, range [0.5, 2.5]
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vrem_1d, cld(n, tile_size), a, b, c)
+
+    @test Array(c) ≈ rem.(Array(a), Array(b)) rtol=1e-5
+end
+
 @testset "1D sqrt" begin
     function vsqrt_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
         pid = ct.bid(1)
@@ -725,6 +746,263 @@ end
     ct.launch(vsqrt_1d, cld(n, tile_size), a, b)
 
     @test Array(b) ≈ sqrt.(Array(a)) rtol=1e-5
+end
+
+@testset "1D rsqrt" begin
+    function vrsqrt_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, ct.rsqrt(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure positive
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vrsqrt_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ 1.0f0 ./ sqrt.(Array(a)) rtol=1e-5
+end
+
+@testset "1D exp" begin
+    function vexp_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, exp(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 2.0f0 .- 1.0f0  # Range [-1, 1] to avoid overflow
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vexp_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ exp.(Array(a)) rtol=1e-5
+end
+
+@testset "1D exp2" begin
+    function vexp2_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, exp2(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 4.0f0 .- 2.0f0  # Range [-2, 2]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vexp2_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ exp2.(Array(a)) rtol=1e-5
+end
+
+@testset "1D log" begin
+    function vlog_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, log(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure positive
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vlog_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ log.(Array(a)) rtol=1e-5
+end
+
+@testset "1D log2" begin
+    function vlog2_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, log2(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure positive
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vlog2_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ log2.(Array(a)) rtol=1e-5
+end
+
+@testset "1D ceil" begin
+    function vceil_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, ceil(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 10.0f0 .- 5.0f0  # Range [-5, 5]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vceil_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ ceil.(Array(a)) rtol=1e-5
+end
+
+@testset "1D floor" begin
+    function vfloor_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, floor(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 10.0f0 .- 5.0f0  # Range [-5, 5]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vfloor_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ floor.(Array(a)) rtol=1e-5
+end
+
+@testset "1D sin" begin
+    function vsin_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, sin(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* Float32(2π)  # Range [0, 2π]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vsin_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ sin.(Array(a)) rtol=1e-5
+end
+
+@testset "1D sinh" begin
+    function vsinh_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, sinh(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 2.0f0 .- 1.0f0  # Range [-1, 1]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vsinh_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ sinh.(Array(a)) rtol=1e-5
+end
+
+@testset "1D cos" begin
+    function vcos_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, cos(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* Float32(2π)  # Range [0, 2π]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vcos_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ cos.(Array(a)) rtol=1e-5
+end
+
+@testset "1D cosh" begin
+    function vcosh_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, cosh(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 2.0f0 .- 1.0f0  # Range [-1, 1]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vcosh_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ cosh.(Array(a)) rtol=1e-5
+end
+
+@testset "1D tan" begin
+    function vtan_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, tan(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 1.0f0 .- 0.5f0  # Range [-0.5, 0.5] to avoid singularities
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vtan_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ tan.(Array(a)) rtol=1e-5
+end
+
+@testset "1D tanh" begin
+    function vtanh_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, tanh(tile))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n) .* 4.0f0 .- 2.0f0  # Range [-2, 2]
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(vtanh_1d, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ tanh.(Array(a)) rtol=1e-5
+end
+
+@testset "1D fma" begin
+    function vfma_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                     c::ct.TileArray{Float32,1}, d::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        tile_c = ct.load(c, pid, (16,))
+        ct.store(d, pid, fma(tile_a, tile_b, tile_c))
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.rand(Float32, n)
+    d = CUDA.zeros(Float32, n)
+
+    ct.launch(vfma_1d, cld(n, tile_size), a, b, c, d)
+
+    @test Array(d) ≈ fma.(Array(a), Array(b), Array(c)) rtol=1e-5
 end
 
 end

@@ -746,6 +746,26 @@ function encode_MulIOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::V
 end
 
 """
+    encode_FmaOp!(cb, result_type, lhs, rhs, acc; kwargs...) -> Value
+
+Float multiply-add operation: result = lhs * rhs + acc.
+Opcode: 40
+"""
+function encode_FmaOp!(cb::CodeBuilder, result_type::TypeId,
+                       lhs::Value, rhs::Value, acc::Value;
+                       rounding_mode::RoundingMode=RoundingNearestEven,
+                       flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.FmaOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
+    encode_enum!(cb.buf, rounding_mode)
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    encode_operand!(cb.buf, acc)
+    return new_op!(cb)
+end
+
+"""
     encode_PowOp!(cb, result_type, base, exponent) -> Value
 
 Floating-point power operation (base^exponent).
@@ -775,6 +795,32 @@ function encode_TruncIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
 end
 
 """
+    encode_CeilOp!(cb, result_type, source) -> Value
+
+Ceiling operation.
+Opcode: 13
+"""
+function encode_CeilOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.CeilOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_FloorOp!(cb, result_type, source) -> Value
+
+Floor operation.
+Opcode: 39
+"""
+function encode_FloorOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.FloorOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
     encode_DivFOp!(cb, result_type, lhs, rhs; rounding_mode, flush_to_zero) -> Value
 
 Floating-point division.
@@ -793,6 +839,20 @@ function encode_DivFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::V
 end
 
 """
+    encode_RemFOp!(cb, result_type, lhs, rhs) -> Value
+
+Floating-point remainder.
+Opcode: 89
+"""
+function encode_RemFOp!(cb::CodeBuilder, result_type::TypeId, lhs::Value, rhs::Value)
+    encode_varint!(cb.buf, Opcode.RemFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, lhs)
+    encode_operand!(cb.buf, rhs)
+    return new_op!(cb)
+end
+
+"""
     encode_SqrtOp!(cb, result_type, source; rounding_mode, flush_to_zero) -> Value
 
 Square root operation.
@@ -805,6 +865,21 @@ function encode_SqrtOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
     encode_typeid!(cb.buf, result_type)
     encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
     encode_enum!(cb.buf, rounding_mode)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_RsqrtOp!(cb, result_type, source; flush_to_zero) -> Value
+
+Reciprocal square root operation.
+Opcode: 93
+"""
+function encode_RsqrtOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                         flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.RsqrtOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
     encode_operand!(cb.buf, source)
     return new_op!(cb)
 end
@@ -830,6 +905,138 @@ Opcode: 79
 """
 function encode_NegFOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
     encode_varint!(cb.buf, Opcode.NegFOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_ExpOp!(cb, result_type, source) -> Value
+
+Exponential operation.
+Opcode: 23
+"""
+function encode_ExpOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.ExpOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_Exp2Op!(cb, result_type, source) -> Value
+
+Base-2 exponential operation.
+Opcode: 24
+"""
+function encode_Exp2Op!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                        flush_to_zero::Bool=false)
+    encode_varint!(cb.buf, Opcode.Exp2Op)
+    encode_typeid!(cb.buf, result_type)
+    encode_varint!(cb.buf, flush_to_zero ? 1 : 0)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_LogOp!(cb, result_type, source) -> Value
+
+Natural logarithm operation.
+Opcode: 63
+"""
+function encode_LogOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.LogOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_Log2Op!(cb, result_type, source) -> Value
+
+Base-2 logarithm operation.
+Opcode: 64
+"""
+function encode_Log2Op!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.Log2Op)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_SinOp!(cb, result_type, source) -> Value
+
+Sine operation.
+Opcode: 98
+"""
+function encode_SinOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.SinOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_SinHOp!(cb, result_type, source) -> Value
+
+Hyperbolic sine operation.
+Opcode: 99
+"""
+function encode_SinHOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.SinHOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_CosOp!(cb, result_type, source) -> Value
+
+Cosine operation.
+Opcode: 18
+"""
+function encode_CosOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.CosOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_CosHOp!(cb, result_type, source) -> Value
+
+Hyperbolic cosine operation.
+Opcode: 19
+"""
+function encode_CosHOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.CosHOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_TanOp!(cb, result_type, source) -> Value
+
+Tangent operation.
+Opcode: 105
+"""
+function encode_TanOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.TanOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_TanHOp!(cb, result_type, source) -> Value
+
+Hyperbolic tangent operation.
+Opcode: 106
+"""
+function encode_TanHOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.TanHOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, source)
     return new_op!(cb)
