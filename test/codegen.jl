@@ -287,7 +287,7 @@
                     tile_b = ct.load(b, bidy, (16, 32))
                     acc = ct.full((32, 32), 0.0f0, Float32)
                     @check "mma"
-                    result = ct.mma(tile_a, tile_b, acc)
+                    result = muladd(tile_a, tile_b, acc)
                     ct.store(c, (bidx, bidy), result)
                     return
                 end
@@ -302,9 +302,9 @@
                     bidy = ct.bid(2)
                     tile_a = ct.load(a, bidx, (32, 16))
                     tile_b = ct.load(b, bidy, (16, 32))
-                    # matmul = mma with zero accumulator
+                    # matmul via * operator = mma with zero accumulator
                     @check "mma"
-                    result = ct.matmul(tile_a, tile_b)
+                    result = tile_a * tile_b
                     ct.store(c, (bidx, bidy), result)
                     return
                 end
@@ -1059,7 +1059,7 @@ end
                     @check "load_view_tko"
                     b = ct.load(B, (k, bid), (tk[], tn[]); padding_mode=ct.PaddingMode.Zero)
                     @check "mma"
-                    acc = ct.mma(a, b, acc)
+                    acc = muladd(a, b, acc)
                     k += Int32(1)
                 end
                 @check "store_view_tko"

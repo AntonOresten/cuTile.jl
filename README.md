@@ -152,8 +152,8 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Matrix
 | Operation | Description |
 |-----------|-------------|
-| `mma(a, b, acc)` | Matrix multiply-accumulate: `a @ b + acc` |
-| `matmul(a, b)` | Matrix multiplication: `a @ b` |
+| `a * b` | Matrix multiplication: `a @ b` |
+| `muladd(a, b, acc)` | Matrix multiply-accumulate: `a * b + acc` |
 
 ### Reductions
 | Operation | Description |
@@ -311,12 +311,11 @@ result = ct.exp(tile)
 # Julia
 a + b              # Same shape only
 a .+ b             # Broadcasts different shapes
-a .* b             # Tile-tile multiply (broadcast required)
-tile * 2.0f0       # Scalar multiply (works directly)
+a .* b             # Element-wise multiply (broadcast)
+a * b              # Matrix multiplication
+tile * 2.0f0       # Scalar multiply
 result = exp.(tile)
 ```
-
-Use `ct.matmul(a, b)` for matrix multiplication.
 
 
 ## Limitations

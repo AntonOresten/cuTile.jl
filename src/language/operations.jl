@@ -514,32 +514,12 @@ end
  Matmul
 =============================================================================#
 
-public mma, matmul
-
-"""
-    mma(a::Tile{T1, (M, K)}, b::Tile{T2, (K, N)}, acc::Tile{T3, (M, N)}) -> Tile{T3, (M, N)}
-
-Perform matrix-multiply-accumulate: result = a @ b + acc.
-Uses tensor cores when available.
-"""
-@inline mma(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
+# Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
+# Uses tensor cores when available.
+@inline Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
     Intrinsics.mma(a, b, acc)
 
-"""
-    matmul(a::Tile{T1, S}, b::Tile{T2, S}) -> Tile{T1, S}
-
-Perform matrix multiplication: result = a @ b.
-Equivalent to `mma(a, b, zeros(output_shape, T1))`.
-
-Supports both 2D and 3D (batched) inputs:
-- 2D: a:(M, K) × b:(K, N) → (M, N)
-- 3D: a:(B, M, K) × b:(B, K, N) → (B, M, N)
-
-# Example
-```julia
-c = ct.matmul(a, b)  # c = a @ b
-```
-"""
+# Internal matmul helper (used by * operator)
 @inline function matmul(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
     _matmul(a, b, Val(length(SA)))
 end
@@ -549,7 +529,7 @@ end
     M = SA[1]
     N = SB[2]
     acc = zeros((M, N), T1)
-    mma(a, b, acc)
+    muladd(a, b, acc)
 end
 
 # 3D batched matmul: (B, M, K) × (B, K, N) → (B, M, N)
@@ -558,7 +538,7 @@ end
     M = SA[2]
     N = SB[3]
     acc = zeros((B, M, N), T1)
-    mma(a, b, acc)
+    muladd(a, b, acc)
 end
 
 #=============================================================================
@@ -633,11 +613,14 @@ Equivalent to `a ÷ b` but provided for consistency with the cuTile API.
 @inline floordiv(a::Integer, b::Integer) = floordiv(promote(a, b)...)
 
 
-# Tile-tile operators (same shape required)
+# Tile-tile operators (same shape required, like Julia arrays)
 @inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.addf(a, b)
 @inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.addi(a, b)
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.subf(a, b)
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.subi(a, b)
+
+# Matrix multiplication (A * B like Julia arrays)
+@inline Base.:(*)(a::Tile, b::Tile) = matmul(a, b)
 
 # Base overloads for Int32 (special intrinsics)
 @noinline Base.rem(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))

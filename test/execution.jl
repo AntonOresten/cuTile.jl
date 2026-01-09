@@ -520,8 +520,8 @@ end
             # Load tiles: a is (M, K), b is (K, N)
             tile_a = ct.load(a, (bidx, 1), (32, 16))
             tile_b = ct.load(b, (1, bidy), (16, 32))
-            # matmul: c = a @ b
-            result = ct.matmul(tile_a, tile_b)
+            # matmul: c = a @ b (using * operator)
+            result = tile_a * tile_b
             ct.store(c, (bidx, bidy), result)
             return
         end

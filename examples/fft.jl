@@ -88,8 +88,8 @@ function fft_kernel(
     X_r = ct.reshape(X_r, (BS, F0, F1F2))
     X_i = ct.reshape(X_i, (BS, F0, F1F2))
     # Complex matmul: (A+iB)(C+iD) = (AC-BD) + i(AD+BC)
-    X_r_ = ct.reshape(ct.matmul(W0_r, X_r) - ct.matmul(W0_i, X_i), (BS, N, 1))
-    X_i_ = ct.reshape(ct.matmul(W0_i, X_r) + ct.matmul(W0_r, X_i), (BS, N, 1))
+    X_r_ = ct.reshape(W0_r * X_r - W0_i * X_i, (BS, N, 1))
+    X_i_ = ct.reshape(W0_i * X_r + W0_r * X_i, (BS, N, 1))
 
     # --- Twiddle & Permute 0 ---
     X_r2 = T0_r .* X_r_ .- T0_i .* X_i_
@@ -100,8 +100,8 @@ function fft_kernel(
     # --- CT1: Contract over F1 dimension ---
     X_r4 = ct.reshape(X_r3, (BS, F1, F0F2))
     X_i4 = ct.reshape(X_i3, (BS, F1, F0F2))
-    X_r5 = ct.reshape(ct.matmul(W1_r, X_r4) - ct.matmul(W1_i, X_i4), (BS, F1F2, F0))
-    X_i5 = ct.reshape(ct.matmul(W1_i, X_r4) + ct.matmul(W1_r, X_i4), (BS, F1F2, F0))
+    X_r5 = ct.reshape(W1_r * X_r4 - W1_i * X_i4, (BS, F1F2, F0))
+    X_i5 = ct.reshape(W1_i * X_r4 + W1_r * X_i4, (BS, F1F2, F0))
 
     # --- Twiddle & Permute 1 ---
     X_r6 = T1_r .* X_r5 .- T1_i .* X_i5
@@ -112,8 +112,8 @@ function fft_kernel(
     # --- CT2: Contract over F2 dimension ---
     X_r8 = ct.reshape(X_r7, (BS, F2, F0F1))
     X_i8 = ct.reshape(X_i7, (BS, F2, F0F1))
-    X_r9 = ct.matmul(W2_r, X_r8) - ct.matmul(W2_i, X_i8)
-    X_i9 = ct.matmul(W2_i, X_r8) + ct.matmul(W2_r, X_i8)
+    X_r9 = W2_r * X_r8 - W2_i * X_i8
+    X_i9 = W2_i * X_r8 + W2_r * X_i8
 
     # --- Final Permutation ---
     X_r_out = ct.permute(ct.reshape(X_r9, (BS, F2, F0, F1)), (1, 2, 4, 3))

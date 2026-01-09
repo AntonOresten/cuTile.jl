@@ -295,7 +295,7 @@ function matmul_cutile_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.
     while k <= num_k
         a = ct.astype(ct.load(A, (bid_m, k), (tm[], tk[])), dtype)
         b = ct.astype(ct.load(B, (k, bid_n), (tk[], tn[])), dtype)
-        acc = ct.mma(a, b, acc)
+        acc = muladd(a, b, acc)
         k += Int32(1)
     end
 
@@ -539,7 +539,7 @@ function batchmatmul_cutile_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C
             b_2d = convert(ct.Tile{ct.TFloat32}, b_2d)
         end
 
-        acc = ct.mma(a_2d, b_2d, acc)
+        acc = muladd(a_2d, b_2d, acc)
         k += Int32(1)
     end
 

@@ -52,7 +52,7 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
             a = convert(ct.Tile{ct.TFloat32}, a)
             b = convert(ct.Tile{ct.TFloat32}, b)
         end
-        acc = ct.mma(a, b, acc)
+        acc = muladd(a, b, acc)
         k += Int32(1)
     end
 

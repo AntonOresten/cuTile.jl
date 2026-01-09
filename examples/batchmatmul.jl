@@ -45,7 +45,7 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
             b_2d = convert(ct.Tile{ct.TFloat32}, b_2d)
         end
 
-        acc = ct.mma(a_2d, b_2d, acc)
+        acc = muladd(a_2d, b_2d, acc)
         k += Int32(1)
     end
 
