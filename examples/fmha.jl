@@ -170,7 +170,7 @@ function nnlib_fmha(Q::AbstractArray{T,4}, K::AbstractArray{T,4}, V::AbstractArr
 ) where T
     mask = causal ? NNlib.make_causal_mask(Q; dims=2) : nothing
     if query_group_size > 1
-        K, V = repeat.((K, V), inner=(1, 1, query_group_size))
+        K, V = repeat.((K, V), inner=(1, 1, query_group_size, 1))
     end
     Out, _ = NNlib.dot_product_attention(Q, K, V; mask)
     return Out
@@ -206,3 +206,16 @@ function test_fmha(::Type{T},
         println("  FAILED (max diff: $max_diff)")
     end
 end
+
+function main()
+    println("--- cuTile Fused Multi-Head Attention Examples ---\n")
+
+    # Float32 tests, causal=false
+    test_fmha(Float32, 64, 256, 8, 2, 64, 256, 8, false, 32, 32)
+    test_fmha(Float32, 64, 256, 8, 2, 64, 128, 8, false, 32, 32)
+    test_fmha(Float32, 64, 256, 8, 2, 64, 128, 4, false, 32, 32)
+
+    println("\n--- All batch matmul examples completed ---")
+end
+
+isinteractive() || main()
