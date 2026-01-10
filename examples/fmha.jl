@@ -1,4 +1,4 @@
-# Batch matrix multiplication example - Julia port of cuTile Python's AttentionFMHA.py sample
+# Fused Multi-Head Attention example - Julia port of cuTile Python's AttentionFMHA.py sample
 #
 # SPDX-License-Identifier: Apache-2.0
 
