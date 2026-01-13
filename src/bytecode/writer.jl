@@ -507,7 +507,7 @@ function add_function!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     flags = 0x00
     if is_entry
         flags |= 0x02
-        if entry_hints !==
+        if entry_hints !== nothing
             flags |= 0x04
         end
     end
