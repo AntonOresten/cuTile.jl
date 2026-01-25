@@ -1769,6 +1769,112 @@ end
     @test all(Array(arr) .== 1)
 end
 
+@testset "atomic_add tile-level 3D" begin
+    function atomic_add_tile_level_3d_kernel(arr::ct.TileArray{Float32,3})
+        tile = ct.full((4, 4, 4), 1.0f0, Float32)
+        ct.atomic_add(arr, (1, 2, 1), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Float32, 8, 8, 8)
+
+    ct.launch(atomic_add_tile_level_3d_kernel, 1, arr)
+
+    result = Array(arr)
+    # Tile at (1,2,1) means elements [1:4, 5:8, 1:4]
+    @test all(result[1:4, 5:8, 1:4] .== 1.0f0)
+    @test all(result[5:8, :, :] .== 0.0f0)
+    @test all(result[:, 1:4, :] .== 0.0f0)
+    @test all(result[:, :, 5:8] .== 0.0f0)
+end
+
+@testset "atomic_add tile-level 3D accumulates" begin
+    function atomic_add_3d_accum_kernel(arr::ct.TileArray{Int,3})
+        tile = ct.full((4, 4, 4), 1, Int)
+        ct.atomic_add(arr, (1, 1, 1), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 4, 4)
+    n_blocks = 5
+
+    ct.launch(atomic_add_3d_accum_kernel, n_blocks, arr)
+
+    result = Array(arr)
+    @test all(result .== 5)
+end
+
+@testset "atomic_add tile-level 4D" begin
+    function atomic_add_tile_level_4d_kernel(arr::ct.TileArray{Float32,4})
+        tile = ct.full((2, 2, 2, 2), 1.0f0, Float32)
+        ct.atomic_add(arr, (2, 1, 2, 1), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Float32, 4, 4, 4, 4)
+
+    ct.launch(atomic_add_tile_level_4d_kernel, 1, arr)
+
+    result = Array(arr)
+    # Tile at (2,1,2,1) means elements [3:4, 1:2, 3:4, 1:2]
+    @test all(result[3:4, 1:2, 3:4, 1:2] .== 1.0f0)
+    # Check some zero regions
+    @test all(result[1:2, :, :, :] .== 0.0f0)
+    @test all(result[:, 3:4, :, :] .== 0.0f0)
+end
+
+@testset "atomic_xchg tile-level 3D" begin
+    function atomic_xchg_tile_level_3d_kernel(arr::ct.TileArray{Int,3},
+                                               out::ct.TileArray{Int,3})
+        tile = ct.full((4, 4, 4), 42, Int)
+        old_vals = ct.atomic_xchg(arr, (1, 1, 1), tile)
+        ct.store(out, (1, 1, 1), old_vals)
+        return
+    end
+
+    arr = CUDA.fill(Int(7), 4, 4, 4)
+    out = CUDA.zeros(Int, 4, 4, 4)
+
+    ct.launch(atomic_xchg_tile_level_3d_kernel, 1, arr, out)
+
+    @test all(Array(arr) .== 42)
+    @test all(Array(out) .== 7)
+end
+
+@testset "atomic_cas tile-level 3D success" begin
+    function atomic_cas_tile_level_3d_kernel(arr::ct.TileArray{Int,3})
+        expected = ct.full((4, 4, 4), 0, Int)
+        desired = ct.full((4, 4, 4), 1, Int)
+        ct.atomic_cas(arr, (1, 1, 1), expected, desired)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 4, 4)
+
+    ct.launch(atomic_cas_tile_level_3d_kernel, 1, arr)
+
+    @test all(Array(arr) .== 1)
+end
+
+@testset "atomic_cas tile-level 3D failure" begin
+    function atomic_cas_tile_level_3d_fail_kernel(arr::ct.TileArray{Int,3},
+                                                   out::ct.TileArray{Int,3})
+        expected = ct.full((4, 4, 4), 0, Int)  # wrong expected value
+        desired = ct.full((4, 4, 4), 99, Int)
+        old_vals = ct.atomic_cas(arr, (1, 1, 1), expected, desired)
+        ct.store(out, (1, 1, 1), old_vals)
+        return
+    end
+
+    arr = CUDA.fill(Int(5), 4, 4, 4)  # actual value is 5, not 0
+    out = CUDA.zeros(Int, 4, 4, 4)
+
+    ct.launch(atomic_cas_tile_level_3d_fail_kernel, 1, arr, out)
+
+    @test all(Array(arr) .== 5)   # unchanged (CAS failed)
+    @test all(Array(out) .== 5)   # old values returned
+end
+
 @testset "1D gather - simple" begin
     # Simple 1D gather: copy first 16 elements using gather
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
