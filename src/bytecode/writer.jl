@@ -264,7 +264,7 @@ function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
     encode_typeid!(cb.buf, identity.type_id)
     # Value as bits (using signed varint encoding for values <= 64 bits)
     bits = float_to_bits(identity.value, identity.dtype)
-    encode_signed_varint!(cb.buf, bits)
+    encode_varint!(cb.buf, bits)
 end
 
 """
@@ -293,27 +293,6 @@ function float_to_bits(value::Float64, ::Type{T}) where T
     # Fallback to Float32 for special types like TFloat32
     reinterpret(UInt32, Float32(value))
 end
-
-# Float8 types (from DLFP8Types)
-function float_to_bits(value::Float64, ::Type{Float8_E4M3FN})
-    reinterpret(UInt8, Float8_E4M3FN(value))
-end
-
-function float_to_bits(value::Float64, ::Type{Float8_E5M2})
-    reinterpret(UInt8, Float8_E5M2(value))
-end
-
-"""
-    encode_signed_varint!(buf, value)
-
-Encode a signed integer as a variable-length integer.
-Uses zigzag encoding for signed values.
-"""
-function encode_signed_varint!(buf::Vector{UInt8}, value::Union{UInt8, UInt16, UInt32, UInt64, Int64})
-    # For float bits, encode as unsigned varint
-    encode_varint!(buf, UInt64(value))
-end
-
 """
     encode_identity_array!(cb, identities)
 
