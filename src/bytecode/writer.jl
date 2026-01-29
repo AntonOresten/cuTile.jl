@@ -294,15 +294,6 @@ function float_to_bits(value::Float64, ::Type{T}) where T
     reinterpret(UInt32, Float32(value))
 end
 
-# Float8 types (from DLFP8Types)
-function float_to_bits(value::Float64, ::Type{Float8_E4M3FN})
-    reinterpret(UInt8, Float8_E4M3FN(value))
-end
-
-function float_to_bits(value::Float64, ::Type{Float8_E5M2})
-    reinterpret(UInt8, Float8_E5M2(value))
-end
-
 """
     encode_identity_array!(cb, identities)
 
