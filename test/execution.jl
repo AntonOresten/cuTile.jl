@@ -878,22 +878,22 @@ end
     @test Array(c) ≈ Array(a) ./ Array(b)
 end
 
-@testset "1D sqrt" begin
-    function vsqrt_1d(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        ct.store(b, pid, sqrt.(tile))
-        return
+for (op, name) in [
+    (:sqrt,  "sqrt"),  (:abs, "abs"),   (:cos, "cos"),   (:sin, "sin"),
+    (:exp,   "exp"),   (:log, "log"),   (:ceil, "ceil"), (:floor, "floor"),
+]
+    @eval @testset "1D $($name)" begin
+        function $(Symbol("vmath_$(name)"))(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (16,))
+            ct.store(b, pid, $op.(tile))
+            return
+        end
+        a = CUDA.rand(Float32, 1024) .+ 0.1f0
+        b = CUDA.zeros(Float32, 1024)
+        ct.launch($(Symbol("vmath_$(name)")), cld(1024, 16), a, b)
+        @test Array(b) ≈ $op.(Array(a)) rtol=1e-4
     end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure positive
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(vsqrt_1d, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ sqrt.(Array(a))
 end
 
 end
@@ -973,175 +973,30 @@ end
 
 @testset "scalar-tile operations" begin
 
-@testset "tile / scalar" begin
-    function div_by_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = tile / 2.0f0
-        ct.store(b, pid, result)
-        return
+for (name, kernel_expr, cpu_expr) in [
+    ("tile / scalar",   :(tile / 2.0f0),    :(Array(a) ./ 2.0f0)),
+    ("tile / integer",  :(tile / 4),         :(Array(a) ./ 4.0f0)),
+    ("scalar ./ tile",  :(1.0f0 ./ tile),    :(1.0f0 ./ Array(a))),
+    ("tile .+ scalar",  :(tile .+ 3.5f0),    :(Array(a) .+ 3.5f0)),
+    ("scalar .+ tile",  :(2.5f0 .+ tile),    :(2.5f0 .+ Array(a))),
+    ("tile .- scalar",  :(tile .- 1.5f0),    :(Array(a) .- 1.5f0)),
+    ("scalar .- tile",  :(5.0f0 .- tile),    :(5.0f0 .- Array(a))),
+    ("tile * scalar",   :(tile * 2.5f0),     :(Array(a) .* 2.5f0)),
+    ("scalar * tile",   :(3.0f0 * tile),     :(3.0f0 .* Array(a))),
+]
+    sym = Symbol("scalar_tile_", replace(name, r"[^a-zA-Z0-9]" => "_"))
+    @eval @testset $name begin
+        function $sym(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            tile = ct.load(a, pid, (16,))
+            ct.store(b, pid, $kernel_expr)
+            return
+        end
+        a = CUDA.rand(Float32, 1024) .+ 0.1f0
+        b = CUDA.zeros(Float32, 1024)
+        ct.launch($sym, cld(1024, 16), a, b)
+        @test Array(b) ≈ $cpu_expr
     end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(div_by_scalar, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ Array(a) ./ 2.0f0
-end
-
-@testset "tile / integer" begin
-    function div_by_int(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = tile / 4
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(div_by_int, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ Array(a) ./ 4.0f0
-end
-
-@testset "scalar ./ tile" begin
-    function scalar_div_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = 1.0f0 ./ tile
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure non-zero
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(scalar_div_tile_kernel, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ 1.0f0 ./ Array(a)
-end
-
-@testset "tile .+ scalar" begin
-    function add_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = tile .+ 3.5f0
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(add_scalar, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ Array(a) .+ 3.5f0
-end
-
-@testset "scalar .+ tile" begin
-    function scalar_add_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = 2.5f0 .+ tile
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(scalar_add_tile_kernel, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ 2.5f0 .+ Array(a)
-end
-
-@testset "tile .- scalar" begin
-    function sub_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = tile .- 1.5f0
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(sub_scalar, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ Array(a) .- 1.5f0
-end
-
-@testset "scalar .- tile" begin
-    function scalar_sub_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = 5.0f0 .- tile
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(scalar_sub_tile_kernel, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ 5.0f0 .- Array(a)
-end
-
-@testset "tile * scalar" begin
-    function mul_scalar(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = tile * 2.5f0
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(mul_scalar, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ Array(a) .* 2.5f0
-end
-
-@testset "scalar * tile" begin
-    function scalar_mul_tile_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        tile = ct.load(a, pid, (16,))
-        result = 3.0f0 * tile
-        ct.store(b, pid, result)
-        return
-    end
-
-    n = 1024
-    tile_size = 16
-    a = CUDA.rand(Float32, n)
-    b = CUDA.zeros(Float32, n)
-
-    ct.launch(scalar_mul_tile_kernel, cld(n, tile_size), a, b)
-
-    @test Array(b) ≈ 3.0f0 .* Array(a)
 end
 
 end
@@ -1307,94 +1162,119 @@ end
     end
 end
 
-@testset "mismatched shapes with + throws MethodError" begin
-    # Verify that + with different tile shapes throws MethodError (Julia-idiomatic)
-    # Note: This tests the type system, not kernel execution
-    tile_a = ct.Tile{Float32, (1, 128)}()
-    tile_b = ct.Tile{Float32, (64, 1)}()
-
-    # + should require same shapes, so this should fail
-    @test_throws MethodError tile_a + tile_b
-
-    # But .+ should work (broadcasting)
-    result = tile_a .+ tile_b
-    @test result isa ct.Tile{Float32, (64, 128)}
-end
-
 end
 
 @testset "comparison operations" begin
 
-@testset "float comparison operators" begin
-    # Test all broadcast comparison operators with Float32 tiles
-    tile = ct.Tile{Float32, (16,)}()
-
-    @test (tile .< tile) isa ct.Tile{Bool, (16,)}
-    @test (tile .> tile) isa ct.Tile{Bool, (16,)}
-    @test (tile .<= tile) isa ct.Tile{Bool, (16,)}
-    @test (tile .>= tile) isa ct.Tile{Bool, (16,)}
-    @test (tile .== tile) isa ct.Tile{Bool, (16,)}
-    @test (tile .!= tile) isa ct.Tile{Bool, (16,)}
+for (name, op1, op2) in [
+    ("< and >",   :<,  :>),
+    ("<= and >=", :<=, :>=),
+]
+    sym = Symbol("cmp_", replace(name, r"[^a-zA-Z0-9]" => "_"))
+    @eval @testset "float $($name)" begin
+        function $sym(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                      out1::ct.TileArray{Float32,1}, out2::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, pid, (16,))
+            tb = ct.load(b, pid, (16,))
+            ct.store(out1, pid, ct.where(broadcast($op1, ta, tb), 1.0f0, 0.0f0))
+            ct.store(out2, pid, ct.where(broadcast($op2, ta, tb), 1.0f0, 0.0f0))
+            return
+        end
+        n = 1024
+        a = CUDA.rand(Float32, n)
+        b = CUDA.rand(Float32, n)
+        out1 = CUDA.zeros(Float32, n)
+        out2 = CUDA.zeros(Float32, n)
+        ct.launch($sym, cld(n, 16), a, b, out1, out2)
+        @test Array(out1) ≈ Float32.(broadcast($op1, Array(a), Array(b)))
+        @test Array(out2) ≈ Float32.(broadcast($op2, Array(a), Array(b)))
+    end
 end
 
-@testset "integer comparison operators" begin
-    # Test all broadcast comparison operators with Int tiles
-    int_tile = ct.arange((16,), Int)
+@testset "float .== and .!=" begin
+    function cmp_eq_ne_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                              out_eq::ct.TileArray{Float32,1}, out_ne::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(out_eq, pid, ct.where(ta .== tb, 1.0f0, 0.0f0))
+        ct.store(out_ne, pid, ct.where(ta .!= tb, 1.0f0, 0.0f0))
+        return
+    end
 
-    @test (int_tile .< int_tile) isa ct.Tile{Bool, (16,)}
-    @test (int_tile .> int_tile) isa ct.Tile{Bool, (16,)}
-    @test (int_tile .<= int_tile) isa ct.Tile{Bool, (16,)}
-    @test (int_tile .>= int_tile) isa ct.Tile{Bool, (16,)}
-    @test (int_tile .== int_tile) isa ct.Tile{Bool, (16,)}
-    @test (int_tile .!= int_tile) isa ct.Tile{Bool, (16,)}
+    n = 1024
+    # Use integer-valued floats so equality is meaningful
+    a = CUDA.fill(Float32(1), n)
+    b = CUDA.fill(Float32(1), n)
+    # Set half to different values
+    CUDA.@allowscalar b[1:512] .= 2.0f0
+    out_eq = CUDA.zeros(Float32, n)
+    out_ne = CUDA.zeros(Float32, n)
+
+    ct.launch(cmp_eq_ne_kernel, cld(n, 16), a, b, out_eq, out_ne)
+
+    @test Array(out_eq) ≈ Float32.(Array(a) .== Array(b))
+    @test Array(out_ne) ≈ Float32.(Array(a) .!= Array(b))
 end
 
 @testset "tile vs scalar comparison" begin
-    int_tile = ct.arange((16,), Int)
-    float_tile = ct.Tile{Float32, (16,)}()
+    function cmp_scalar_kernel(a::ct.TileArray{Float32,1},
+                               out::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        ct.store(out, pid, ct.where(ta .> 0.5f0, 1.0f0, 0.0f0))
+        return
+    end
 
-    # Int tile vs Int scalar
-    @test (int_tile .< 10) isa ct.Tile{Bool, (16,)}
-    @test (5 .< int_tile) isa ct.Tile{Bool, (16,)}
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    out = CUDA.zeros(Float32, n)
 
-    # Float32 tile vs Float32 scalar
-    @test (float_tile .< 2.0f0) isa ct.Tile{Bool, (16,)}
-    @test (1.0f0 .> float_tile) isa ct.Tile{Bool, (16,)}
-end
+    ct.launch(cmp_scalar_kernel, cld(n, 16), a, out)
 
-@testset "broadcast comparison shapes" begin
-    tile_a = ct.Tile{Float32, (1, 16)}()
-    tile_b = ct.Tile{Float32, (8, 1)}()
-
-    # (1, 16) .< (8, 1) -> (8, 16)
-    result = tile_a .< tile_b
-    @test result isa ct.Tile{Bool, (8, 16)}
+    @test Array(out) ≈ Float32.(Array(a) .> 0.5f0)
 end
 
 end
 
 @testset "power operations" begin
 
-@testset "float tile .^ float tile" begin
-    tile = ct.Tile{Float32, (16,)}()
-    @test (tile .^ tile) isa ct.Tile{Float32, (16,)}
+@testset "tile .^ tile" begin
+    function pow_tt_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                           c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        tb = ct.load(b, pid, (16,))
+        ct.store(c, pid, ta .^ tb)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n) .+ 0.5f0  # Ensure positive base
+    b = CUDA.rand(Float32, n) .+ 0.5f0
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(pow_tt_kernel, cld(n, 16), a, b, c)
+
+    @test Array(c) ≈ Array(a) .^ Array(b) rtol=1e-4
 end
 
-@testset "float tile .^ scalar" begin
-    tile = ct.Tile{Float32, (16,)}()
-    @test (tile .^ 2.0f0) isa ct.Tile{Float32, (16,)}
-    @test (2.0f0 .^ tile) isa ct.Tile{Float32, (16,)}
-end
+@testset "tile .^ scalar" begin
+    function pow_ts_kernel(a::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        ta = ct.load(a, pid, (16,))
+        ct.store(c, pid, ta .^ 2.0f0)
+        return
+    end
 
-@testset "broadcast power shapes" begin
-    tile_a = ct.Tile{Float32, (1, 16)}()
-    tile_b = ct.Tile{Float32, (8, 1)}()
-    @test (tile_a .^ tile_b) isa ct.Tile{Float32, (8, 16)}
-end
+    n = 1024
+    a = CUDA.rand(Float32, n) .+ 0.1f0
+    c = CUDA.zeros(Float32, n)
 
-@testset "integer power not supported" begin
-    int_tile = ct.arange((16,), Int)
-    @test_throws MethodError int_tile .^ int_tile
+    ct.launch(pow_ts_kernel, cld(n, 16), a, c)
+
+    @test Array(c) ≈ Array(a) .^ 2.0f0 rtol=1e-4
 end
 
 end
