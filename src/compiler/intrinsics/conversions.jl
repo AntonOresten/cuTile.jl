@@ -40,22 +40,17 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
     target_dtype = julia_to_tile_dtype!(tt, target_elem)
     target_tile_type = tile_type!(tt, target_dtype, tile_shape)
 
-    # Determine signedness for integer types
-    function is_signed_int(T)
-        T <: Signed || T === Int32 || T === Int64 || T === Int16 || T === Int8
-    end
-
     # Emit conversion based on source and target types
     result = if source_elem <: AbstractFloat && target_elem <: AbstractFloat
         # Float -> Float
         encode_FToFOp!(cb, target_tile_type, source.v)
     elseif source_elem <: Integer && target_elem <: AbstractFloat
         # Integer -> Float
-        signedness = is_signed_int(source_elem) ? SignednessSigned : SignednessUnsigned
+        signedness = source_elem <: Signed ? SignednessSigned : SignednessUnsigned
         encode_IToFOp!(cb, target_tile_type, source.v; signedness)
     elseif source_elem <: AbstractFloat && target_elem <: Integer
         # Float -> Integer
-        signedness = is_signed_int(target_elem) ? SignednessSigned : SignednessUnsigned
+        signedness = target_elem <: Signed ? SignednessSigned : SignednessUnsigned
         encode_FToIOp!(cb, target_tile_type, source.v; signedness)
     elseif source_elem <: Integer && target_elem <: Integer
         # Integer -> Integer
@@ -66,7 +61,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
             source.v
         elseif target_size > source_size
             # Extension (upsize)
-            signedness = is_signed_int(source_elem) ? SignednessSigned : SignednessUnsigned
+            signedness = source_elem <: Signed ? SignednessSigned : SignednessUnsigned
             encode_ExtIOp!(cb, target_tile_type, source.v; signedness)
         else
             # Truncation (downsize)

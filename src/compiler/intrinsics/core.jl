@@ -569,7 +569,7 @@ function emit_reduce!(ctx::CGCtx, args, reduce_fn::Symbol)
     results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v], axis, [identity], [scalar_tile_type]) do block_args
         acc, elem = block_args[1], block_args[2]
 
-        res = encode_reduce_body(cb, scalar_tile_type, acc, elem, reduce_fn, elem_type)
+        res = encode_binop_body(cb, scalar_tile_type, acc, elem, reduce_fn, elem_type)
         encode_YieldOp!(cb, [res])
     end
 
@@ -609,26 +609,18 @@ operation_identity(::Val{:max}, dtype, ::Type{T}) where T <: Integer =
     IntegerIdentityVal(to_uint128(typemin(T)), dtype, T)
 
 #=============================================================================#
-# Reduce Body Operations
+# Binary Operation Body Encoding (shared by reduce and scan)
 #=============================================================================#
-function encode_reduce_body(cb, type, acc, elem, op::Symbol, ::Type{T}) where T
+function encode_binop_body(cb, type, acc, elem, op::Symbol, ::Type{T}) where T
     if T <: AbstractFloat
-        if op == :add
-            encode_AddFOp!(cb, type, acc, elem)
-        elseif op == :max
-            encode_MaxFOp!(cb, type, acc, elem)
-        else
-            error("Unsupported float reduction operation: $op")
-        end
-    else  # Integer
+        op == :add ? encode_AddFOp!(cb, type, acc, elem) :
+        op == :max ? encode_MaxFOp!(cb, type, acc, elem) :
+        error("Unsupported float operation: $op")
+    else
         signedness = T <: Signed ? SignednessSigned : SignednessUnsigned
-        if op == :add
-            encode_AddIOp!(cb, type, acc, elem)
-        elseif op == :max
-            encode_MaxIOp!(cb, type, acc, elem; signedness)
-        else
-            error("Unsupported integer reduction operation: $op")
-        end
+        op == :add ? encode_AddIOp!(cb, type, acc, elem) :
+        op == :max ? encode_MaxIOp!(cb, type, acc, elem; signedness) :
+        error("Unsupported integer operation: $op")
     end
 end
 
@@ -702,7 +694,72 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     CGVal(current_val, result_type_id, Tile{elem_type, Tuple(target_shape)}, target_shape)
 end
 
-# TODO: cuda_tile.scan
+# cuda_tile.scan
+@eval Intrinsics begin
+    """
+        scan(tile, axis_val, fn_type; reverse=false)
+
+    Parallel prefix scan along specified dimension.
+    fn_type=:add for cumulative sum (only supported operation).
+    reverse=false for forward scan, true for reverse scan.
+    Compiled to cuda_tile.scan.
+    """
+    @noinline function scan(tile::Tile{T, S}, ::Val{axis}, fn::Symbol, reverse::Bool=false) where {T, S, axis}
+        # Scan preserves shape - result has same dimensions as input
+        Tile{T, S}()
+    end
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get input tile
+    input_tv = emit_value!(ctx, args[1])
+    input_tv === nothing && error("Cannot resolve input tile for scan")
+
+    # Get scan axis
+    axis = @something get_constant(ctx, args[2]) error("Scan axis must be a compile-time constant")
+
+    # Get scan function type (only :add is supported)
+    fn_type = @something get_constant(ctx, args[3]) error("Scan function type must be a compile-time constant")
+    fn_type == :add || error("Only :add (cumulative sum) is currently supported for scan operations")
+
+    # Get reverse flag (optional, defaults to false)
+    reverse = false
+    if length(args) >= 4
+        reverse_val = get_constant(ctx, args[4])
+        reverse = reverse_val === true
+    end
+
+    # Get element type and shapes
+    input_type = unwrap_type(input_tv.jltype)
+    elem_type = input_type <: Tile ? input_type.parameters[1] : input_type
+    input_shape = input_tv.shape
+
+    # For scan, output shape is same as input shape
+    output_shape = copy(input_shape)
+
+    dtype = julia_to_tile_dtype!(tt, elem_type)
+
+    # Output tile type (same shape as input)
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+
+    # Scalar type for scan body (0D tile)
+    scalar_tile_type = tile_type!(tt, dtype, Int[])
+
+    # Create identity value using operation_identity
+    identity = operation_identity(Val(fn_type), dtype, elem_type)
+
+    # Emit ScanOp
+    results = encode_ScanOp!(cb, [output_tile_type], [input_tv.v], axis, reverse, [identity], [scalar_tile_type]) do block_args
+        acc, elem = block_args[1], block_args[2]
+        res = encode_binop_body(cb, scalar_tile_type, acc, elem, fn_type, elem_type)
+        encode_YieldOp!(cb, [res])
+    end
+
+    CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+end
 
 # cuda_tile.select
 @eval Intrinsics begin

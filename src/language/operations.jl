@@ -553,6 +553,19 @@ end
     Intrinsics.reduce_max(tile, Val(axis - 1))
 end
 
+# Scan (Prefix Sum) Operations
+
+@inline function scan(tile::Tile{T, S}, ::Val{axis},
+                      fn::Symbol=:add,
+                      reverse::Bool=false) where {T<:Number, S, axis}
+    Intrinsics.scan(tile, Val(axis - 1), fn, reverse)
+end
+
+@inline function cumsum(tile::Tile{T, S}, ::Val{axis},
+                        reverse::Bool=false) where {T<:Number, S, axis}
+    scan(tile, Val(axis), :add, reverse)
+end
+
 #=============================================================================
  Matrix multiplication
 =============================================================================#
