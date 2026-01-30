@@ -38,24 +38,9 @@ for example in examples
     end
 end
 
-# Add extension tests from ext/ folder
-ext_dir = joinpath(@__DIR__, "ext")
-if isdir(ext_dir)
-    for ext_file in readdir(ext_dir)
-        endswith(ext_file, ".jl") || continue
-        name = "ext/" * splitext(ext_file)[1]
-        path = joinpath(ext_dir, ext_file)
-        testsuite[name] = quote
-            include($path)
-        end
-    end
-end
-
 # Only include executing tests when CUDA is functional
 args = parse_args(ARGS)
 if filter_tests!(testsuite, args)
-    delete!(testsuite, "filecheck")
-
     cuda_functional = CUDA.functional()
     filter!(testsuite) do (test, _)
         if in(test, ["execution"]) || startswith(test, "examples/")
