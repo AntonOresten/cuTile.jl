@@ -1469,8 +1469,11 @@ end
         # Correct:      loop iter_values(%arg9 = %iterArg0, ...)
         spec = ct.ArraySpec{2}(16, true)
         spec1d = ct.ArraySpec{1}(16, true)
-        @test begin
-            tir = code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
+        @test @filecheck begin
+            # The inner loop must NOT capture %loopIdx - it should capture %iterArg0
+            # Bug: "loop iter_values(%arg9 = %loopIdx"
+            @check_not "iter_values({{.*}}= %loopIdx"
+            ct.code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                                Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(1)
                 # group_bid_m: 1-indexed group ID
@@ -1493,10 +1496,6 @@ end
                 end
                 return
             end
-            tir_str = string(tir)
-            # The inner loop must NOT capture %loopIdx - it should capture %iterArg0
-            # Bug: "loop iter_values(%arg9 = %loopIdx"
-            !occursin(r"loop iter_values\([^)]*= %loopIdx", tir_str)
         end
     end
 
@@ -1806,21 +1805,12 @@ end
 
         @testset "valid power-of-2 shapes accepted" begin
             # These should not throw - test a few key sizes
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
-                tile = ct.load(a, ct.bid(1), (16,))
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
-                tile = ct.load(a, ct.bid(1), (32,))
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
-            code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
-                tile = ct.load(a, ct.bid(1), (128,))
-                ct.store(a, ct.bid(1), tile)
-                return
-            end
+            code_tiled(devnull, a -> (ct.store(a, ct.bid(1), ct.load(a, ct.bid(1), (16,))); return),
+                       Tuple{ct.TileArray{Float32,1,spec}})
+            code_tiled(devnull, a -> (ct.store(a, ct.bid(1), ct.load(a, ct.bid(1), (32,))); return),
+                       Tuple{ct.TileArray{Float32,1,spec}})
+            code_tiled(devnull, a -> (ct.store(a, ct.bid(1), ct.load(a, ct.bid(1), (128,))); return),
+                       Tuple{ct.TileArray{Float32,1,spec}})
         end
 
         @testset "multi-dim: all dimensions must be pow2" begin
@@ -1950,8 +1940,10 @@ end
 
         # Valid values should succeed
         for num_ctas in [1, 2, 4, 8, 16]
-            bytecode = code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas)
-            @test !isempty(bytecode)
+            @test @filecheck begin
+                @check "num_cta_in_cga = $(num_ctas)"
+                ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", num_ctas)
+            end
         end
     end
 
@@ -1967,11 +1959,15 @@ end
         end
 
         # Valid boundaries
-        bytecode1 = code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=1)
-        @test !isempty(bytecode1)
+        @test @filecheck begin
+            @check "occupancy = 1"
+            ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=1)
+        end
 
-        bytecode32 = code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=32)
-        @test !isempty(bytecode32)
+        @test @filecheck begin
+            @check "occupancy = 32"
+            ct.code_tiled((a) -> nothing, Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_100", occupancy=32)
+        end
     end
 end
 
@@ -2069,13 +2065,15 @@ end
             end
         end
 
-        bytecode1 = code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
-            pid = ct.bid(1)
-            t = ct.load(a, pid, (16,); latency=8)
-            ct.store(a, pid, t)
-            return nothing
+        @test @filecheck begin
+            @check "optimization_hints = <sm_120 = {latency = 8}>"
+            ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch="sm_120") do a
+                pid = ct.bid(1)
+                t = ct.load(a, pid, (16,); latency=8)
+                ct.store(a, pid, t)
+                return nothing
+            end
         end
-        @test !isempty(bytecode1)
     end
 
     @testset "multiple operations with mixed hints" begin
