@@ -2021,7 +2021,9 @@ end
 
 end
 
-@testset "redefine kernel method" begin
+@testset "invalidations" begin
+
+@testset "redefine kernel" begin
     mod = @eval module $(gensym())
         import cuTile as ct
         function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
@@ -2038,7 +2040,6 @@ end
     c = CUDA.zeros(Float32, 1024)
 
     ct.launch(mod.vadd_kernel, 64, a, b, c)
-
     @test Array(c) ≈ Array(a) + Array(b)
 
     @eval mod begin
@@ -2052,7 +2053,34 @@ end
     end
 
     ct.launch(mod.vadd_kernel, 64, a, b, c)
-
     @test Array(c) ≈ Array(a) + Array(b) * 2
 end
+
+@testset "redefine called function" begin
+    mod = @eval module $(gensym())
+        import cuTile as ct
+        combine(a, b) = a + b
+        function vadd_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ta = ct.load(a, (pid,), (16,))
+            tb = ct.load(b, (pid,), (16,))
+            ct.store(c, (pid,), combine(ta, tb))
+            return
+        end
+    end
+
+    a = CUDA.ones(Float32, 1024)
+    b = CUDA.ones(Float32, 1024)
+    c = CUDA.zeros(Float32, 1024)
+
+    ct.launch(mod.vadd_kernel, 64, a, b, c)
+    @test Array(c) ≈ Array(a) + Array(b)
+
+    @eval mod combine(a, b) = a + b * 2
+
+    ct.launch(mod.vadd_kernel, 64, a, b, c)
+    @test Array(c) ≈ Array(a) + Array(b) * 2
+end
+
+end # invalidations
 
