@@ -13,8 +13,9 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing,
                       cache::CacheView)
-    ctx = CGCtx(writer, sci, sm_arch, cache)
-    tt = ctx.tt
+    tt = writer.type_table
+    cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
+    ctx = CGCtx(; cb, tt, sci, sm_arch, cache)
 
     # Validate non-ghost argument types are concrete
     for (i, argtype) in enumerate(sci.argtypes)
@@ -251,7 +252,10 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     sci, _ = emit_ir(ctx.cache, mi)
 
     # 3. Create sub-context
-    sub_ctx = sub_context(ctx, sci)
+    sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
+                      ctx.token, ctx.token_type,
+                      ctx.type_cache, ctx.sm_arch,
+                      ctx.cache)
 
     # 4. Map arguments: Argument(1) = function singleton (ghost),
     #    Argument(2..N+1) = block_args[1..N]

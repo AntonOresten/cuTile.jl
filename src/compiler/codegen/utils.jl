@@ -131,9 +131,12 @@ mutable struct CGCtx
     cache::CacheView
 end
 
-function CGCtx(writer::BytecodeWriter, sci::StructuredIRCode,
-               sm_arch::Union{String, Nothing},
-               cache::CacheView)
+function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
+                 token::Union{Value, Nothing} = nothing,
+                 token_type::Union{TypeId, Nothing} = nothing,
+                 type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
+                 sm_arch::Union{String, Nothing} = nothing,
+                 cache::CacheView)
     CGCtx(
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
@@ -141,44 +144,11 @@ function CGCtx(writer::BytecodeWriter, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Int, Tuple{Value, TypeId}}(),  # tensor_views cache
-        CodeBuilder(writer.string_table, writer.constant_table, writer.type_table),
-        writer.type_table,
-        sci,
-        nothing,
-        nothing,
-        Dict{Type, TypeId}(),
-        sm_arch,
-        cache,
+        Dict{Int, Tuple{Value, TypeId}}(),
+        cb, tt, sci, token, token_type, type_cache, sm_arch, cache,
     )
 end
 
-"""
-    sub_context(parent, sci) -> CGCtx
-
-Create a sub-context for compiling a combiner body inside a region.
-Shares bytecode infrastructure (cb, tt, type_cache) with the parent context
-but has fresh value mappings for the combiner's own SSA values.
-"""
-function sub_context(parent::CGCtx, sci::StructuredIRCode)
-    CGCtx(
-        Dict{Int, CGVal}(),           # values
-        Dict{Int, CGVal}(),           # args
-        Dict{Int, CGVal}(),           # slots
-        Dict{Int, CGVal}(),           # block_args
-        Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),  # arg_flat_values
-        Dict{Int, Type}(),            # arg_types
-        Dict{Int, Tuple{Value, TypeId}}(),  # tensor_views
-        parent.cb,                    # shared
-        parent.tt,                    # shared
-        sci,                          # combiner's StructuredIRCode
-        parent.token,
-        parent.token_type,
-        parent.type_cache,            # shared
-        parent.sm_arch,
-        parent.cache,                 # shared
-    )
-end
 
 #=============================================================================
  Value lookup via indexing syntax
