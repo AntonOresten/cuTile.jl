@@ -247,6 +247,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     )
 
     # 2. Compile through cuTile pipeline (cached)
+    @assert haskey(ctx.cache, mi) "Expected $func($(join(arg_types, ", "))) to be cached already by inference."
     sci, _ = emit_ir(ctx.cache, mi)
 
     # 3. Create sub-context
