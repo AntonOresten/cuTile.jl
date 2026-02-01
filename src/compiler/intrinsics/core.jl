@@ -586,6 +586,7 @@ end
 Convert an integer value to UInt128 for storage in IntegerIdentityVal.
 For signed types, this returns the two's complement bit representation.
 """
+to_uint128(value::Bool) = UInt128(value)
 to_uint128(value::T) where T <: Unsigned = UInt128(value)
 to_uint128(value::T) where T <: Signed = UInt128(reinterpret(unsigned(T), value))
 
@@ -599,6 +600,142 @@ make_identity_val(val, dtype, ::Type{T}) where T <: AbstractFloat =
 make_identity_val(val, dtype, ::Type{T}) where T <: Integer =
     IntegerIdentityVal(to_uint128(T(val)), dtype, T)
 
+
+# cuda_tile.argreduce (multi-operand reduce for argmax/argmin)
+@eval Intrinsics begin
+    """
+        argreduce(tile, axis_val, mode)
+
+    Arg-reduction along 0-indexed axis.
+    mode: Val(:max) for argmax, Val(:min) for argmin.
+    Returns a Tile of Int32 indices (0-indexed internally, converted to 1-indexed by caller).
+    """
+    @noinline function argreduce(tile::Tile{T, S}, ::Val{axis}, ::Val{mode}) where {T, S, axis, mode}
+        reduced_shape = ntuple(i -> i == axis + 1 ? 1 : S[i], length(S))
+        Tile{Int32, reduced_shape}()
+    end
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.argreduce), args)
+    emit_argreduce!(ctx, args)
+end
+function emit_argreduce!(ctx::CGCtx, args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    # Get input tile
+    input_tv = emit_value!(ctx, args[1])
+    input_tv === nothing && error("Cannot resolve input tile for argreduce")
+
+    # Get reduction axis
+    axis = @something get_constant(ctx, args[2]) error("Argreduce axis must be a compile-time constant")
+
+    # Get mode (:max or :min)
+    mode = @something get_constant(ctx, args[3]) error("Argreduce mode must be a compile-time constant")
+
+    # Get element type and shapes
+    input_type = unwrap_type(input_tv.jltype)
+    elem_type = input_type.parameters[1]
+    input_shape = input_tv.shape
+    isempty(input_shape) && error("Cannot argreduce scalar tile")
+
+    val_dtype = julia_to_tile_dtype!(tt, elem_type)
+    idx_dtype = julia_to_tile_dtype!(tt, Int32)
+
+    # ReduceOp removes the dimension; we'll reshape after
+    reduced_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
+
+    reduced_val_type = tile_type!(tt, val_dtype, reduced_shape)
+    reduced_idx_type = tile_type!(tt, idx_dtype, reduced_shape)
+
+    scalar_val_type = tile_type!(tt, val_dtype, Int[])
+    scalar_idx_type = tile_type!(tt, idx_dtype, Int[])
+    scalar_bool_type = tile_type!(tt, I1(tt), Int[])
+
+    # Create index tile: 0-indexed iota along reduction axis
+    # Shape matches input, with iota along the reduction axis
+    idx_tile_shape = copy(input_shape)
+    iota_1d_type = tile_type!(tt, idx_dtype, [input_shape[axis + 1]])
+    iota_val = encode_IotaOp!(cb, iota_1d_type)
+
+    # Reshape iota to broadcast-compatible shape (1s everywhere except reduction axis)
+    iota_reshape = fill(1, length(input_shape))
+    iota_reshape[axis + 1] = input_shape[axis + 1]
+    iota_reshape_type = tile_type!(tt, idx_dtype, iota_reshape)
+    iota_reshaped = encode_ReshapeOp!(cb, iota_reshape_type, iota_val)
+
+    # Broadcast to full input shape
+    idx_tile_type = tile_type!(tt, idx_dtype, input_shape)
+    idx_tile = encode_BroadcastOp!(cb, idx_tile_type, iota_reshaped)
+
+    # Identity values
+    val_identity = if mode === :max
+        make_identity_val(typemin(elem_type), val_dtype, elem_type)
+    else
+        make_identity_val(typemax(elem_type), val_dtype, elem_type)
+    end
+    idx_identity = IntegerIdentityVal(UInt128(0), idx_dtype, Int32)
+
+    # Multi-operand ReduceOp: 2 operands (values, indices), 2 results
+    results = encode_ReduceOp!(cb,
+        [reduced_val_type, reduced_idx_type],
+        [input_tv.v, idx_tile],
+        axis,
+        [val_identity, idx_identity],
+        [scalar_val_type, scalar_idx_type]) do block_args
+        # block_args: [val_acc, val_elem, idx_acc, idx_elem]
+        val_acc = block_args[1]
+        val_elem = block_args[2]
+        idx_acc = block_args[3]
+        idx_elem = block_args[4]
+
+        # Compare values
+        if elem_type <: AbstractFloat
+            val_strict = if mode === :max
+                encode_CmpFOp!(cb, scalar_bool_type, val_acc, val_elem;
+                               predicate=CmpGreaterThan, ordering=CmpOrdered)
+            else
+                encode_CmpFOp!(cb, scalar_bool_type, val_acc, val_elem;
+                               predicate=CmpLessThan, ordering=CmpOrdered)
+            end
+            val_equal = encode_CmpFOp!(cb, scalar_bool_type, val_acc, val_elem;
+                                       predicate=CmpEqual, ordering=CmpOrdered)
+        else
+            signedness = elem_type <: Signed ? SignednessSigned : SignednessUnsigned
+            val_strict = if mode === :max
+                encode_CmpIOp!(cb, scalar_bool_type, val_acc, val_elem;
+                               predicate=CmpGreaterThan, signedness)
+            else
+                encode_CmpIOp!(cb, scalar_bool_type, val_acc, val_elem;
+                               predicate=CmpLessThan, signedness)
+            end
+            val_equal = encode_CmpIOp!(cb, scalar_bool_type, val_acc, val_elem;
+                                       predicate=CmpEqual, signedness)
+        end
+
+        # Tie-break: when equal, pick smaller index
+        idx_lt = encode_CmpIOp!(cb, scalar_bool_type, idx_acc, idx_elem;
+                                predicate=CmpLessThan, signedness=SignednessSigned)
+
+        # cond = val_strict | (val_equal & idx_lt)
+        eq_and_lt = encode_AndIOp!(cb, scalar_bool_type, val_equal, idx_lt)
+        cond = encode_OrIOp!(cb, scalar_bool_type, val_strict, eq_and_lt)
+
+        # Select results
+        res_val = encode_SelectOp!(cb, scalar_val_type, cond, val_acc, val_elem)
+        res_idx = encode_SelectOp!(cb, scalar_idx_type, cond, idx_acc, idx_elem)
+
+        encode_YieldOp!(cb, [res_val, res_idx])
+    end
+
+    # results[1] = reduced values (discard), results[2] = reduced indices
+    # Reshape to reintroduce reduced dimension as size 1
+    output_shape = copy(input_shape)
+    output_shape[axis + 1] = 1
+    output_idx_type = tile_type!(tt, idx_dtype, output_shape)
+    result_idx = encode_ReshapeOp!(cb, output_idx_type, results[2])
+
+    CGVal(result_idx, output_idx_type, Tile{Int32, Tuple(output_shape)}, output_shape)
+end
 
 # cuda_tile.reshape
 @eval Intrinsics begin

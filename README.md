@@ -165,10 +165,9 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 | `maximum(tile; dims)` | Maximum along axis |
 | `minimum(tile; dims)` | Minimum along axis |
 | `reduce(f, tile; dims, init)` | Custom reduction |
-| `dropdims(tile; dims)` | Remove singleton dimensions |
-| `cumsum(tile; dims)` | Cumulative sum |
-| `cumprod(tile; dims)` | Cumulative product |
-| `accumulate(f, tile; dims, init)` | Custom scan/prefix-sum |
+| `cumsum(tile; dims, rev)` | Cumulative sum |
+| `cumprod(tile; dims, rev)` | Cumulative product |
+| `accumulate(f, tile; dims, init, rev)` | Custom scan/prefix-sum |
 
 ### Math
 | Operation | Description |

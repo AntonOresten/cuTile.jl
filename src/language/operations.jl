@@ -538,6 +538,8 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
     Intrinsics.reduce(tile, Val(dims - 1), f, T(init))
 end
 
+
+
 """
     sum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
 
@@ -573,6 +575,69 @@ Reduced dimensions become size 1.
 """
 @inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
     _tile_reduce(min, tile, dims, typemax(T))
+
+"""
+    any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
+
+Logical OR reduction along the specified axis (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.any(tile::Tile{Bool,S}; dims::Integer) where {S} =
+    Intrinsics.reduce(tile, Val(dims - 1), |, false)
+
+"""
+    all(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
+
+Logical AND reduction along the specified axis (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.all(tile::Tile{Bool,S}; dims::Integer) where {S} =
+    Intrinsics.reduce(tile, Val(dims - 1), &, true)
+
+"""
+    count(tile::Tile{Bool,S}; dims) -> Tile{Int32, reduced_shape}
+
+Count true elements along `dims` (1-indexed). Apply predicates via
+broadcasting before calling count:
+
+# Example
+```julia
+n_positive = count(tile .> 0.0f0; dims=1)
+```
+"""
+@inline function Base.count(tile::Tile{Bool,S}; dims::Integer) where {S}
+    sum(astype(tile, Int32); dims)
+end
+
+"""
+    argmax(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
+
+Return 1-indexed positions of maximum values along `dims`.
+Ties are broken by smallest index.
+
+# Example
+```julia
+indices = argmax(tile; dims=2)  # Column indices of max per row
+```
+"""
+@inline function Base.argmax(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
+    Intrinsics.argreduce(tile, Val(dims - 1), Val(:max)) .+ one(Int32)
+end
+
+"""
+    argmin(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
+
+Return 1-indexed positions of minimum values along `dims`.
+Ties are broken by smallest index.
+
+# Example
+```julia
+indices = argmin(tile; dims=2)  # Column indices of min per row
+```
+"""
+@inline function Base.argmin(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
+    Intrinsics.argreduce(tile, Val(dims - 1), Val(:min)) .+ one(Int32)
+end
 
 # Single-dim dispatch
 @inline _tile_reduce(f, tile::Tile{T}, dims::Integer, init) where {T} =
