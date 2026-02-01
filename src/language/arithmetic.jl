@@ -76,8 +76,6 @@
 @inline Base.:(+)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.addi(a, b)
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.subf(a, b)
 @inline Base.:(-)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.subi(a, b)
-@inline Base.:(*)(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.mulf(a, b)
-@inline Base.:(*)(a::Tile{T, S}, b::Tile{T, S}) where {T <: Integer, S} = Intrinsics.muli(a, b)
 
 # broadcasted arithmetic (float)
 for (op, intrinsic) in ((:+, :addf), (:-, :subf), (:*, :mulf), (:/, :divf))

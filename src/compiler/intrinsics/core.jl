@@ -560,11 +560,10 @@ function emit_reduce!(ctx::CGCtx, args)
     identity = make_identity_val(identity_val, dtype, elem_type)
 
     # Emit ReduceOp with compiled combiner body
-    scalar_jltype = Tile{elem_type, ()}
     results = encode_ReduceOp!(cb, [reduced_tile_type], [input_tv.v],
                                axis, [identity], [scalar_tile_type]) do block_args
         emit_subprogram!(ctx, func,
-                         [scalar_jltype, scalar_jltype],
+                         [elem_type, elem_type],
                          block_args, [scalar_tile_type, scalar_tile_type])
     end
 
@@ -730,10 +729,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     identity = make_identity_val(identity_val, dtype, elem_type)
 
     # Emit ScanOp with compiled combiner body
-    scalar_jltype = Tile{elem_type, ()}
     results = encode_ScanOp!(cb, [output_tile_type], [input_tv.v], axis, reverse, [identity], [scalar_tile_type]) do block_args
         emit_subprogram!(ctx, func,
-                         [scalar_jltype, scalar_jltype],
+                         [elem_type, elem_type],
                          block_args, [scalar_tile_type, scalar_tile_type])
     end
 

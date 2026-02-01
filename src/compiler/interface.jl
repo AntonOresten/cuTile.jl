@@ -76,9 +76,8 @@ CC.may_discard_trees(::cuTileInterpreter) = true
 
 # Intrinsics.reduce and Intrinsics.scan accept a subprogram function `f` that
 # is never called in their bodies — inference treats it as dead. We intercept
-# abstract_call_known to trigger a synthetic inference of `f(Tile{T,()},
-# Tile{T,()})`, front-loading subprogram inference and establishing proper
-# invalidation edges.
+# abstract_call_known to trigger a synthetic inference of `f(T, T)`,
+# front-loading subprogram inference and establishing proper invalidation edges.
 
 # On 1.12+, compute_edges! walks stmt_info and calls add_edges_impl.
 # We need a custom CallInfo that propagates both the reduce/scan call's edges
@@ -109,7 +108,7 @@ const _HAS_VTYPES = hasmethod(CC.abstract_call,
           Union{Vector{CC.VarState},Nothing}, CC.AbsIntState, Int})
 
 """
-Trigger a synthetic `abstract_call` for the subprogram function `f(Tile{T,()}, Tile{T,()})`
+Trigger a synthetic `abstract_call` for the subprogram function `f(T, T)`
 so that inference discovers the subprogram callee and establishes invalidation edges.
 Returns the result of `abstract_call` (Future{CallMeta} on 1.12+, CallMeta on 1.11),
 or `nothing` if inapplicable.
@@ -125,9 +124,8 @@ function _infer_subprogram(interp::cuTileInterpreter, @nospecialize(f),
     tile_type <: Tile || return nothing
 
     T = tile_type.parameters[1]
-    scalar = Tile{T, ()}
     csi = _subprogram_si(si)
-    cargs = CC.ArgInfo(nothing, Any[f_type, scalar, scalar])
+    cargs = CC.ArgInfo(nothing, Any[f_type, T, T])
 
     @static if _HAS_VTYPES
         CC.abstract_call(interp, cargs, csi, vtypes, sv, 1)

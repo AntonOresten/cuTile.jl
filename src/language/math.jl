@@ -41,15 +41,7 @@ end
     S = broadcast_shape(S1, S2)
     Intrinsics.remf(broadcast_to(a, S), broadcast_to(b, S))
 end
-## max/min (direct, same-shape — used by reduce/scan combiners)
-@inline Base.max(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.maxf(a, b)
-@inline Base.min(a::Tile{T, S}, b::Tile{T, S}) where {T <: AbstractFloat, S} = Intrinsics.minf(a, b)
-@inline Base.max(a::Tile{T, S}, b::Tile{T, S}) where {T <: Signed, S} = Intrinsics.maxi(a, b, SignednessSigned)
-@inline Base.min(a::Tile{T, S}, b::Tile{T, S}) where {T <: Signed, S} = Intrinsics.mini(a, b, SignednessSigned)
-@inline Base.max(a::Tile{T, S}, b::Tile{T, S}) where {T <: Unsigned, S} = Intrinsics.maxi(a, b, SignednessUnsigned)
-@inline Base.min(a::Tile{T, S}, b::Tile{T, S}) where {T <: Unsigned, S} = Intrinsics.mini(a, b, SignednessUnsigned)
-
-## max/min (broadcasted, different shapes)
+## max/min
 for (op, intrinsic) in ((:max, :maxf), (:min, :minf))
     @eval @inline function Base.Broadcast.broadcasted(::TileStyle, ::typeof($op),
             a::Tile{T,S1}, b::Tile{T,S2}) where {T<:AbstractFloat,S1,S2}
