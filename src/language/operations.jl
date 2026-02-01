@@ -621,7 +621,14 @@ indices = argmax(tile; dims=2)  # Column indices of max per row
 ```
 """
 @inline function Base.argmax(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
-    Intrinsics.argreduce(tile, Val(dims - 1), Val(:max)) .+ one(Int32)
+    axis = dims - 1
+    n = S[dims]
+    indices = reshape(Intrinsics.iota((n,), Int32),
+                      ntuple(i -> i == dims ? n : 1, length(S)))
+    indices = broadcast_to(indices, S)
+    _, idx = Intrinsics.reduce((tile, indices), Val(axis),
+                               _argmax_body, (typemin(T), Int32(0)))
+    idx .+ one(Int32)
 end
 
 """
@@ -636,7 +643,30 @@ indices = argmin(tile; dims=2)  # Column indices of min per row
 ```
 """
 @inline function Base.argmin(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
-    Intrinsics.argreduce(tile, Val(dims - 1), Val(:min)) .+ one(Int32)
+    axis = dims - 1
+    n = S[dims]
+    indices = reshape(Intrinsics.iota((n,), Int32),
+                      ntuple(i -> i == dims ? n : 1, length(S)))
+    indices = broadcast_to(indices, S)
+    _, idx = Intrinsics.reduce((tile, indices), Val(axis),
+                               _argmin_body, (typemax(T), Int32(0)))
+    idx .+ one(Int32)
+end
+
+@noinline function _argmax_body(val_acc, val_elem, idx_acc, idx_elem)
+    strict = val_acc > val_elem
+    eq = val_acc == val_elem
+    cond = strict | (eq & (idx_acc < idx_elem))
+    (Intrinsics.select(cond, val_acc, val_elem),
+     Intrinsics.select(cond, idx_acc, idx_elem))
+end
+
+@noinline function _argmin_body(val_acc, val_elem, idx_acc, idx_elem)
+    strict = val_elem > val_acc
+    eq = val_acc == val_elem
+    cond = strict | (eq & (idx_acc < idx_elem))
+    (Intrinsics.select(cond, val_acc, val_elem),
+     Intrinsics.select(cond, idx_acc, idx_elem))
 end
 
 # Single-dim dispatch

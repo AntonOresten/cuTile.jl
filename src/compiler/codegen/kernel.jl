@@ -270,7 +270,17 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     # 6. Extract return value and yield
     ret = sci.entry.terminator::ReturnNode
     tv = emit_value!(sub_ctx, ret.val)
-    results = tv.v isa Vector ? tv.v : [tv.v]
+    if tv.tuple !== nothing
+        # Tuple return: resolve each component to a concrete Value
+        results = Value[]
+        for ref in tv.tuple
+            component = emit_value!(sub_ctx, ref)
+            component === nothing && error("Cannot resolve tuple component in subprogram return")
+            push!(results, component.v::Value)
+        end
+    else
+        results = tv.v isa Vector ? tv.v : [tv.v]
+    end
     encode_YieldOp!(ctx.cb, results)
     return results
 end

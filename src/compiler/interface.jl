@@ -68,7 +68,7 @@ CC.unlock_mi_inference(::cuTileInterpreter, ::MethodInstance) = nothing
 # Optimization flags
 CC.may_optimize(::cuTileInterpreter) = true
 CC.may_compress(::cuTileInterpreter) = true
-CC.may_discard_trees(::cuTileInterpreter) = true
+CC.may_discard_trees(::cuTileInterpreter) = false
 
 #=============================================================================
  Subprogram inference for reduce/scan
@@ -121,11 +121,25 @@ function _infer_subprogram(interp::cuTileInterpreter, @nospecialize(f),
 
     tile_type = CC.widenconst(argtypes[2])
     f_type = argtypes[4]
-    tile_type <: Tile || return nothing
 
-    T = tile_type.parameters[1]
+    # Build body arg types: [f_type, T₁, T₁, T₂, T₂, ...] for each operand
+    body_argtypes = Any[f_type]
+    if tile_type <: Tile
+        # Single-operand reduce/scan: f(acc, elem)
+        T = tile_type.parameters[1]
+        push!(body_argtypes, T, T)
+    elseif tile_type <: Tuple && all(p -> p <: Tile, tile_type.parameters)
+        # Multi-operand reduce: f(acc₁, elem₁, acc₂, elem₂, ...)
+        for p in tile_type.parameters
+            T = p.parameters[1]
+            push!(body_argtypes, T, T)
+        end
+    else
+        return nothing
+    end
+
     csi = _subprogram_si(si)
-    cargs = CC.ArgInfo(nothing, Any[f_type, T, T])
+    cargs = CC.ArgInfo(nothing, body_argtypes)
 
     @static if _HAS_VTYPES
         CC.abstract_call(interp, cargs, csi, vtypes, sv, 1)
