@@ -514,7 +514,8 @@ end
     Compiled to cuda_tile.reduce.
     """
     @noinline function reduce(tile::Tile{T, S}, ::Val{axis}, f, identity) where {T, S, axis}
-        reduced_shape = ntuple(i -> S[i < axis + 1 ? i : i + 1], length(S) - 1)
+        # Julia semantics: reduced dimension becomes size 1 (not removed)
+        reduced_shape = ntuple(i -> i == axis + 1 ? 1 : S[i], length(S))
         Tile{T, reduced_shape}()
     end
 end
@@ -544,13 +545,13 @@ function emit_reduce!(ctx::CGCtx, args)
     input_shape = input_tv.shape
     isempty(input_shape) && error("Cannot reduce scalar tile")
 
-    # Compute output shape (dimension at axis is removed)
-    output_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
+    # ReduceOp removes the dimension; we'll reshape after to reintroduce it as size 1
+    reduced_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
 
-    # Output tile type
-    output_tile_type = tile_type!(tt, dtype, output_shape)
+    # Tile type for ReduceOp output (dimension removed)
+    reduced_tile_type = tile_type!(tt, dtype, reduced_shape)
 
     # Scalar type for reduction body (0D tile)
     scalar_tile_type = tile_type!(tt, dtype, Int[])
@@ -560,14 +561,20 @@ function emit_reduce!(ctx::CGCtx, args)
 
     # Emit ReduceOp with compiled combiner body
     scalar_jltype = Tile{elem_type, ()}
-    results = encode_ReduceOp!(cb, [output_tile_type], [input_tv.v],
+    results = encode_ReduceOp!(cb, [reduced_tile_type], [input_tv.v],
                                axis, [identity], [scalar_tile_type]) do block_args
         emit_subprogram!(ctx, func,
                          [scalar_jltype, scalar_jltype],
                          block_args, [scalar_tile_type, scalar_tile_type])
     end
 
-    CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    # Julia semantics: reintroduce reduced dimension as size 1 via ReshapeOp
+    output_shape = copy(input_shape)
+    output_shape[axis + 1] = 1
+    output_tile_type = tile_type!(tt, dtype, output_shape)
+    result = encode_ReshapeOp!(cb, output_tile_type, results[1])
+
+    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
 end
 
 #=============================================================================#
