@@ -126,7 +126,7 @@ end
 @inline function _reshape_for_store(tile::Tile{T,Shape}, ::Val{N}) where {T, Shape, N}
     length(Shape) <= N && return tile
     new_shape = _store_shape(Val(Shape), Val(N))
-    Intrinsics.reshape(tile, Val(new_shape))
+    reshape(tile, new_shape)
 end
 
 @generated function _store_shape(::Val{Shape}, ::Val{N}) where {Shape, N}
@@ -609,7 +609,7 @@ squeezed = dropdims(sums; dims=2)  # (64,)
 
 @inline function _dropdims(tile::Tile{T,S}, ::Val{D}) where {T, S, D}
     new_shape = ntuple(i -> i < D ? S[i] : S[i + 1], Val(length(S) - 1))
-    Intrinsics.reshape(tile, Val(new_shape))
+    reshape(tile, new_shape)
 end
 
 #=============================================================================
