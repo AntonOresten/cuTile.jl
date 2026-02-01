@@ -505,30 +505,30 @@ end
 
 
 # cuda_tile.reduce
+#
+# Always-tuple interface: both single- and multi-operand callers pass tuples of
+# tiles and identities, and receive a tuple back. Two methods are needed so
+# Julia can infer the concrete return type.
 @eval Intrinsics begin
     """
-        reduce(tile, axis_val, f, identity)
+        reduce(tiles::Tuple{Tile...}, Val(axis), f, identities::Tuple) -> Tuple{Tile...}
 
-    Reduction along 0-indexed axis with the given binary function and identity.
-    f is any binary function (e.g., +, max, or a lambda).
+    Reduce tiles along a 0-indexed axis using combiner `f` with per-operand
+    identity values. Always accepts and returns tuples of tiles; single-operand
+    callers wrap in 1-tuples and unwrap with `[1]`.
     Compiled to cuda_tile.reduce.
     """
-    @noinline function reduce(tile::Tile{T, S}, ::Val{axis}, f, identity) where {T, S, axis}
-        # Julia semantics: reduced dimension becomes size 1 (not removed)
+    @noinline function reduce(tiles::Tuple{Tile{T,S}}, ::Val{axis}, f,
+                              identities::Tuple{Any}) where {T, S, axis}
         reduced_shape = ntuple(i -> i == axis + 1 ? 1 : S[i], length(S))
-        Tile{T, reduced_shape}()
+        (Tile{T, reduced_shape}(),)
     end
 end
 @eval Intrinsics begin
-    """
-        reduce(tiles::Tuple, axis_val, f, identities::Tuple)
-
-    Multi-operand reduction along 0-indexed axis. `tiles` and `identities` are
-    tuples of equal length. The combiner `f` receives 2N scalar arguments
-    (acc₁, elem₁, acc₂, elem₂, …) and must return an N-tuple.
-    """
+    """Two-operand method for multi-operand reductions (e.g. argmax/argmin)."""
     @noinline function reduce(tiles::Tuple{Tile{T1,S1}, Tile{T2,S2}},
-                              ::Val{axis}, f, identities::Tuple{Any,Any}) where {T1,S1,T2,S2,axis}
+                              ::Val{axis}, f,
+                              identities::Tuple{Any,Any}) where {T1,S1,T2,S2,axis}
         reduced_shape = ntuple(i -> i == axis + 1 ? 1 : S1[i], length(S1))
         (Tile{T1, reduced_shape}(), Tile{T2, reduced_shape}())
     end
@@ -537,78 +537,22 @@ end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reduce), args)
     emit_reduce!(ctx, args)
 end
+
 function emit_reduce!(ctx::CGCtx, args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Get first argument and check if it's a tuple of tiles (multi-operand reduce)
+    # Always-tuple: extract tile CGVals from the tuple argument
     first_tv = emit_value!(ctx, args[1])
     first_tv === nothing && error("Cannot resolve input for reduction")
 
     if first_tv.tuple !== nothing
-        # Multi-operand reduce: tuple of tiles
-        return emit_reduce_multi!(ctx, first_tv, args)
-    end
-
-    # Single-operand reduce (original path)
-    input_tv = first_tv
-
-    # Get reduction axis
-    axis = @something get_constant(ctx, args[2]) error("Reduction axis must be a compile-time constant")
-
-    # Resolve function: get the actual Julia function object
-    func = resolve_function(ctx, args[3])
-
-    # Get identity value
-    identity_val = @something get_constant(ctx, args[4]) error("Reduction identity must be a compile-time constant")
-
-    # Get element type and shapes
-    input_type = unwrap_type(input_tv.jltype)
-    elem_type = input_type.parameters[1]
-    input_shape = input_tv.shape
-    isempty(input_shape) && error("Cannot reduce scalar tile")
-
-    # ReduceOp removes the dimension; we'll reshape after to reintroduce it as size 1
-    reduced_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
-
-    dtype = julia_to_tile_dtype!(tt, elem_type)
-
-    # Tile type for ReduceOp output (dimension removed)
-    reduced_tile_type = tile_type!(tt, dtype, reduced_shape)
-
-    # Scalar type for reduction body (0D tile)
-    scalar_tile_type = tile_type!(tt, dtype, Int[])
-
-    # Create identity value
-    identity = make_identity_val(identity_val, dtype, elem_type)
-
-    # Emit ReduceOp with compiled combiner body
-    results = encode_ReduceOp!(cb, [reduced_tile_type], [input_tv.v],
-                               axis, [identity], [scalar_tile_type]) do block_args
-        emit_subprogram!(ctx, func,
-                         [elem_type, elem_type],
-                         block_args, [scalar_tile_type, scalar_tile_type])
-    end
-
-    # Julia semantics: reintroduce reduced dimension as size 1 via ReshapeOp
-    output_shape = copy(input_shape)
-    output_shape[axis + 1] = 1
-    output_tile_type = tile_type!(tt, dtype, output_shape)
-    result = encode_ReshapeOp!(cb, output_tile_type, results[1])
-
-    CGVal(result, output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
-end
-
-function emit_reduce_multi!(ctx::CGCtx, tuple_tv::CGVal, args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    # Resolve each tile from the tuple
-    tile_tvs = CGVal[]
-    for ref in tuple_tv.tuple
-        tv = emit_value!(ctx, ref)
-        tv === nothing && error("Cannot resolve tile operand in multi-operand reduce")
-        push!(tile_tvs, tv)
+        tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
+            tv === nothing && error("Cannot resolve tile operand in reduce")
+            tv
+        end for ref in first_tv.tuple]
+    else
+        error("reduce() requires a tuple of tiles (got $(first_tv.jltype))")
     end
     N = length(tile_tvs)
 
@@ -618,30 +562,26 @@ function emit_reduce_multi!(ctx::CGCtx, tuple_tv::CGVal, args)
     # Resolve combiner function
     func = resolve_function(ctx, args[3])
 
-    # Get identity tuple
-    identity_tuple_tv = emit_value!(ctx, args[4])
-    identity_tuple_tv === nothing && error("Cannot resolve identity tuple for multi-operand reduce")
-    identity_vals = Any[]
-    if identity_tuple_tv.tuple !== nothing
-        for ref in identity_tuple_tv.tuple
-            itv = emit_value!(ctx, ref)
-            itv === nothing && error("Cannot resolve identity value in multi-operand reduce")
-            c = itv.constant
-            c === nothing && error("Identity values must be compile-time constants")
-            push!(identity_vals, something(c))
-        end
+    # Resolve identity values from the identities tuple
+    id_tv = emit_value!(ctx, args[4])
+    id_tv === nothing && error("Cannot resolve identity tuple for reduce")
+    identity_vals = if id_tv.tuple !== nothing
+        Any[something(something(emit_value!(ctx, ref)).constant)
+            for ref in id_tv.tuple]
+    elseif id_tv.constant !== nothing
+        collect(Any, something(id_tv.constant))
     else
-        c = identity_tuple_tv.constant
-        c === nothing && error("Identity values must be compile-time constants")
-        identity_vals = collect(something(c))
+        error("reduce() identities must be a tuple of compile-time constants")
     end
 
-    # Get shapes and types from the first tile (all should share the same shape)
+    # Get shapes from the first tile
     input_shape = tile_tvs[1].shape
     isempty(input_shape) && error("Cannot reduce scalar tile")
+
+    # ReduceOp removes the dimension; we'll reshape after to reintroduce it as size 1
     reduced_shape = Int[input_shape[i] for i in eachindex(input_shape) if i != axis + 1]
 
-    # Build per-operand types
+    # Build per-operand types and values
     elem_types = Type[]
     dtypes = TypeId[]
     reduced_tile_types = TypeId[]
@@ -671,13 +611,13 @@ function emit_reduce_multi!(ctx::CGCtx, tuple_tv::CGVal, args)
         push!(body_type_ids, scalar_tile_types[k])
     end
 
-    # Emit ReduceOp
+    # Emit ReduceOp with compiled combiner body
     results = encode_ReduceOp!(cb, reduced_tile_types, operand_values,
                                axis, identities, scalar_tile_types) do block_args
         emit_subprogram!(ctx, func, body_arg_types, block_args, body_type_ids)
     end
 
-    # Reshape results back (reintroduce reduced dimension as size 1)
+    # Julia semantics: reintroduce reduced dimension as size 1 via ReshapeOp
     output_shape = copy(input_shape)
     output_shape[axis + 1] = 1
 
@@ -690,9 +630,9 @@ function emit_reduce_multi!(ctx::CGCtx, tuple_tv::CGVal, args)
         push!(component_types, Tile{elem_types[k], Tuple(output_shape)})
     end
 
-    # Return multi-value CGVal (extracted via getfield like loop results)
+    # Always return multi-value CGVal (tuple)
     jltype = Tuple{component_types...}
-    CGVal(reshaped_values, jltype)
+    return CGVal(reshaped_values, jltype)
 end
 
 #=============================================================================#
@@ -791,18 +731,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
 end
 
 # cuda_tile.scan
+#
+# Always-tuple interface: mirrors reduce — single-operand callers wrap in
+# 1-tuples and unwrap with [1].
 @eval Intrinsics begin
     """
-        scan(tile, axis_val, f, identity, reverse)
+        scan(tiles::Tuple{Tile...}, Val(axis), f, identities::Tuple, reverse=false) -> Tuple{Tile...}
 
-    Parallel prefix scan along specified dimension.
-    f is any binary function (e.g., +, max, or a lambda).
-    reverse=false for forward scan, true for reverse scan.
+    Parallel prefix scan along a 0-indexed axis using combiner `f` with
+    per-operand identity values. Always accepts and returns tuples of tiles;
+    single-operand callers wrap in 1-tuples and unwrap with `[1]`.
+    `reverse=true` for a reverse (suffix) scan.
     Compiled to cuda_tile.scan.
     """
-    @noinline function scan(tile::Tile{T, S}, ::Val{axis}, f, identity, reverse::Bool=false) where {T, S, axis}
-        # Scan preserves shape - result has same dimensions as input
-        Tile{T, S}()
+    @noinline function scan(tiles::Tuple{Tile{T, S}}, ::Val{axis}, f,
+                            identities::Tuple{Any}, reverse::Bool=false) where {T, S, axis}
+        (Tile{T, S}(),)
     end
 end
 
@@ -810,18 +754,37 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # Get input tile
-    input_tv = emit_value!(ctx, args[1])
-    input_tv === nothing && error("Cannot resolve input tile for scan")
+    # Always-tuple: extract tile CGVals from the tuple argument
+    first_tv = emit_value!(ctx, args[1])
+    first_tv === nothing && error("Cannot resolve input for scan")
+
+    if first_tv.tuple !== nothing
+        tile_tvs = CGVal[let tv = emit_value!(ctx, ref)
+            tv === nothing && error("Cannot resolve tile operand in scan")
+            tv
+        end for ref in first_tv.tuple]
+    else
+        error("scan() requires a tuple of tiles (got $(first_tv.jltype))")
+    end
+    N = length(tile_tvs)
 
     # Get scan axis
     axis = @something get_constant(ctx, args[2]) error("Scan axis must be a compile-time constant")
 
-    # Resolve function: get the actual Julia function object
+    # Resolve combiner function
     func = resolve_function(ctx, args[3])
 
-    # Get identity value
-    identity_val = @something get_constant(ctx, args[4]) error("Scan identity must be a compile-time constant")
+    # Resolve identity values from the identities tuple
+    id_tv = emit_value!(ctx, args[4])
+    id_tv === nothing && error("Cannot resolve identity tuple for scan")
+    identity_vals = if id_tv.tuple !== nothing
+        Any[something(something(emit_value!(ctx, ref)).constant)
+            for ref in id_tv.tuple]
+    elseif id_tv.constant !== nothing
+        collect(Any, something(id_tv.constant))
+    else
+        error("scan() identities must be a tuple of compile-time constants")
+    end
 
     # Get reverse flag (optional, defaults to false)
     reverse = false
@@ -830,33 +793,56 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.scan), args)
         reverse = reverse_val === true
     end
 
-    # Get element type and shapes
-    input_type = unwrap_type(input_tv.jltype)
-    elem_type = input_type <: Tile ? input_type.parameters[1] : input_type
-    input_shape = input_tv.shape
+    # Get shapes from the first tile
+    input_shape = tile_tvs[1].shape
+    isempty(input_shape) && error("Cannot scan scalar tile")
 
     # For scan, output shape is same as input shape
     output_shape = copy(input_shape)
 
-    dtype = julia_to_tile_dtype!(tt, elem_type)
+    # Build per-operand types and values
+    elem_types = Type[]
+    dtypes = TypeId[]
+    output_tile_types = TypeId[]
+    scalar_tile_types = TypeId[]
+    operand_values = Value[]
+    identities = IdentityVal[]
 
-    # Output tile type (same shape as input)
-    output_tile_type = tile_type!(tt, dtype, output_shape)
-
-    # Scalar type for scan body (0D tile)
-    scalar_tile_type = tile_type!(tt, dtype, Int[])
-
-    # Create identity value
-    identity = make_identity_val(identity_val, dtype, elem_type)
-
-    # Emit ScanOp with compiled combiner body
-    results = encode_ScanOp!(cb, [output_tile_type], [input_tv.v], axis, reverse, [identity], [scalar_tile_type]) do block_args
-        emit_subprogram!(ctx, func,
-                         [elem_type, elem_type],
-                         block_args, [scalar_tile_type, scalar_tile_type])
+    for (k, tv) in enumerate(tile_tvs)
+        itype = unwrap_type(tv.jltype)
+        etype = itype.parameters[1]
+        push!(elem_types, etype)
+        dtype = julia_to_tile_dtype!(tt, etype)
+        push!(dtypes, dtype)
+        push!(output_tile_types, tile_type!(tt, dtype, output_shape))
+        push!(scalar_tile_types, tile_type!(tt, dtype, Int[]))
+        push!(operand_values, tv.v::Value)
+        push!(identities, make_identity_val(identity_vals[k], dtype, etype))
     end
 
-    CGVal(results[1], output_tile_type, Tile{elem_type, Tuple(output_shape)}, output_shape)
+    # Body arg types: for each operand, (acc_type, elem_type) interleaved
+    body_arg_types = Type[]
+    body_type_ids = TypeId[]
+    for k in 1:N
+        push!(body_arg_types, elem_types[k])
+        push!(body_arg_types, elem_types[k])
+        push!(body_type_ids, scalar_tile_types[k])
+        push!(body_type_ids, scalar_tile_types[k])
+    end
+
+    # Emit ScanOp with compiled combiner body
+    results = encode_ScanOp!(cb, output_tile_types, operand_values,
+                             axis, reverse, identities, scalar_tile_types) do block_args
+        emit_subprogram!(ctx, func, body_arg_types, block_args, body_type_ids)
+    end
+
+    # Always return multi-value CGVal (tuple)
+    component_types = Type[]
+    for k in 1:N
+        push!(component_types, Tile{elem_types[k], Tuple(output_shape)})
+    end
+    jltype = Tuple{component_types...}
+    return CGVal(results, jltype)
 end
 
 # cuda_tile.select

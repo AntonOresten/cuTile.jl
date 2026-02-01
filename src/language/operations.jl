@@ -535,7 +535,7 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
 ```
 """
 @inline function Base.reduce(f, tile::Tile{T,S}; dims::Integer, init) where {T<:Number, S}
-    Intrinsics.reduce(tile, Val(dims - 1), f, T(init))
+    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
 end
 
 
@@ -583,7 +583,7 @@ Logical OR reduction along the specified axis (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.any(tile::Tile{Bool,S}; dims::Integer) where {S} =
-    Intrinsics.reduce(tile, Val(dims - 1), |, false)
+    Intrinsics.reduce((tile,), Val(dims - 1), |, (false,))[1]
 
 """
     all(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
@@ -592,7 +592,7 @@ Logical AND reduction along the specified axis (1-indexed).
 Reduced dimensions become size 1.
 """
 @inline Base.all(tile::Tile{Bool,S}; dims::Integer) where {S} =
-    Intrinsics.reduce(tile, Val(dims - 1), &, true)
+    Intrinsics.reduce((tile,), Val(dims - 1), &, (true,))[1]
 
 """
     count(tile::Tile{Bool,S}; dims) -> Tile{Int32, reduced_shape}
@@ -671,7 +671,7 @@ end
 
 # Single-dim dispatch
 @inline _tile_reduce(f, tile::Tile{T}, dims::Integer, init) where {T} =
-    Intrinsics.reduce(tile, Val(dims - 1), f, T(init))
+    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
 
 # Multi-dim reduction: chain single-dim reductions.
 # Since reduced dims become size 1 (not removed), axis indices stay valid.
@@ -679,11 +679,11 @@ end
 # Multi-dim reduction: chain single-dim reductions.
 # Since reduced dims become size 1 (not removed), axis indices stay valid.
 @inline function _reduce_multi(f, tile, dims::Tuple{Int, Vararg}, init)
-    tile = Intrinsics.reduce(tile, Val(first(dims) - 1), f, init)
+    tile = Intrinsics.reduce((tile,), Val(first(dims) - 1), f, (init,))[1]
     _reduce_multi(f, tile, Base.tail(dims), init)
 end
 @inline function _reduce_multi(f, tile, dims::Tuple{Int}, init)
-    Intrinsics.reduce(tile, Val(first(dims) - 1), f, init)
+    Intrinsics.reduce((tile,), Val(first(dims) - 1), f, (init,))[1]
 end
 
 """
@@ -721,7 +721,7 @@ Supported functions: `+`, `*`, `max`, `min`.
 """
 @inline function Base.accumulate(f, tile::Tile{T,S}; dims::Integer,
                                  init, rev::Bool=false) where {T<:Number, S}
-    Intrinsics.scan(tile, Val(dims - 1), f, T(init), rev)
+    Intrinsics.scan((tile,), Val(dims - 1), f, (T(init),), rev)[1]
 end
 
 """

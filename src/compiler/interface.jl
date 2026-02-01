@@ -124,12 +124,8 @@ function _infer_subprogram(interp::cuTileInterpreter, @nospecialize(f),
 
     # Build body arg types: [f_type, T₁, T₁, T₂, T₂, ...] for each operand
     body_argtypes = Any[f_type]
-    if tile_type <: Tile
-        # Single-operand reduce/scan: f(acc, elem)
-        T = tile_type.parameters[1]
-        push!(body_argtypes, T, T)
-    elseif tile_type <: Tuple && all(p -> p <: Tile, tile_type.parameters)
-        # Multi-operand reduce: f(acc₁, elem₁, acc₂, elem₂, ...)
+    if tile_type <: Tuple && all(p -> p <: Tile, tile_type.parameters)
+        # always-tuple interface — Tuple{Tile{T1,S1}, ...}
         for p in tile_type.parameters
             T = p.parameters[1]
             push!(body_argtypes, T, T)
