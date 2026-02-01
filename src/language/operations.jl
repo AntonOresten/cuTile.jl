@@ -122,18 +122,7 @@ end
     Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
 end
 
-"""
-    store(arr::TileArray, index, tile::Tile; latency=nothing, allow_tma=true) -> Tile
-
-Store a tile to a TileArray at the given index. Index is 1-indexed.
-Returns the stored tile (enables chaining and helps constant folding).
-
-# Optimization Hints
-- `latency`: Optional latency hint (1-10), or nothing for compiler default
-- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
-"""
 # Auto-reshape tile to match target array rank for store.
-# Generalizes the old 0D→1D reshape: any excess singleton dims are removed.
 @inline function _reshape_for_store(tile::Tile{T,Shape}, ::Val{N}) where {T, Shape, N}
     length(Shape) <= N && return tile
     new_shape = _store_shape(Val(Shape), Val(N))
@@ -156,6 +145,16 @@ end
     return :($kept)
 end
 
+"""
+    store(arr::TileArray, index, tile::Tile; latency=nothing, allow_tma=true) -> Tile
+
+Store a tile to a TileArray at the given index. Index is 1-indexed.
+Returns the stored tile (enables chaining and helps constant folding).
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+"""
 @inline function store(arr::TileArray{T,N}, index, tile::Tile{T, Shape};
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Bool=true) where {T, N, Shape}
