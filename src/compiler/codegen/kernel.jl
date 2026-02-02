@@ -237,7 +237,6 @@ the yielded result values.
 - `block_args`: IR `Value`s from the enclosing region (e.g., `[acc, elem]`)
 - `block_type_ids`: `TypeId`s corresponding to each block arg
 
-The function's first argument (the function singleton itself) is treated as a ghost.
 A `YieldOp` is emitted with the return value(s).
 """
 function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
@@ -262,29 +261,42 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)
 
-    # 4. Map arguments: Argument(1) = function singleton (ghost),
-    #    Argument(2..N+1) = block_args[1..N]
-    sub_ctx[Argument(1)] = ghost_value(sci.argtypes[1])
+    # 4. Map arguments dynamically: ghost args get ghost_value, non-ghost args
+    #    consume block_args sequentially.
+    n_argtypes = length(sci.argtypes)
+    block_idx = 1  # cursor into block_args
+
     if mi.def.isva
-        # Varargs: last argument in the compiled method is a Tuple packing the
-        # trailing positional args.  Map fixed args 1:1, then pack the rest
-        # into a tuple CGVal so getfield(tuple, i) resolves to block_args[i].
-        n_fixed = length(sci.argtypes) - 2   # excluding ghost + varargs tuple
-        for i in 1:n_fixed
-            sub_ctx[Argument(i + 1)] = CGVal(block_args[i], block_type_ids[i], arg_types[i])
+        # Varargs: fixed argtypes are 1:n_argtypes-1, last is the varargs tuple.
+        # Map fixed args (ghost or non-ghost), then pack remaining block_args
+        # into a tuple CGVal for the varargs argument.
+        for i in 1:(n_argtypes - 1)
+            argtype = sci.argtypes[i]
+            if is_ghost_type(unwrap_type(argtype))
+                sub_ctx[Argument(i)] = ghost_value(argtype)
+            else
+                sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], arg_types[block_idx])
+                block_idx += 1
+            end
         end
         # Pack remaining block_args into a virtual tuple for the varargs argument
-        va_offset = n_fixed + length(sci.argtypes)  # high indices to avoid collision
+        va_offset = n_argtypes + length(block_args)  # high indices to avoid collision
         tuple_components = Any[]
-        for (j, i) in enumerate((n_fixed + 1):length(block_args))
-            sub_ctx[Argument(va_offset + j)] = CGVal(block_args[i], block_type_ids[i], arg_types[i])
-            push!(tuple_components, Argument(va_offset + j))
+        for j in block_idx:length(block_args)
+            sub_ctx[Argument(va_offset + j - block_idx + 1)] = CGVal(block_args[j], block_type_ids[j], arg_types[j])
+            push!(tuple_components, Argument(va_offset + j - block_idx + 1))
         end
         constants = Vector{Any}(fill(nothing, length(tuple_components)))
-        sub_ctx[Argument(length(sci.argtypes))] = tuple_value(sci.argtypes[end], tuple_components, constants)
+        sub_ctx[Argument(n_argtypes)] = tuple_value(sci.argtypes[end], tuple_components, constants)
     else
-        for (i, (barg, btype, jltype)) in enumerate(zip(block_args, block_type_ids, arg_types))
-            sub_ctx[Argument(i + 1)] = CGVal(barg, btype, jltype)
+        for i in 1:n_argtypes
+            argtype = sci.argtypes[i]
+            if is_ghost_type(unwrap_type(argtype))
+                sub_ctx[Argument(i)] = ghost_value(argtype)
+            else
+                sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], arg_types[block_idx])
+                block_idx += 1
+            end
         end
     end
 
