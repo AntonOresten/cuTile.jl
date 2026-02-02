@@ -36,6 +36,7 @@
 @overlay Base.:*(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.mulf(x, y)
 @overlay Base.:/(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.divf(x, y)
 @overlay Base.:-(x::ScalarFloat) = Intrinsics.negf(x)
+@overlay Base.:^(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.pow(x, y)
 
 # comparison (integer)
 @overlay Base.:(==)(x::T, y::T) where {T <: ScalarInt} = Intrinsics.cmpi(x, y, CmpEqual, SignednessSigned)

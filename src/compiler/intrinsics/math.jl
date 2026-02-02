@@ -153,20 +153,11 @@ end
 # cuda_tile.pow
 @eval Intrinsics begin
     """Element-wise power. Compiled to cuda_tile.pow."""
+    @noinline pow(x::T, y::T) where {T<:AbstractFloat} = (donotdelete(x, y); compilerbarrier(:const, x))
     @noinline pow(a::Tile{T, S}, b::Tile{T, S}) where {T<:AbstractFloat, S} = (donotdelete(a, b); Tile{T, S}())
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pow), args)
-    cb = ctx.cb
-    tt = ctx.tt
-
-    lhs = emit_value!(ctx, args[1])
-    rhs = emit_value!(ctx, args[2])
-
-    (lhs === nothing || rhs === nothing) && error("Cannot resolve operands for pow")
-
-    result_v = encode_PowOp!(cb, lhs.type_id, lhs.v, rhs.v)
-
-    CGVal(result_v, lhs.type_id, lhs.jltype, lhs.shape)
+    emit_binop!(ctx, args, encode_PowOp!)
 end
 
 # cuda_tile.remf

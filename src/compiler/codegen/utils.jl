@@ -9,15 +9,46 @@
 """
     CGVal
 
-Represents a value during Tile IR code generation, bundling the IR value
-with its type information and metadata.
+Unified value representation during Tile IR codegen (analogous to `jl_cgval_t` in the
+Julia compiler). Every SSA value in the IR being compiled maps to a CGVal.
 
-Similar to Julia compiler's `jl_cgval_t`, this provides a unified representation
-for all values flowing through codegen. A CGVal can be either:
-1. A concrete SSA value (v::Value)
-2. A multi-value result from control flow ops (v::Vector{Value})
-3. A lazy argument reference chain (v is nothing, arg_ref tracks the access path)
-4. A ghost value (v is nothing, zero-size singleton)
+## Variants
+
+A CGVal takes one of four forms, distinguished by field states:
+
+| Variant              | `v`              | `type_id`    | `arg_ref`      | Notes                                          |
+|:---------------------|:-----------------|:-------------|:---------------|:-----------------------------------------------|
+| Concrete SSA value   | `Value`          | `TypeId`     | `nothing`      | Normal runtime value                           |
+| Multi-value result   | `Vector{Value}`  | `nothing`    | `nothing`      | From loop/if ops; extracted via `getfield`      |
+| Lazy argument ref    | `nothing`        | `nothing`    | `(idx, chain)` | Deferred field access into destructured args   |
+| Ghost value          | `nothing`        | `TypeId(-1)` | `nothing`      | Zero-size type, compile-time only              |
+
+## Dual-level type representation
+
+CGVal deliberately separates **Julia-level type information** (`jltype`) from **IR-level
+representation** (`shape`, `type_id`, `v`). `jltype` drives dispatch during interpretation
+(determining which overlay methods are selected), while `shape`/`type_id`/`v` describe the
+actual Tile IR value being compiled. Normally these agree — `shape == extract_tile_shape(jltype)`
+— but they can be independently controlled when the interpretation requires a different
+Julia type than what the IR carries.
+
+The `to_scalar`/`from_scalar` pair is the primary use of this flexibility today:
+
+- **`to_scalar`**: changes `jltype` from `Tile{T,S}` to scalar `T` while keeping the
+  IR-side `shape`, `type_id`, and `v` unchanged. This lets the value flow through
+  Julia's scalar overlay dispatch (e.g., `abs(::Float32)`) while the IR still operates on
+  the shaped tile.
+
+- **`from_scalar`**: restores `jltype` back to `Tile{T,S}`, re-aligning the two levels.
+
+This same mechanism could be used in other contexts where the Julia dispatch type needs to
+diverge from the underlying IR type (e.g., broadcasting semantics, type promotion views).
+
+## Auxiliary fields
+
+- `constant`: `Some(x)` for compile-time constants (ghost `Constant{T,V}` types), `nothing`
+  otherwise.
+- `tuple`: component refs (`SSAValue`s etc.) for tuple values used by `cat()` and similar.
 """
 struct CGVal
     v::Union{Value, Vector{Value}, Nothing}  # Single value, multi-value, or nothing

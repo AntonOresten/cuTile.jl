@@ -7,10 +7,13 @@ public rsqrt
 
 # unary
 rsqrt(x::T) where {T <: AbstractFloat} = Intrinsics.rsqrt(x)
-for fn in (:abs, :ceil, :floor, :exp, :exp2, :log, :log2, :sqrt,
+for fn in (:ceil, :floor, :exp, :exp2, :log, :log2, :sqrt,
            :sin, :cos, :tan, :sinh, :cosh, :tanh)
     @eval @overlay Base.$fn(x::T) where {T <: ScalarFloat} = Intrinsics.$fn(x)
 end
+
+@overlay Base.abs(x::T) where {T <: ScalarFloat} = Intrinsics.absf(x)
+@overlay Base.abs(x::T) where {T <: Signed} = Intrinsics.absi(x)
 
 @overlay Base.fma(x::T, y::T, z::T) where {T <: ScalarFloat} = Intrinsics.fma(x, y, z)
 

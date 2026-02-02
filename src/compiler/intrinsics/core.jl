@@ -844,4 +844,30 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.select), args)
     CGVal(result, x_tv.type_id, x_tv.jltype, x_tv.shape)
 end
 
+# cuda_tile.to_scalar / cuda_tile.from_scalar
+# These are codegen-only reinterpret intrinsics for map(f, tile).
+# to_scalar: jltype becomes scalar T (for overlay dispatch), but IR value stays shaped.
+# from_scalar: restores jltype to Tile{T, S}.
+@eval Intrinsics begin
+    @noinline to_scalar(tile::Tile{T, S}) where {T, S} = (donotdelete(tile); compilerbarrier(:const, T(0)))
+    @noinline from_scalar(x::T, ::Val{S}) where {T, S} = (donotdelete(x); Tile{T, S}())
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.to_scalar), args)
+    tv = emit_value!(ctx, args[1])
+    tv === nothing && error("Cannot resolve tile for to_scalar")
+    T = unwrap_type(tv.jltype).parameters[1]
+    # Reinterpret: jltype becomes scalar T for overlay dispatch.
+    # The IR-side shape/type_id/Value stay shaped.
+    CGVal(tv.v, tv.type_id, T, tv.shape, nothing, nothing, nothing)
+end
+
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.from_scalar), args)
+    tv = emit_value!(ctx, args[1])
+    tv === nothing && error("Cannot resolve scalar for from_scalar")
+    shape_val = @something get_constant(ctx, args[2]) error("from_scalar shape must be constant")
+    T = unwrap_type(tv.jltype)
+    CGVal(tv.v, tv.type_id, Tile{T, shape_val}, tv.shape, nothing, nothing, nothing)
+end
+
 # TODO: cuda_tile.unpack

@@ -601,6 +601,60 @@
             end
         end
 
+        @testset "map" begin
+            # map(abs, tile) should emit AbsFOp with correct shaped type
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "absf"
+                    Base.donotdelete(map(abs, tile))
+                    return
+                end
+            end
+
+            # map(x -> x * x, tile) should emit MulFOp
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "mulf"
+                    Base.donotdelete(map(x -> x * x, tile))
+                    return
+                end
+            end
+
+            # mapreduce(abs, +, tile) should emit AbsFOp then ReduceOp
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "absf"
+                    @check "reduce"
+                    @check "addf"
+                    Base.donotdelete(mapreduce(abs, +, tile; dims=2, init=0.0f0))
+                    return
+                end
+            end
+
+            # mapreduce(x -> x * x, +, tile) should emit MulFOp then ReduceOp
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (4, 16))
+                    @check "mulf"
+                    @check "reduce"
+                    @check "addf"
+                    Base.donotdelete(mapreduce(x -> x * x, +, tile; dims=2, init=0.0f0))
+                    return
+                end
+            end
+        end
+
         @testset "select" begin
             @test @filecheck begin
                 @check_label "entry"

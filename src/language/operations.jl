@@ -527,7 +527,24 @@ result = ct.astype(acc, ct.TFloat32)  # Convert to TF32 for tensor cores
 =============================================================================#
 
 """
+    map(f, tile::Tile{T,S}) -> Tile{T,S}
+
+Apply a type-preserving function `f` element-wise to each element of a tile.
+The function `f` must be a zero-size callable (singleton or capture-free lambda)
+and must return the same element type `T`.
+
+# Examples
+```julia
+result = map(abs, tile)           # Element-wise absolute value
+result = map(x -> x * x, tile)   # Element-wise square
+```
+"""
+@inline Base.map(f, tile::Tile{T,S}) where {T, S} =
+    Intrinsics.from_scalar(f(Intrinsics.to_scalar(tile)), Val(S))
+
+"""
     mapreduce(identity, f, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
+    mapreduce(f, op, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
     mapreduce(identity, f, tile1, tile2, ...; dims, init) -> Tuple{Tile...}
 
 Reduce one or more tiles along `dims` using binary function `f`.
@@ -538,11 +555,14 @@ The single-tile form reduces a single tile along `dims` with identity element
 a tuple of updated accumulators. Each tile requires a corresponding entry in the
 `init` tuple.
 
-Only `identity` is supported as the map function.
+When a non-identity map function is provided, it is applied element-wise via
+`map` before reduction. The map function must be type-preserving.
 
 # Examples
 ```julia
 sums = mapreduce(identity, +, tile; dims=2, init=zero(Float32))
+sum_of_squares = mapreduce(x -> x * x, +, tile; dims=2, init=zero(Float32))
+sum_of_abs = mapreduce(abs, +, tile; dims=2, init=zero(Float32))
 
 # Simultaneous reduction of two tiles
 vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
@@ -552,6 +572,11 @@ vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
 @inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
                                 dims::Integer, init) where {T<:Number, S}
     Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
+end
+
+@inline function Base.mapreduce(f, op, tile::Tile{T,S};
+                                dims::Integer, init) where {T<:Number, S}
+    reduce(op, map(f, tile); dims, init)
 end
 
 @inline function Base.mapreduce(::typeof(identity), f,

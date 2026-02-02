@@ -29,7 +29,24 @@ function emit_binop!(ctx::CGCtx, args, encoder::Function; kwargs...)
         rhs_type = unwrap_type(rhs_tv.jltype)
         lhs_type === rhs_type || error("Binary op type mismatch: lhs type $lhs_type != rhs type $rhs_type")
         elem_type = lhs_type
-        result_shape = Int[]
+
+        # Shape propagation: scalar Julia values may carry an IR-side shape
+        # (via to_scalar). Broadcast shapeless operands (constants) to match.
+        if !isempty(lhs_tv.shape) || !isempty(rhs_tv.shape)
+            result_shape = !isempty(lhs_tv.shape) ? lhs_tv.shape : rhs_tv.shape
+            dtype = julia_to_tile_dtype!(tt, elem_type)
+            if isempty(lhs_tv.shape)
+                bv = broadcast_tile_to_shape!(cb, tt, lhs_tv, result_shape, dtype)
+                lhs_tv = CGVal(bv, tile_type!(tt, dtype, result_shape), elem_type,
+                               result_shape, nothing, lhs_tv.constant, nothing)
+            elseif isempty(rhs_tv.shape)
+                bv = broadcast_tile_to_shape!(cb, tt, rhs_tv, result_shape, dtype)
+                rhs_tv = CGVal(bv, tile_type!(tt, dtype, result_shape), elem_type,
+                               result_shape, nothing, rhs_tv.constant, nothing)
+            end
+        else
+            result_shape = Int[]
+        end
         result_jltype = elem_type
     else
         error("Mixed tile/scalar operations should be handled at intrinsic level via Tile() and broadcast_to()")
@@ -57,7 +74,7 @@ function emit_unop!(ctx::CGCtx, args, encoder::Function; kwargs...)
         result_jltype = Tile{elem_type, Tuple(result_shape)}
     else
         elem_type = unwrap_type(source.jltype)
-        result_shape = Int[]
+        result_shape = source.shape  # Propagate IR-side shape from to_scalar
         result_jltype = elem_type
     end
 
