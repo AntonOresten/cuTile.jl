@@ -110,20 +110,25 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 
 ## Supported Operations
 
+cuTile.jl aims to expose as much functionality as possible through Julia-native constructs
+(`+`, `sum`, `reshape`, `broadcast`, etc.) rather than cuTile-specific functions. Operations
+prefixed with `ct.` are cuTile intrinsics with no direct Julia equivalent; everything else
+uses standard Julia syntax and is overlaid on `Base`.
+
 ### Memory
 | Operation | Description |
 |-----------|-------------|
-| `load(arr, index, shape)` | Load a tile from array |
-| `store(arr, index, tile)` | Store a tile to array |
-| `gather(arr, indices)` | Gather elements by index tile |
-| `scatter(arr, indices, tile)` | Scatter elements by index tile |
+| `ct.load(arr, index, shape)` | Load a tile from array |
+| `ct.store(arr, index, tile)` | Store a tile to array |
+| `ct.gather(arr, indices)` | Gather elements by index tile |
+| `ct.scatter(arr, indices, tile)` | Scatter elements by index tile |
 
 ### Grid
 | Operation | Description |
 |-----------|-------------|
-| `bid(axis)` | Block ID (1=x, 2=y, 3=z) |
-| `num_blocks(axis)` | Grid size along axis |
-| `num_tiles(arr, axis, shape)` | Number of tiles along axis |
+| `ct.bid(axis)` | Block ID (1=x, 2=y, 3=z) |
+| `ct.num_blocks(axis)` | Grid size along axis |
+| `ct.num_tiles(arr, axis, shape)` | Number of tiles along axis |
 
 ### Arithmetic
 | Operation | Description |
@@ -135,19 +140,19 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Construction
 | Operation | Description |
 |-----------|-------------|
-| `zeros(shape, T)` | Zero-filled tile |
-| `full(shape, value, T)` | Constant-filled tile |
-| `arange(shape, T)` | Sequence `[1, 2, 3, ...]` |
+| `ct.zeros(shape, T)` | Zero-filled tile |
+| `ct.full(shape, value, T)` | Constant-filled tile |
+| `ct.arange(shape, T)` | Sequence `[1, 2, 3, ...]` |
 
 ### Shape
 | Operation | Description |
 |-----------|-------------|
-| `broadcast_to(tile, shape)` | Broadcast to target shape |
-| `transpose(tile)` | Transpose 2D tile |
+| `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
+| `ct.transpose(tile)` | Transpose 2D tile |
 | `reshape(tile, shape)` | Reshape (same element count) |
-| `permute(tile, perm)` | Permute dimensions |
-| `extract(tile, index, shape)` | Extract sub-tile |
-| `cat((a, b), axis)` | Concatenate tiles |
+| `ct.permute(tile, perm)` | Permute dimensions |
+| `ct.extract(tile, index, shape)` | Extract sub-tile |
+| `ct.cat((a, b), axis)` | Concatenate tiles |
 | `dropdims(tile; dims)` | Remove singleton dimensions |
 
 ### Matrix
@@ -198,12 +203,12 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 |-----------|-------------|
 | `.<`, `.>`, `.<=`, `.>=` | Element-wise comparisons (return `Tile{Bool}`) |
 | `.==`, `.!=` | Element-wise equality |
-| `where(cond, x, y)` | Conditional selection |
+| `ifelse.(cond, x, y)` | Conditional selection |
 
 ### Type Conversion
 | Operation | Description |
 |-----------|-------------|
-| `astype(tile, T)` | Convert element type |
+| `ct.astype(tile, T)` | Convert element type |
 | `convert(Tile{T}, tile)` | Julia-style conversion |
 
 ### Integer Arithmetic
@@ -217,9 +222,9 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Atomics
 | Operation | Description |
 |-----------|-------------|
-| `atomic_cas(arr, idx, expected, desired)` | Compare-and-swap |
-| `atomic_xchg(arr, idx, val)` | Exchange |
-| `atomic_add(arr, idx, val)` | Atomic add |
+| `ct.atomic_cas(arr, idx, expected, desired)` | Compare-and-swap |
+| `ct.atomic_xchg(arr, idx, val)` | Exchange |
+| `ct.atomic_add(arr, idx, val)` | Atomic add |
 
 
 ## Differences from cuTile Python
