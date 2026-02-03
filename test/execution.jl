@@ -2980,3 +2980,57 @@ end
 
 end # invalidations
 
+@testset "reflection macros" begin
+    function reflect_vadd(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                          c::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        ct.store(c, pid, tile_a + tile_b)
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    # @device_code_tiled: check Tile IR output and verify execution
+    @test @filecheck begin
+        @check "entry @reflect_vadd"
+        @check "tile<ptr<f32>>"
+        @check "get_tile_block_id"
+        @check "load_view"
+        @check "addf"
+        @check "store_view"
+        buf = IOBuffer()
+        ct.@device_code_tiled io=buf ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        String(take!(buf))
+    end
+    @test Array(c) ≈ Array(a) + Array(b)
+
+    # @device_code_structured: check StructuredIRCode output
+    @test @filecheck begin
+        @check "StructuredIRCode"
+        @check "get_tile_block_id"
+        @check "load_partition_view"
+        @check "addf"
+        @check "store_partition_view"
+        buf = IOBuffer()
+        ct.@device_code_structured io=buf ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        String(take!(buf))
+    end
+
+    # @device_code_typed: check typed Julia IR output
+    @test @filecheck begin
+        @check "// reflect_vadd"
+        @check "get_tile_block_id"
+        @check "load_partition_view"
+        @check "addf"
+        @check "store_partition_view"
+        buf = IOBuffer()
+        ct.@device_code_typed io=buf ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        String(take!(buf))
+    end
+end
+

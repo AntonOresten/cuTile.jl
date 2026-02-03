@@ -5,9 +5,12 @@
 # - emit_ir/emit_code: compilation callbacks (emit_binary/emit_function in CUDAExt)
 # - code_tiled/@code_tiled: reflection utilities
 
-export code_tiled, @code_tiled
+export code_tiled, @device_code_tiled
 
 using CompilerCaching: CacheView, @setup_caching, method_instance, typeinf!, results, get_source
+
+# Compilation hook for @device_code_* macros - intercepts compilations for reflection
+const compile_hook = Ref{Union{Nothing,Function}}(nothing)
 
 #=============================================================================
  Interpreter
@@ -263,6 +266,15 @@ end
 IR phase: run inference if needed and return structured IR.
 """
 function emit_ir(cache::CacheView, mi::Core.MethodInstance)
+    # Invoke compile hook if set (for @device_code_* reflection)
+    # Pass (f, tt) tuple to enable direct use with reflection utilities
+    if compile_hook[] !== nothing
+        ftype = mi.specTypes.parameters[1]
+        f = isdefined(ftype, :instance) ? ftype.instance : ftype
+        tt = Tuple{mi.specTypes.parameters[2:end]...}
+        compile_hook[](f, tt)
+    end
+
     # Ensure CI exists
     ci = get(cache, mi, nothing)
     if ci === nothing
@@ -348,7 +360,7 @@ end
 """
     code_typed(f, argtypes; world, kwargs...) -> Vector{Any}
 
-Return typed code for a cuTile function.. Analogous to `Base.code_typed`.
+Return typed code for a cuTile function. Analogous to `Base.code_typed`.
 """
 function code_typed(@nospecialize(f), @nospecialize(argtypes);
                     world::UInt=Base.get_world_counter(), kwargs...)
@@ -400,27 +412,101 @@ end
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_tiled(stdout, f, argtypes; kwargs...)
 
-"""
-    @code_tiled f(args...)
 
-Print the Tile IR for the kernel that would be launched by the given call.
-This is a convenience macro that extracts the function and argument types.
+#=============================================================================
+ Device code reflection macros
+=============================================================================#
+
+# Following GPUCompiler's pattern for @device_code_* macros
+function emit_hooked_compilation(inner_hook, ex...)
+    user_code = ex[end]
+    user_kwargs = ex[1:end-1]
+    quote
+        seen = Set{Tuple{Any,Any}}()
+        function outer_hook(f, tt)
+            if !in((f, tt), seen)
+                old_hook = $compile_hook[]
+                try
+                    $compile_hook[] = nothing
+                    $inner_hook(f, tt; $(map(esc, user_kwargs)...))
+                finally
+                    $compile_hook[] = old_hook
+                end
+                push!(seen, (f, tt))
+            end
+        end
+
+        try
+            $compile_hook[] = outer_hook
+            $(esc(user_code))
+        finally
+            $compile_hook[] = nothing
+        end
+
+        if isempty(seen)
+            error("no kernels executed while evaluating the given expression")
+        end
+
+        nothing
+    end
+end
+
+"""
+    @device_code_tiled [io=stdout] expression
+
+Print the Tile IR (MLIR) for all kernels compiled while evaluating the expression.
 
 # Example
 ```julia
-@code_tiled vadd_kernel(a, b, c)
+@device_code_tiled launch(vadd, grid, a, b, c)
 ```
 """
-macro code_tiled(call)
-    if !(call isa Expr && call.head === :call)
-        throw(ArgumentError("@code_tiled requires a function call expression"))
+macro device_code_tiled(ex...)
+    function hook(f, tt; io::IO=stdout, kwargs...)
+        println(io, "// $f($(join(tt.parameters, ", ")))")
+        println(io)
+        code_tiled(io, f, Tuple(tt.parameters); kwargs...)
+        println(io)
     end
-    f = call.args[1]
-    args = call.args[2:end]
-    quote
-        local f_val = $(esc(f))
-        local args_val = ($(map(esc, args)...),)
-        local argtypes = Tuple{map(typeof, args_val)...}
-        code_tiled(f_val, argtypes)
+    emit_hooked_compilation(hook, ex...)
+end
+
+"""
+    @device_code_structured [io=stdout] expression
+
+Print the StructuredIRCode for all kernels compiled while evaluating the expression.
+
+# Example
+```julia
+@device_code_structured launch(vadd, grid, a, b, c)
+```
+"""
+macro device_code_structured(ex...)
+    function hook(f, tt; io::IO=stdout, kwargs...)
+        println(io, "// $f($(join(tt.parameters, ", ")))")
+        println(io)
+        sci, _ = only(code_structured(f, Tuple(tt.parameters); kwargs...))
+        println(io, sci)
     end
+    emit_hooked_compilation(hook, ex...)
+end
+
+"""
+    @device_code_typed [io=stdout] expression
+
+Print the typed Julia IR for all kernels compiled while evaluating the expression.
+
+# Example
+```julia
+@device_code_typed launch(vadd, grid, a, b, c)
+```
+"""
+macro device_code_typed(ex...)
+    function hook(f, tt; io::IO=stdout, kwargs...)
+        println(io, "// $f($(join(tt.parameters, ", ")))")
+        println(io)
+        ci, _ = only(code_typed(f, Tuple(tt.parameters); kwargs...))
+        println(io, ci)
+    end
+    emit_hooked_compilation(hook, ex...)
 end
