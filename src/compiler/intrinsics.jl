@@ -8,6 +8,7 @@ using Base: compilerbarrier, donotdelete
 using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView
 using ..cuTile: Signedness, SignednessSigned, SignednessUnsigned
 using ..cuTile: ComparisonPredicate, CmpLessThan, CmpLessThanOrEqual, CmpGreaterThan, CmpGreaterThanOrEqual, CmpEqual, CmpNotEqual
+using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end
 
@@ -20,6 +21,14 @@ end
 #       intrinsics we disable constant folding using a `compilerbarrier(:const)`
 
 emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing
+
+# Shared helper for creating load/store optimization hints
+function create_optimization_hints(ctx::CGCtx, latency::Union{Int, Nothing}, allow_tma::Bool=true)
+    isnothing(latency) && allow_tma && return nothing
+    isnothing(latency) || 1 <= latency <= 10 || throw(ArgumentError("latency must be between 1 and 10, got $latency"))
+    hints = LoadStoreHints(; latency, allow_tma)
+    return make_load_store_hints(ctx.sm_arch, hints)
+end
 
 include("intrinsics/core.jl")
 include("intrinsics/conversions.jl")

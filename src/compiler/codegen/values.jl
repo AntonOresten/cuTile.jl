@@ -8,7 +8,7 @@ Emit/resolve a value reference to a CGVal using multiple dispatch.
 function emit_value!(ctx::CGCtx, ssa::SSAValue)
     tv = ctx[ssa]
     tv !== nothing && return tv
-    error("SSAValue %$(ssa.id) not found in context")
+    throw(IRError("SSAValue %$(ssa.id) not found in context"))
 end
 emit_value!(ctx::CGCtx, arg::Argument) = ctx[arg]
 emit_value!(ctx::CGCtx, slot::SlotNumber) = ctx[slot]
@@ -112,15 +112,14 @@ function emit_value!(ctx::CGCtx, @nospecialize(val))
     if T <: Constant && length(T.parameters) >= 2
         return ghost_value(T, T.parameters[2])
     end
-    @warn "Unhandled value type in emit_value!" typeof(val)
-    nothing
+    throw(IRError("Unhandled value type in emit_value!: $(typeof(val))"))
 end
 
 
 ## constants
 
 function emit_constant!(ctx::CGCtx, @nospecialize(value), @nospecialize(result_type))
-    result_type_unwrapped = unwrap_type(result_type)
+    result_type_unwrapped = CC.widenconst(result_type)
 
     # Ghost types have no runtime representation
     if is_ghost_type(result_type_unwrapped)
@@ -146,11 +145,13 @@ function constant_to_bytes(@nospecialize(value), @nospecialize(T::Type))
         return collect(reinterpret(UInt8, [Int32(value)]))
     elseif T === Int64 || T === UInt64
         return collect(reinterpret(UInt8, [Int64(value)]))
+    elseif T === Float16
+        return collect(reinterpret(UInt8, [Float16(value)]))
     elseif T === Float32
         return collect(reinterpret(UInt8, [Float32(value)]))
     elseif T === Float64
         return collect(reinterpret(UInt8, [Float64(value)]))
     else
-        error("Cannot convert $T to constant bytes")
+        throw(IRError("Cannot convert $T to constant bytes"))
     end
 end

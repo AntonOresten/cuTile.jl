@@ -13,6 +13,9 @@ const CC = Core.Compiler
 
 using CUDA_Tile_jll
 
+using BFloat16s: BFloat16
+public BFloat16
+
 # Bytecode infrastructure
 include("bytecode/basic.jl")
 include("bytecode/types.jl")
@@ -23,11 +26,9 @@ include("bytecode/encodings.jl")
 include("language/types.jl")
 
 # Compiler implementation
-include("compiler/interpreter.jl")
-include("compiler/target.jl")
+include("compiler/interface.jl")
 include("compiler/codegen.jl")
 include("compiler/intrinsics.jl")
-include("compiler/reflection.jl")
 
 # Language implementation
 include("language/broadcast.jl")

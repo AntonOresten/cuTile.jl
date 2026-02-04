@@ -234,37 +234,83 @@ end
 =============================================================================#
 
 """
-    ReduceIdentity
+    IdentityVal
 
-Abstract type for reduce identity attributes.
+Abstract type for binary operation identity attributes (reduce, scan, etc.).
 """
-abstract type ReduceIdentity end
+abstract type IdentityVal end
 
 """
-    FloatIdentity(value, type_id, dtype)
+    FloatIdentityVal(value, type_id, dtype)
 
-Float identity value for reduce operations.
+Float identity value for binary operations.
 """
-struct FloatIdentity <: ReduceIdentity
+struct FloatIdentityVal <: IdentityVal
     value::Float64
     type_id::TypeId
     dtype::Type  # Float16, Float32, Float64, etc.
 end
 
 """
-    encode_tagged_float!(cb, identity::FloatIdentity)
+    IntegerIdentityVal(value, type_id, dtype)
+
+Integer identity value for binary operations.
+"""
+struct IntegerIdentityVal <: IdentityVal
+    value::UInt128  # Store as UInt128 to handle all unsigned values up to 64 bits
+    type_id::TypeId
+    dtype::Type   # Int8, Int16, Int32, Int64, UInt8, etc. (signedness inferred from dtype)
+end
+
+"""
+    encode_tagged_float!(cb, identity::FloatIdentityVal)
 
 Encode a tagged float attribute for reduce identity.
 Format: tag(Float=0x02) + typeid + ap_int(value_bits)
 """
-function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentity)
+function encode_tagged_float!(cb::CodeBuilder, identity::FloatIdentityVal)
     # Tag for Float attribute
     push!(cb.buf, 0x02)
     # Type ID
     encode_typeid!(cb.buf, identity.type_id)
     # Value as bits (using signed varint encoding for values <= 64 bits)
     bits = float_to_bits(identity.value, identity.dtype)
-    encode_signed_varint!(cb.buf, bits)
+    encode_varint!(cb.buf, bits)
+end
+
+"""
+    encode_tagged_int!(cb, identity::IntegerIdentityVal)
+
+Encode a tagged integer identity attribute.
+Format: tag(Int=0x01) + typeid + ap_int(value)
+"""
+function encode_tagged_int!(cb::CodeBuilder, identity::IntegerIdentityVal)
+    # Tag for Int attribute
+    push!(cb.buf, 0x01)
+    # Type ID
+    encode_typeid!(cb.buf, identity.type_id)
+    # Mask value to correct bit width and apply zigzag encoding for signed types
+    masked_value = mask_to_width(identity.value, identity.dtype)
+    encode_varint!(cb.buf, masked_value) # masked_value are already zigzag encoded
+end
+
+"""
+    mask_to_width(value, dtype)
+
+Mask a UInt128 value to the correct bit width for the given type.
+Applies zigzag encoding for signed types.
+"""
+function mask_to_width(value::UInt128, ::Type{T}) where T <: Integer
+    bits = sizeof(T) * 8
+    mask = (UInt128(1) << bits) - 1
+    masked = value & mask
+    U = unsigned(T)
+    unsigned_masked = U(masked)
+    if T <: Signed # do zig-zag encoding
+        U((unsigned_masked << 1) ⊻ (unsigned_masked >>> (bits - 1)))
+    else
+        unsigned_masked
+    end
 end
 
 """
@@ -274,6 +320,10 @@ Convert a float value to its bit representation.
 """
 function float_to_bits(value::Float64, ::Type{Float16})
     reinterpret(UInt16, Float16(value))
+end
+
+function float_to_bits(value::Float64, ::Type{BFloat16})
+    reinterpret(UInt16, BFloat16(value))
 end
 
 function float_to_bits(value::Float64, ::Type{Float32})
@@ -291,27 +341,25 @@ function float_to_bits(value::Float64, ::Type{T}) where T
 end
 
 """
-    encode_signed_varint!(buf, value)
-
-Encode a signed integer as a variable-length integer.
-Uses zigzag encoding for signed values.
-"""
-function encode_signed_varint!(buf::Vector{UInt8}, value::Union{UInt16, UInt32, UInt64, Int64})
-    # For float bits, encode as unsigned varint
-    encode_varint!(buf, UInt64(value))
-end
-
-"""
     encode_identity_array!(cb, identities)
 
-Encode an array of reduce identity attributes.
+Encode an array of binary operation identity attributes.
+Dispatches on identity type to encode correctly.
 """
-function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:ReduceIdentity})
+function encode_identity_array!(cb::CodeBuilder, identities::Vector{<:IdentityVal})
     encode_varint!(cb.buf, length(identities))
     for identity in identities
-        encode_tagged_float!(cb, identity)
+        encode_identity!(cb, identity)
     end
 end
+
+"""
+    encode_identity!(cb, identity)
+
+Encode a single identity attribute, dispatching on type.
+"""
+encode_identity!(cb::CodeBuilder, identity::FloatIdentityVal) = encode_tagged_float!(cb, identity)
+encode_identity!(cb::CodeBuilder, identity::IntegerIdentityVal) = encode_tagged_int!(cb, identity)
 
 """
     BytecodeWriter
@@ -541,4 +589,132 @@ function finalize_function!(func_buf::Vector{UInt8}, cb::CodeBuilder,
     # Encode code length and append
     encode_varint!(func_buf, length(cb.buf))
     append!(func_buf, cb.buf)
+end
+
+#=============================================================================
+ Optimization Hints
+=============================================================================#
+
+"""
+    encode_tagged_value!(cb, value)
+
+Encode a value with its type tag.
+"""
+function encode_tagged_value!(buf::Vector{UInt8}, type_table::TypeTable, value::Bool)
+    push!(buf, AttributeTag.Bool)
+    push!(buf, value)
+end
+
+function encode_tagged_value!(buf::Vector{UInt8}, type_table::TypeTable, value::Integer)
+    push!(buf, AttributeTag.Integer)
+    encode_typeid!(buf, I32(type_table))
+    encode_varint!(buf, UInt32(value))
+end
+
+"""
+Optimization hints for load/store operations.
+- `latency`: Optional latency hint (1-10), or nothing for default
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+"""
+@kwdef struct LoadStoreHints
+    latency::Union{Int, Nothing} = nothing
+    allow_tma::Bool = true
+end
+
+"""
+Optimization hints for load/store operations.
+- `hints_by_arch`: List of (SM architecture, load/store hints) pairs
+"""
+struct OptimizationHints
+    hints_by_arch::Vector{Tuple{String, LoadStoreHints}}
+end
+
+function make_load_store_hints(sm_arch::Union{String, Nothing}, hints::LoadStoreHints)
+    isnothing(sm_arch) && throw(ArgumentError("sm_arch must be explicitly passed when load/store hints are present"))
+    OptimizationHints([(sm_arch, hints)])
+end
+
+function encode_opattr_optimization_hints!(cb::CodeBuilder, hints::OptimizationHints)
+    # Outer dictionary: arch -> hints_dict
+    encode_varint!(cb.buf, length(hints.hints_by_arch))
+    for (arch, load_store_hints) in hints.hints_by_arch
+        arch_id = cb.string_table[arch]
+        encode_varint!(cb.buf, arch_id.id)
+        # Encode hints as inner dictionary (tagged)
+        encode_load_store_hints_dict!(cb, load_store_hints)
+    end
+end
+
+function encode_load_store_hints_dict!(cb::CodeBuilder, hints::LoadStoreHints)
+    # Build list of (key, value) pairs for non-default hints
+    items = Tuple{String, Any}[]
+    hints.allow_tma || push!(items, ("allow_tma", false))
+    isnothing(hints.latency) || push!(items, ("latency", hints.latency))
+
+    # Encode dictionary
+    push!(cb.buf, AttributeTag.Dictionary)
+    encode_varint!(cb.buf, length(items))
+    for (key, value) in items
+        key_id = cb.string_table[key]
+        encode_varint!(cb.buf, key_id.id)
+        encode_tagged_value!(cb.buf, cb.type_table, value)
+    end
+end
+
+"""
+Kernel-level compilation hints (num_ctas, occupancy).
+Encoded as a dictionary attribute in bytecode.
+"""
+@kwdef struct EntryHints
+    num_ctas::Union{Int, Nothing} = nothing    # 1, 2, 4, 8, 16
+    occupancy::Union{Int, Nothing} = nothing   # 1-32
+end
+
+function validate_num_ctas(num_ctas::Union{Int, Nothing})
+    isnothing(num_ctas) && return
+    1 <= num_ctas <= 16 || throw(ArgumentError("num_ctas must be between 1 and 16, got $num_ctas"))
+    ispow2(num_ctas) || throw(ArgumentError("num_ctas must be a power of 2, got $num_ctas"))
+end
+
+function validate_occupancy(occupancy::Union{Int, Nothing})
+    isnothing(occupancy) && return
+    1 <= occupancy <= 32 || throw(ArgumentError("occupancy must be between 1 and 32, got $occupancy"))
+end
+
+function encode_entry_hints(writer::BytecodeWriter, sm_arch::Union{String, Nothing}, hints::EntryHints)
+    validate_num_ctas(hints.num_ctas)
+    validate_occupancy(hints.occupancy)
+
+    # Build items list (only non-nothing values)
+    items = Tuple{String, Int}[]
+    isnothing(hints.num_ctas) || push!(items, ("num_cta_in_cga", hints.num_ctas))
+    isnothing(hints.occupancy) || push!(items, ("occupancy", hints.occupancy))
+    isempty(items) && return nothing
+
+    # Use default architecture if not specified and hints are present
+    arch = @something sm_arch throw(ArgumentError("sm_arch must be specified when entry hints are present"))
+
+    buf = UInt8[]
+
+    # Start with OptimizationHints tag
+    push!(buf, AttributeTag.OptimizationHints)
+
+    # Encode as architecture-specific dictionary
+    # Format: num_archs, then for each arch: arch_id, dictionary
+    encode_varint!(buf, 1)  # 1 architecture
+
+    # Architecture string ID
+    arch_id = writer.string_table[arch]
+    encode_varint!(buf, arch_id.id)
+
+    # Encode dictionary
+    push!(buf, AttributeTag.Dictionary)
+    encode_varint!(buf, length(items))
+    for (key, value) in items
+        key_id = writer.string_table[key]
+        encode_varint!(buf, key_id.id)
+        encode_tagged_value!(buf, writer.type_table, value)
+    end
+
+    return buf
 end

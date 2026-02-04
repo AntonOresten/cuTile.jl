@@ -38,7 +38,7 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
         mean = mean .+ tx
         j += Int32(1)
     end
-    mean = ct.reduce_sum(mean, 2) / N
+    mean = sum(mean; dims=2) / N
     ct.store(Mean, bid_m, mean)
 
     # Compute variance
@@ -48,11 +48,11 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
         # Mask for valid elements
         mask = ct.broadcast_to(((j - Int32(1)) * Int32(TILE_N[]) .+ ct.arange((TILE_N[],), Int32)) .<= N, (1, TILE_N[]))
-        centered_tx = ct.where(mask, tx .- mean, ct.full((1, TILE_N[]), 0.0f0, Float32))
+        centered_tx = ifelse.(mask, tx .- mean, 0.0f0)
         var = var .+ (centered_tx .^ 2.0f0)
         j += Int32(1)
     end
-    var = ct.reduce_sum(var, 2) / N
+    var = sum(var; dims=2) / N
     rstd = 1.0f0 ./ sqrt.(var .+ eps[])
     ct.store(Rstd, bid_m, rstd)
 
@@ -60,8 +60,8 @@ function layer_norm_fwd(X::ct.TileArray{Float32, 2}, W::ct.TileArray{Float32, 1}
     j = Int32(1)
     while j <= num_tiles
         tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-        tw = ct.load(W, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
-        tb = ct.load(B, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+        tw = reshape(ct.load(W, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero), (1, TILE_N[]))
+        tb = reshape(ct.load(B, j, (TILE_N[],); padding_mode=ct.PaddingMode.Zero), (1, TILE_N[]))
         ty = (tx .- mean) .* rstd
         ty = ty .* tw .+ tb
         ct.store(Y, (bid_m, j), ty)
@@ -89,7 +89,7 @@ bid_m and j are 1-indexed (block ID and tile index).
 """
 @inline function bwd_helper(X, W, DY, bid_m, j, mean, rstd, TILE_N, N)
     tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
-    tw = ct.load(W, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
+    tw = reshape(ct.load(W, j, (TILE_N,); padding_mode=ct.PaddingMode.Zero), (1, TILE_N))
     tdy = ct.load(DY, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
     xhat = (tx .- mean) .* rstd
     wdy = tw .* tdy
@@ -100,8 +100,8 @@ bid_m and j are 1-indexed (block ID and tile index).
     global_indices = offset .+ indices
     mask = ct.broadcast_to(global_indices .<= N, (1, TILE_N))
 
-    xhat_masked = ct.where(mask, xhat, ct.full((1, TILE_N), 0.0f0, Float32))
-    wdy_masked = ct.where(mask, wdy, ct.full((1, TILE_N), 0.0f0, Float32))
+    xhat_masked = ifelse.(mask, xhat, 0.0f0)
+    wdy_masked = ifelse.(mask, wdy, 0.0f0)
 
     return tdy, xhat_masked, wdy_masked
 end
@@ -142,8 +142,8 @@ function layer_norm_bwd_dx(DX::ct.TileArray{Float32, 2}, DY::ct.TileArray{Float3
         c2 = c2 .+ wdy
         j += Int32(1)
     end
-    c1 = ct.reduce_sum(c1, 2) / N
-    c2 = ct.reduce_sum(c2, 2) / N
+    c1 = sum(c1; dims=2) / N
+    c2 = sum(c2; dims=2) / N
 
     # Second pass: compute dX
     j = Int32(1)
@@ -201,8 +201,8 @@ function layer_norm_bwd_dx_partial_dwdb(DX::ct.TileArray{Float32, 2}, DY::ct.Til
         c2 = c2 .+ wdy
         j += Int32(1)
     end
-    c1 = ct.reduce_sum(c1, 2) / N
-    c2 = ct.reduce_sum(c2, 2) / N
+    c1 = sum(c1; dims=2) / N
+    c2 = sum(c2; dims=2) / N
 
     # Second pass: compute dX and partial dW/dB
     j = Int32(1)
@@ -263,8 +263,8 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
         db = db .+ ct.load(DB, (i, bid_n), (TILE_M[], TILE_N[]); padding_mode=ct.PaddingMode.Zero)
         i += Int32(1)
     end
-    sum_dw = ct.reduce_sum(dw, 1)
-    sum_db = ct.reduce_sum(db, 1)
+    sum_dw = sum(dw; dims=1)
+    sum_db = sum(db; dims=1)
 
     ct.store(FINAL_DW, bid_n, sum_dw)
     ct.store(FINAL_DB, bid_n, sum_db)
@@ -273,149 +273,130 @@ function layer_norm_bwd_dwdb(DW::ct.TileArray{Float32, 2}, DB::ct.TileArray{Floa
 end
 
 #=============================================================================
- Test / Validation
+ Example harness
 =============================================================================#
 
-function main()
-    println("=== cuTile LayerNorm Sample ===\n")
+function prepare(; benchmark::Bool=false,
+                  M::Int=benchmark ? 4096 : 256,
+                  N::Int=benchmark ? 4096 : 256,
+                  eps::Float32=1f-5, GROUP_SIZE_M::Int=64)
+    return (;
+        # Forward inputs/outputs
+        X = -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, M, N),
+        W = CUDA.randn(Float32, N),
+        B = CUDA.randn(Float32, N),
+        Y = CuArray{Float32}(undef, M, N),
+        Mean = CuArray{Float32}(undef, M),
+        Rstd = CuArray{Float32}(undef, M),
+        # Backward inputs/outputs
+        DY = 0.1f0 .* CUDA.randn(Float32, M, N),
+        DX = CuArray{Float32}(undef, M, N),
+        DW_partial = CuArray{Float32}(undef, GROUP_SIZE_M, N),
+        DB_partial = CuArray{Float32}(undef, GROUP_SIZE_M, N),
+        Locks = CuArray{Int}(undef, GROUP_SIZE_M),
+        FINAL_DW = CuArray{Float32}(undef, N),
+        FINAL_DB = CuArray{Float32}(undef, N),
+        # Metadata
+        M, N, eps, GROUP_SIZE_M
+    )
+end
 
-    M, N = 1024, 2048
-    TILE_N = 1024
-    eps = 1f-5
+function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0)
+    (; X, W, B, Y, Mean, Rstd, DY, DX, DW_partial, DB_partial, Locks, FINAL_DW, FINAL_DB,
+       M, N, eps, GROUP_SIZE_M) = data
 
-    println("Input shape: ($M, $N), dtype: Float32, eps: $eps")
+    function run_fwd()
+        ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
+                  ct.Constant(eps), ct.Constant(TILE_N))
+    end
 
-    # Input data
-    X = -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, M, N)
-    W = CUDA.randn(Float32, N)
-    B = CUDA.randn(Float32, N)
+    function run_bwd()
+        fill!(DW_partial, 0)
+        fill!(DB_partial, 0)
+        fill!(Locks, 0)
+        ct.launch(layer_norm_bwd_dx_partial_dwdb, M, DX, DY, DW_partial, DB_partial, X, W,
+                  Mean, Rstd, Locks, ct.Constant(GROUP_SIZE_M), ct.Constant(TILE_N))
+        num_tiles_n = cld(N, TILE_N)
+        ct.launch(layer_norm_bwd_dwdb, num_tiles_n, DW_partial, DB_partial, FINAL_DW, FINAL_DB,
+                  ct.Constant(TILE_M), ct.Constant(TILE_N))
+    end
 
-    # Output buffers for forward pass
-    Y = CUDA.zeros(Float32, M, N)
-    Mean = CUDA.zeros(Float32, M)
-    Rstd = CUDA.zeros(Float32, M)
+    # Warmup
+    CUDA.@sync for _ in 1:warmup
+        run_fwd()
+        run_bwd()
+    end
 
-    # =========================================================================
-    # Forward Pass
-    # =========================================================================
-    println("\n--- Forward Pass ---")
-    ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
-              ct.Constant(eps), ct.Constant(TILE_N))
+    # Timed forward runs
+    times_fwd = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed run_fwd()
+        push!(times_fwd, t * 1000)  # ms
+    end
 
-    # Compute expected values on CPU
+    # Timed backward runs
+    times_bwd = Float64[]
+    for _ in 1:nruns
+        t = CUDA.@elapsed run_bwd()
+        push!(times_bwd, t * 1000)  # ms
+    end
+
+    return (; Y, Mean, Rstd, DX, FINAL_DW, FINAL_DB, times_fwd, times_bwd)
+end
+
+function verify(data, result)
+    (; X, W, B, DY, N, eps) = data
+
     X_cpu = Array(X)
     W_cpu = Array(W)
     B_cpu = Array(B)
+    DY_cpu = Array(DY)
 
+    # Forward verification
     expected_mean = vec(sum(X_cpu, dims=2) ./ N)
     expected_var = vec(sum((X_cpu .- expected_mean) .^ 2, dims=2) ./ N)
     expected_rstd = 1.0f0 ./ sqrt.(expected_var .+ eps)
-    normalized = (X_cpu .- expected_mean) .* expected_rstd
-    expected_Y = normalized .* W_cpu' .+ B_cpu'
+    xhat = (X_cpu .- expected_mean) .* expected_rstd
+    expected_Y = xhat .* W_cpu' .+ B_cpu'
 
-    # Verify forward pass results
-    Mean_cpu = Array(Mean)
-    Rstd_cpu = Array(Rstd)
-    Y_cpu = Array(Y)
+    @assert isapprox(expected_Y, Array(result.Y); rtol=1e-2) "Y mismatch"
 
-    atol, rtol = 1f-2, 1f-2
-    fwd_ok = isapprox(expected_mean, Mean_cpu; rtol, atol) &&
-             isapprox(expected_rstd, Rstd_cpu; rtol, atol) &&
-             isapprox(expected_Y, Y_cpu; rtol, atol)
-
-    if fwd_ok
-        println("Forward pass: PASSED")
-    else
-        println("Forward pass: FAILED")
-        isapprox(expected_mean, Mean_cpu; rtol, atol) || println("  Mean max error: $(maximum(abs.(expected_mean .- Mean_cpu)))")
-        isapprox(expected_rstd, Rstd_cpu; rtol, atol) || println("  Rstd max error: $(maximum(abs.(expected_rstd .- Rstd_cpu)))")
-        isapprox(expected_Y, Y_cpu; rtol, atol) || println("  Y max error: $(maximum(abs.(expected_Y .- Y_cpu)))")
-    end
-
-    # =========================================================================
-    # Backward Pass (Full: dX, dW, dB)
-    # =========================================================================
-    println("\n--- Backward Pass (Full: dX, dW, dB) ---")
-
-    # Upstream gradient (random for testing)
-    DY = CUDA.randn(Float32, M, N)
-    DX = CUDA.zeros(Float32, M, N)
-
-    # Parameters for partial gradient accumulation
-    GROUP_SIZE_M = 64
-    TILE_M = 32
-
-    # Partial gradient buffers and locks
-    DW_partial = CUDA.zeros(Float32, GROUP_SIZE_M, N)
-    DB_partial = CUDA.zeros(Float32, GROUP_SIZE_M, N)
-    Locks = CUDA.zeros(Int, GROUP_SIZE_M)
-
-    # Final gradient buffers
-    FINAL_DW = CUDA.zeros(Float32, N)
-    FINAL_DB = CUDA.zeros(Float32, N)
-
-    # Launch backward kernels
-    ct.launch(layer_norm_bwd_dx_partial_dwdb, M, DX, DY, DW_partial, DB_partial, X, W,
-              Mean, Rstd, Locks, ct.Constant(GROUP_SIZE_M), ct.Constant(TILE_N))
-
-    num_tiles_n = cld(N, TILE_N)
-    ct.launch(layer_norm_bwd_dwdb, num_tiles_n, DW_partial, DB_partial, FINAL_DW, FINAL_DB,
-              ct.Constant(TILE_M), ct.Constant(TILE_N))
-
-    # Compute expected gradients on CPU
-    # dX = rstd * (W * dY - c2 - x_hat * c1)
-    # where c1 = mean(x_hat * W * dY), c2 = mean(W * dY)
-    DY_cpu = Array(DY)
+    # Backward verification
     wdy = W_cpu' .* DY_cpu
-    xhat = normalized
     c1 = sum(xhat .* wdy, dims=2) ./ N
     c2 = sum(wdy, dims=2) ./ N
     expected_DX = (wdy .- (xhat .* c1 .+ c2)) .* expected_rstd
-
-    # dW = sum(dY * x_hat, dim=0) and dB = sum(dY, dim=0)
     expected_DW = vec(sum(DY_cpu .* xhat, dims=1))
     expected_DB = vec(sum(DY_cpu, dims=1))
 
-    # Verify dX
-    DX_cpu = Array(DX)
-    dx_ok = isapprox(expected_DX, DX_cpu; rtol, atol)
-    if dx_ok
-        println("  dX: PASSED")
-    else
-        max_err = maximum(abs.(expected_DX .- DX_cpu))
-        println("  dX: FAILED (max error: $max_err)")
-    end
+    @assert isapprox(expected_DX, Array(result.DX); rtol=1e-2) "dX mismatch"
+    @assert isapprox(expected_DW, Array(result.FINAL_DW); rtol=1e-2) "dW mismatch"
+    @assert isapprox(expected_DB, Array(result.FINAL_DB); rtol=1e-2) "dB mismatch"
+end
 
-    # Verify dW
-    FINAL_DW_cpu = Array(FINAL_DW)
-    dw_ok = isapprox(expected_DW, FINAL_DW_cpu; rtol, atol)
-    if dw_ok
-        println("  dW: PASSED")
-    else
-        max_err = maximum(abs.(expected_DW .- FINAL_DW_cpu))
-        println("  dW: FAILED (max error: $max_err)")
-    end
+function test_layernorm(M, N, TILE_N; TILE_M::Int=32, eps::Float32=1f-5, name=nothing)
+    name = something(name, "layernorm ($M x $N), tile_n=$TILE_N, tile_m=$TILE_M")
+    println("--- $name ---")
+    data = prepare(; M, N, eps)
+    result = run(data; TILE_N, TILE_M)
+    verify(data, result)
+    println("  fwd passed, bwd passed")
+end
 
-    # Verify dB
-    FINAL_DB_cpu = Array(FINAL_DB)
-    db_ok = isapprox(expected_DB, FINAL_DB_cpu; rtol, atol)
-    if db_ok
-        println("  dB: PASSED")
-    else
-        max_err = maximum(abs.(expected_DB .- FINAL_DB_cpu))
-        println("  dB: FAILED (max error: $max_err)")
-    end
+# No run_others for layernorm - no simple reference implementation to compare against
 
-    bwd_ok = dx_ok && dw_ok && db_ok
+#=============================================================================
+ Main
+=============================================================================#
 
-    # =========================================================================
-    # Summary
-    # =========================================================================
-    println("\n=== Summary ===")
-    println("Forward pass:        $(fwd_ok ? "PASSED" : "FAILED")")
-    println("Backward (dX/dW/dB): $(bwd_ok ? "PASSED" : "FAILED")")
+function main()
+    println("=== cuTile LayerNorm Examples (fwd+bwd) ===\n")
 
-    (fwd_ok && bwd_ok) || error("LayerNorm tests failed")
+    test_layernorm(256, 256, 256)
+    test_layernorm(512, 512, 512)
+    test_layernorm(1024, 2048, 1024)
+
+    println("\n=== All layernorm examples completed ===")
 end
 
 isinteractive() || main()

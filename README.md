@@ -101,6 +101,7 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080:
 | Matrix Multiplication | 48.3 TFLOPS | 48.6 TFLOPS | OK (=) |
 | Layer Normalization | 254 GB/s | 683 GB/s | https://github.com/JuliaGPU/cuTile.jl/issues/1 (-63%) |
 | Batch Matrix Multiply | 31.7 TFLOPS | 31.6 TFLOPS | OK (=) |
+| FFT (3-stage Cooley-Tukey) | 508 μs | 230 μs | (-55%) |
 
 Compute-intensive kernels (matmul, batch matmul) perform identically to Python. Memory-bound
 kernels (vadd, transpose) are within ~3% of Python. The layernorm kernel is slower due to
@@ -109,45 +110,50 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 
 ## Supported Operations
 
+cuTile.jl aims to expose as much functionality as possible through Julia-native constructs
+(`+`, `sum`, `reshape`, `broadcast`, etc.) rather than cuTile-specific functions. Operations
+prefixed with `ct.` are cuTile intrinsics with no direct Julia equivalent; everything else
+uses standard Julia syntax and is overlaid on `Base`.
+
 ### Memory
 | Operation | Description |
 |-----------|-------------|
-| `load(arr, index, shape)` | Load a tile from array |
-| `store(arr, index, tile)` | Store a tile to array |
-| `gather(arr, indices)` | Gather elements by index tile |
-| `scatter(arr, indices, tile)` | Scatter elements by index tile |
+| `ct.load(arr, index, shape)` | Load a tile from array |
+| `ct.store(arr, index, tile)` | Store a tile to array |
+| `ct.gather(arr, indices)` | Gather elements by index tile |
+| `ct.scatter(arr, indices, tile)` | Scatter elements by index tile |
 
 ### Grid
 | Operation | Description |
 |-----------|-------------|
-| `bid(axis)` | Block ID (1=x, 2=y, 3=z) |
-| `num_blocks(axis)` | Grid size along axis |
-| `num_tiles(arr, axis, shape)` | Number of tiles along axis |
+| `ct.bid(axis)` | Block ID (1=x, 2=y, 3=z) |
+| `ct.num_blocks(axis)` | Grid size along axis |
+| `ct.num_tiles(arr, axis, shape)` | Number of tiles along axis |
 
 ### Arithmetic
 | Operation | Description |
 |-----------|-------------|
 | `+`, `-` | Element-wise (same shape only) |
 | `tile * scalar`, `tile / scalar` | Scalar multiply/divide |
-| `.+`, `.-`, `.*`, `./` | Broadcasting element-wise |
-| `.^` | Power (float only, broadcast) |
+| `.+`, `.-`, `.*`, `./`, `.^` | Broadcasting element-wise |
 
 ### Construction
 | Operation | Description |
 |-----------|-------------|
-| `zeros(shape, T)` | Zero-filled tile |
-| `full(shape, value, T)` | Constant-filled tile |
-| `arange(shape, T)` | Sequence `[1, 2, 3, ...]` |
+| `ct.zeros(shape, T)` | Zero-filled tile |
+| `ct.full(shape, value, T)` | Constant-filled tile |
+| `ct.arange(shape, T)` | Sequence `[1, 2, 3, ...]` |
 
 ### Shape
 | Operation | Description |
 |-----------|-------------|
-| `broadcast_to(tile, shape)` | Broadcast to target shape |
+| `ct.broadcast_to(tile, shape)` | Broadcast to target shape |
 | `transpose(tile)` | Transpose 2D tile |
 | `reshape(tile, shape)` | Reshape (same element count) |
-| `permute(tile, perm)` | Permute dimensions |
-| `extract(tile, index, shape)` | Extract sub-tile |
-| `cat((a, b), axis)` | Concatenate tiles |
+| `ct.permute(tile, perm)` | Permute dimensions |
+| `ct.extract(tile, index, shape)` | Extract sub-tile |
+| `ct.cat((a, b), axis)` | Concatenate tiles |
+| `dropdims(tile; dims)` | Remove singleton dimensions |
 
 ### Matrix
 | Operation | Description |
@@ -155,24 +161,41 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 | `a * b` | Matrix multiplication: `a @ b` |
 | `muladd(a, b, acc)` | Matrix multiply-accumulate: `a * b + acc` |
 
+### Higher-Order Functions
+| Operation | Description |
+|-----------|-------------|
+| `map(f, tiles...)` | Apply function element-wise (same shape) |
+| `f.(tiles...)`, `broadcast(f, tiles...)` | Apply function with shape broadcasting |
+| `reduce(f, tile; dims, init)` | Reduction with arbitrary function |
+| `accumulate(f, tile; dims, init, rev)` | Scan/prefix-sum with arbitrary function |
+
 ### Reductions
 | Operation | Description |
 |-----------|-------------|
-| `reduce_sum(tile, axis)` | Sum along axis |
-| `reduce_max(tile, axis)` | Maximum along axis |
+| `sum(tile; dims)` | Sum along axis |
+| `prod(tile; dims)` | Product along axis |
+| `maximum(tile; dims)` | Maximum along axis |
+| `minimum(tile; dims)` | Minimum along axis |
+| `any(tile; dims)` | Logical OR along axis |
+| `all(tile; dims)` | Logical AND along axis |
+| `count(tile; dims)` | Count `true` elements along axis |
+| `argmax(tile; dims)` | 1-based index of maximum along axis |
+| `argmin(tile; dims)` | 1-based index of minimum along axis |
+| `cumsum(tile; dims, rev)` | Cumulative sum |
+| `cumprod(tile; dims, rev)` | Cumulative product |
 
 ### Math
 | Operation | Description |
 |-----------|-------------|
-| `sqrt.(tile)`, `sqrt(x)` | Square root (tile broadcast or scalar) |
-| `rsqrt.(tile)`, `rsqrt(x)` | Reciprocal square root |
-| `exp.(tile)`, `exp(x)` | Natural exponential |
-| `exp2.(tile)`, `exp2(x)` | Base-2 exponential |
-| `log.(tile)`, `log(x)` | Natural logarithm |
-| `log2.(tile)`, `log2(x)` | Base-2 logarithm |
+| `sqrt.(tile)` | Square root |
+| `rsqrt.(tile)` | Reciprocal square root |
+| `exp.(tile)` | Natural exponential |
+| `exp2.(tile)` | Base-2 exponential |
+| `log.(tile)` | Natural logarithm |
+| `log2.(tile)` | Base-2 logarithm |
 | `sin.(tile)`, `cos.(tile)`, etc. | Trigonometric functions |
-| `fma.(a, b, c)`, `fma(x, y, z)` | Fused multiply-add (tile broadcast or scalar) |
-| `abs.(tile)`, `abs(x)` | Absolute value |
+| `fma.(a, b, c)` | Fused multiply-add |
+| `abs.(tile)` | Absolute value |
 | `max(a, b)`, `min(a, b)` | Maximum/minimum (scalars) |
 
 ### Comparison
@@ -180,12 +203,12 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 |-----------|-------------|
 | `.<`, `.>`, `.<=`, `.>=` | Element-wise comparisons (return `Tile{Bool}`) |
 | `.==`, `.!=` | Element-wise equality |
-| `where(cond, x, y)` | Conditional selection |
+| `ifelse.(cond, x, y)` | Conditional selection |
 
 ### Type Conversion
 | Operation | Description |
 |-----------|-------------|
-| `astype(tile, T)` | Convert element type |
+| `ct.astype(tile, T)` | Convert element type |
 | `convert(Tile{T}, tile)` | Julia-style conversion |
 
 ### Integer Arithmetic
@@ -199,9 +222,9 @@ conservative token threading in the compiler (see https://github.com/JuliaGPU/cu
 ### Atomics
 | Operation | Description |
 |-----------|-------------|
-| `atomic_cas(arr, idx, expected, desired)` | Compare-and-swap |
-| `atomic_xchg(arr, idx, val)` | Exchange |
-| `atomic_add(arr, idx, val)` | Atomic add |
+| `ct.atomic_cas(arr, idx, expected, desired)` | Compare-and-swap |
+| `ct.atomic_xchg(arr, idx, val)` | Exchange |
+| `ct.atomic_add(arr, idx, val)` | Atomic add |
 
 
 ## Differences from cuTile Python
@@ -299,9 +322,14 @@ ct.launch(kernel, grid, a, b, ct.Constant(16))
 ### Broadcasting and Math Functions
 
 Python's operators and math functions work directly on tiles with automatic broadcasting.
-Julia cuTile follows standard Julia conventions: Operators and math functions can generally only be applied to scalars, while elementwise application requires broadcast syntax (`.+`, `exp.(...)`, etc).
+Julia cuTile follows standard Julia conventions: operators and math functions apply to
+scalars, while element-wise application requires broadcast syntax (`.+`, `exp.(...)`, etc).
 
-Some exceptions:
+`map(f, tiles...)` applies an arbitrary function element-wise to tiles of the same shape.
+Broadcast syntax (`.+`, `f.(x, y)`, etc.) combines `map` with automatic shape broadcasting,
+so any function that works on scalars "just works" when broadcast over tiles.
+
+Some non-broadcast shortcuts:
 
 - Scaling operations (`*` and `/`) can be applied directly to tiles and scalars.
 - Addition and subtraction can be applied directly to tiles with matching shapes.
@@ -321,6 +349,46 @@ a .* b             # Element-wise multiply (broadcast)
 a * b              # Matrix multiplication
 tile * 2.0f0       # Scalar multiply
 result = exp.(tile)
+map(x -> x * x, tile)  # map with arbitrary lambda
+```
+
+### Reductions
+
+Python reductions (`ct.sum`, `ct.max`, etc.) drop the reduced dimension by default (`keepdims=False`). Julia reductions (`sum`, `maximum`, etc.) always keep it as size 1 (matching `Base` semantics). Use `dropdims` to remove singleton dims afterward.
+
+```python
+# Python
+result = ct.sum(tile, axis=1)           # (M, N) → (M,)
+result = ct.sum(tile, axis=1, keepdims=True)  # (M, N) → (M, 1)
+```
+
+```julia
+# Julia
+result = sum(tile; dims=2)              # (M, N) → (M, 1)
+result = dropdims(sum(tile; dims=2); dims=2)  # (M, N) → (M,)
+```
+
+### Store reshaping
+
+`ct.store` automatically reshapes the tile to match the target array's rank by dropping singleton dimensions (e.g., storing a `(1, N)` tile into a 1D array reshapes it to `(N,)`). Scalar `()` tiles are reshaped to `(1,)`.
+
+### Broadcasting shape alignment
+
+cuTile.jl uses Julia's standard left-aligned broadcast shape rules: dimensions are matched
+starting from the first (leftmost) dimension. cuTile Python uses NumPy-style right-aligned
+rules, where dimensions are matched from the last (rightmost) dimension.
+
+This means a 1D `(N,)` tile cannot broadcast with a 2D `(M, N)` tile in Julia, because
+dimension 1 has size `N` vs `M`. In NumPy/Python, `(N,)` would be right-aligned to `(1, N)`
+and broadcast to `(M, N)`.
+
+Use `reshape` to get the desired alignment, just as with regular Julia arrays:
+
+```julia
+# Julia: explicitly reshape to align dimensions
+a = ct.load(...)              # (N,)
+b = ct.load(...)              # (M, N)
+result = reshape(a, (1, N)) .+ b  # (1, N) .+ (M, N) → (M, N)
 ```
 
 

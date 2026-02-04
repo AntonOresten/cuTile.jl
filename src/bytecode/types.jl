@@ -127,6 +127,8 @@ BF16(table::TypeTable) = simple_type!(table, SimpleType.BF16)
 F32(table::TypeTable) = simple_type!(table, SimpleType.F32)
 TF32(table::TypeTable) = simple_type!(table, SimpleType.TF32)
 F64(table::TypeTable) = simple_type!(table, SimpleType.F64)
+F8E4M3FN(table::TypeTable) = simple_type!(table, SimpleType.F8E4M3FN)
+F8E5M2(table::TypeTable) = simple_type!(table, SimpleType.F8E5M2)
 Token(table::TypeTable) = simple_type!(table, SimpleType.Token)
 
 function tile_type!(table::TypeTable, dtype::TypeId, shape::AbstractVector{<:Integer})
@@ -179,7 +181,7 @@ end
 function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
     if T === Bool
         I1(table)
-    elseif T === Int8
+    elseif T === Int8 || T === UInt8
         I8(table)
     elseif T === Int16 || T === UInt16
         I16(table)
@@ -189,6 +191,8 @@ function julia_to_tile_dtype!(table::TypeTable, ::Type{T}) where T
         I64(table)
     elseif T === Float16
         F16(table)
+    elseif T === BFloat16
+        BF16(table)
     elseif T === Float32
         F32(table)
     elseif T === TFloat32

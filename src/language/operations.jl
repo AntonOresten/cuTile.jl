@@ -6,6 +6,12 @@
     (V, _extract_shape(Base.tail(s))...)
 @inline _extract_shape(::Tuple{}) = ()
 
+# Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples
+@inline _deinterleave_accs(a, e, rest...) = (a, _deinterleave_accs(rest...)...)
+@inline _deinterleave_accs() = ()
+@inline _deinterleave_elems(a, e, rest...) = (e, _deinterleave_elems(rest...)...)
+@inline _deinterleave_elems() = ()
+
 #=============================================================================
  Load/Store
 =============================================================================#
@@ -60,7 +66,7 @@ Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
 end
 
 """
-    load(arr::TileArray, index, shape; padding_mode=PaddingMode.Undetermined) -> Tile
+    load(arr::TileArray, index, shape; padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=true) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 Index is 1-indexed. Shape must be compile-time constant.
@@ -73,101 +79,136 @@ Index is 1-indexed. Shape must be compile-time constant.
 - `PaddingMode.PosInf`: Return positive infinity for OOB elements
 - `PaddingMode.NegInf`: Return negative infinity for OOB elements
 
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+
 # Example
 ```julia
-tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+tile = ct.load(arr, (bid,), (TILE_N[],); padding_mode=ct.PaddingMode.Zero, latency=3)
 ```
 """
 @inline function load(arr::TileArray{T, N}, index, shape::NTuple{<:Any, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
 end
 
 @inline function load(arr::TileArray{T, N}, index::Integer, shape::NTuple{<:Any, Int};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode)
-    Intrinsics.load_partition_view(pv, index - One())
+    Intrinsics.load_partition_view(pv, latency, allow_tma, index - One())
 end
 
 # Load with Constant shape tuple
 @inline function load(arr::TileArray{T, N}, index, shape::Tuple{Vararg{Constant{Int}}};
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
 end
 
 # Keyword argument version
 @inline function load(arr::TileArray{T, N}; index, shape,
-                      padding_mode::Int=PaddingMode.Undetermined) where {T, N}
+                      padding_mode::Int=PaddingMode.Undetermined,
+                      latency::Union{Int, Nothing}=nothing,
+                      allow_tma::Bool=true) where {T, N}
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode)
-    Intrinsics.load_partition_view(pv, (promote(index...) .- One())...)
+    Intrinsics.load_partition_view(pv, latency, allow_tma, (promote(index...) .- One())...)
+end
+
+# Auto-reshape tile to match target array rank for store.
+@inline function _reshape_for_store(tile::Tile{T,Shape}, ::Val{N}) where {T, Shape, N}
+    length(Shape) <= N && return tile
+    new_shape = _store_shape(Val(Shape), Val(N))
+    reshape(tile, new_shape)
+end
+
+@generated function _store_shape(::Val{Shape}, ::Val{N}) where {Shape, N}
+    M = length(Shape)
+    to_drop = M - N
+    singletons = [i for i in 1:M if Shape[i] == 1]
+    if length(singletons) < to_drop
+        error("cannot squeeze shape $Shape to rank $N: only $(length(singletons)) singleton dims but need to drop $to_drop")
+    end
+    drop_set = Set(singletons[1:to_drop])
+    kept = tuple((Shape[i] for i in 1:M if !(i in drop_set))...)
+    # Partition views require at least 1D
+    if isempty(kept)
+        kept = (1,)
+    end
+    return :($kept)
 end
 
 """
-    store(arr::TileArray, index, tile::Tile) -> Tile
+    store(arr::TileArray, index, tile::Tile; latency=nothing, allow_tma=true) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
 """
-# Regular N-D tiles (N >= 1)
-@inline function store(arr::TileArray{T}, index, tile::Tile{T, Shape}) where {T, Shape}
-    tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, (promote(index...) .- One())...)
+@inline function store(arr::TileArray{T,N}, index, tile::Tile{T, Shape};
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T, N, Shape}
+    reshaped = _reshape_for_store(tile, Val(N))
+    _store_reshaped(arr, reshaped, latency, allow_tma, (promote(index...) .- One())...)
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
-@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, Shape}) where {T, Shape}
-    tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(Shape), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile, index - One())
+@inline function store(arr::TileArray{T,N}, index::Integer, tile::Tile{T, Shape};
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T, N, Shape}
+    reshaped = _reshape_for_store(tile, Val(N))
+    _store_reshaped(arr, reshaped, latency, allow_tma, index - One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
-# Special case for 0D (scalar) tiles - reshape to 1D for partition view
-@inline function store(arr::TileArray{T}, index, tile::Tile{T, ()}) where {T}
+@inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T, SShape},
+                                 latency, allow_tma, indices...) where {T, SShape}
     tv = Intrinsics.make_tensor_view(arr)
-    # Reshape 0D tile to 1D (partition views require at least 1D)
-    tile_1d = Intrinsics.reshape(tile, Val((1,)))
-    pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, (promote(index...) .- One())...)
-    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
-end
-
-@inline function store(arr::TileArray{T}, index::Integer, tile::Tile{T, ()}) where {T}
-    tv = Intrinsics.make_tensor_view(arr)
-    tile_1d = Intrinsics.reshape(tile, Val((1,)))
-    pv = Intrinsics.make_partition_view(tv, Val((1,)), PaddingMode.Undetermined)
-    Intrinsics.store_partition_view(pv, tile_1d, index - One())
-    return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
+    pv = Intrinsics.make_partition_view(tv, Val(SShape), PaddingMode.Undetermined)
+    Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices...)
 end
 
 # Keyword argument version - dispatch to positional version
-@inline function store(arr::TileArray{T}; index, tile::Tile{T, Shape}) where {T, Shape}
-    store(arr, index, tile)
+@inline function store(arr::TileArray{T}; index, tile::Tile{T, Shape},
+                       latency::Union{Int, Nothing}=nothing,
+                       allow_tma::Bool=true) where {T, Shape}
+    store(arr, index, tile; latency, allow_tma)
 end
 
 """
-    gather(array::TileArray{T, 1}, indices::Tile{I, S}) -> Tile{T, S}
+    gather(array::TileArray{T, 1}, indices::Tile{I, S}; latency=nothing) -> Tile{T, S}
 
 Gather elements from a 1D array using index tile.
 Indices are 1-indexed. Out-of-bounds indices return zero.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
 indices = base .+ ct.arange((TILE,), Int32)
-tile = ct.gather(arr, indices)
+tile = ct.gather(arr, indices; latency=3)
 ```
 """
-@inline function gather(array::TileArray{T, 1}, indices::Tile{I, S}) where {T, I <: Integer, S}
+@inline function gather(array::TileArray{T, 1}, indices::Tile{I, S};
+                        latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     # Convert to 0-indexed
     indices_0 = indices .- one(I)
 
@@ -187,16 +228,20 @@ tile = ct.gather(arr, indices)
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
 
-    Intrinsics.load_ptr_tko(ptr_tile, mask, padding)
+    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
 end
 
 """
-    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}) -> Tile{T, S}
+    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}; latency=nothing) -> Tile{T, S}
 
 Gather elements from a 2D array using a tuple of index tiles.
 Indices are 1-indexed. Index tiles are broadcast to a common shape.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
+@inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}};
+                        latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer, S0, S1}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
@@ -217,7 +262,7 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     stride1 = broadcast_to(stride1_0d, S)
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
-    linear_idx = idx0_i32 * stride0 + idx1_i32 * stride1
+    linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
 
     # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
@@ -235,23 +280,27 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     # Padding for OOB (zero)
     padding = broadcast_to(Tile(zero(T)), S)
 
-    Intrinsics.load_ptr_tko(ptr_tile, mask, padding)
+    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
 end
 
 """
-    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) -> Nothing
+    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}; latency=nothing) -> Nothing
 
 Scatter elements to a 1D array at index tile positions.
 Indices are 1-indexed. Out-of-bounds indices are ignored.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
 indices = base .+ ct.arange((TILE,), Int32)
-ct.scatter(arr, indices, result_tile)
+ct.scatter(arr, indices, result_tile; latency=3)
 ```
 """
-@inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}) where {T, I <: Integer, S}
+@inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S};
+                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     # Convert to 0-indexed
     indices_0 = indices .- one(I)
 
@@ -268,16 +317,20 @@ ct.scatter(arr, indices, result_tile)
     lt_size = indices_i32 .< size_0d
     mask = ge_zero .& lt_size
 
-    Intrinsics.store_ptr_tko(ptr_tile, tile, mask)
+    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, mask)
 end
 
 """
-    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile) -> Nothing
+    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile; latency=nothing) -> Nothing
 
 Scatter elements to a 2D array at index tile positions.
 Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
+
+# Optimization Hints
+- `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
-@inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile}) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
+@inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0, S0}, Tile{I1, S1}}, tile::Tile{T, Stile};
+                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer, S0, S1, Stile}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
@@ -299,7 +352,7 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     stride1 = broadcast_to(stride1_0d, S)
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
-    linear_idx = idx0_i32 * stride0 + idx1_i32 * stride1
+    linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
 
     # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
@@ -314,7 +367,7 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
     mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
     mask = mask0 .& mask1
 
-    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, mask)
+    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, latency, mask)
 end
 
 #=============================================================================
@@ -370,7 +423,7 @@ zeros_tile = ct.zeros((32, 32), Float32)
  Shape & DType
 =============================================================================#
 
-public cat, broadcast_to, reshape, permute, transpose, astype
+public cat, broadcast_to, permute, astype
 
 """
     cat(tiles::Tuple{Tile, Tile}, axis::Int) -> Tile
@@ -419,10 +472,10 @@ Reshape a tile to a new shape. The total number of elements must remain the same
 # Example
 ```julia
 tile = ct.load(arr, (1, 1), (4, 8))  # Shape (4, 8), 32 elements
-reshaped = ct.reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
+reshaped = reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
 ```
 """
-@inline reshape(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
+@inline Base.reshape(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
     Intrinsics.reshape(tile, Val(shape))
 
 """
@@ -447,8 +500,9 @@ permuted = ct.permute(tile, (3, 1, 2))  # Shape (4, 2, 3)
     transpose(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
 
 Transpose a 2D tile, swapping its dimensions.
+Equivalent to `permute(tile, (2, 1))`.
 """
-@inline transpose(tile::Tile{T}) where {T} =
+@inline Base.transpose(tile::Tile{T}) where {T} =
     Intrinsics.transpose(tile)
 
 """
@@ -473,55 +527,288 @@ result = ct.astype(acc, ct.TFloat32)  # Convert to TF32 for tensor cores
  Reduction
 =============================================================================#
 
-public reduce_sum, reduce_max
+"""
+    map(f, a::Tile{<:Any,S}, rest::Tile{<:Any,S}...) -> Tile
+
+Apply function `f` element-wise across one or more same-shaped tiles.
+The function `f` must be a zero-size callable (singleton or capture-free lambda).
+All tiles must have the same shape `S` — use broadcasting (`.+` etc.) or explicit
+`broadcast_to` for shape-mismatched operands.
+
+# Examples
+```julia
+result = map(abs, tile)           # Element-wise absolute value
+result = map(x -> x * x, tile)   # Element-wise square
+result = map(+, a, b)            # Element-wise addition (same shape required)
+```
+"""
+@inline function Base.map(f, a::Tile{<:Any,S}, rest::Tile{<:Any,S}...) where {S}
+    Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), Val(S))
+end
 
 """
-    reduce_sum(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+    mapreduce(identity, f, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
+    mapreduce(f, op, tile::Tile{T,S}; dims, init) -> Tile{T, reduced_shape}
+    mapreduce(identity, f, tile1, tile2, ...; dims, init) -> Tuple{Tile...}
 
-Sum reduction along the specified axis (1-indexed).
-Returns a tile with the specified dimension removed.
+Reduce one or more tiles along `dims` using binary function `f`.
+
+The single-tile form reduces a single tile along `dims` with identity element
+`init`. The multi-tile form reduces several same-shaped tiles simultaneously:
+`f` receives two tuples `(accumulators...)` and `(elements...)` and must return
+a tuple of updated accumulators. Each tile requires a corresponding entry in the
+`init` tuple.
+
+When a non-identity map function is provided, it is applied element-wise via
+`map` before reduction. The map function must be type-preserving.
+
+# Examples
+```julia
+sums = mapreduce(identity, +, tile; dims=2, init=zero(Float32))
+sum_of_squares = mapreduce(x -> x * x, +, tile; dims=2, init=zero(Float32))
+sum_of_abs = mapreduce(abs, +, tile; dims=2, init=zero(Float32))
+
+# Simultaneous reduction of two tiles
+vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
+                       dims=1, init=(typemin(Float32), Int32(0)))
+```
+"""
+@inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
+                                dims::Integer, init) where {T<:Number, S}
+    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
+end
+
+@inline function Base.mapreduce(f, op, tile::Tile{T,S};
+                                dims::Integer, init) where {T<:Number, S}
+    reduce(op, map(f, tile); dims, init)
+end
+
+@inline function Base.mapreduce(::typeof(identity), f,
+                                tile1::Tile{<:Any,S}, tile2::Tile{<:Any,S},
+                                tiles::Tile{<:Any,S}...;
+                                dims::Integer,
+                                init::Tuple{Any, Any, Vararg{Any}}) where {S}
+    all_tiles = (tile1, tile2, tiles...)
+    function _combiner(args...)
+        f(_deinterleave_accs(args...), _deinterleave_elems(args...))
+    end
+    Intrinsics.reduce(all_tiles, Val(dims - 1), _combiner, init)
+end
+
+"""
+    reduce(f, tile::Tile{T,S}; dims::Integer, init) -> Tile{T, reduced_shape}
+
+Reduce a tile along the specified dimension using binary function `f` with
+identity element `init`. The `dims` axis is 1-indexed. The reduced dimension
+becomes size 1 (Julia semantics).
+
+Supported functions: `+`, `*`, `max`, `min`.
 
 # Example
 ```julia
-# For a (128, 64) tile, reducing along axis 2:
-sums = ct.reduce_sum(tile, 2)  # Returns (128,) tile
+sums = reduce(+, tile; dims=2, init=zero(Float32))
 ```
 """
-@inline function reduce_sum(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
-    Intrinsics.reduce_sum(tile, Val(axis - 1))
-end
-@inline function reduce_sum(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
-    Intrinsics.reduce_sum(tile, Val(axis - 1))
+@inline function Base.reduce(f, tile::Tile{T,S}; dims::Integer, init) where {T<:Number, S}
+    mapreduce(identity, f, tile; dims, init)
 end
 
 """
-    reduce_max(tile::Tile{T, S}, axis::Integer) -> Tile{T, reduced_shape}
+    sum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
 
-Maximum reduction along the specified axis (1-indexed).
+Sum reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.sum(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    reduce(+, tile; dims, init=zero(T))
+
+"""
+    prod(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+
+Product reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.prod(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    reduce(*, tile; dims, init=one(T))
+
+"""
+    maximum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+
+Maximum reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.maximum(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    reduce(max, tile; dims, init=typemin(T))
+
+"""
+    minimum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+
+Minimum reduction along the specified axis/axes (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
+    reduce(min, tile; dims, init=typemax(T))
+
+"""
+    any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
+
+Logical OR reduction along the specified axis (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.any(tile::Tile{Bool,S}; dims::Integer) where {S} =
+    reduce(|, tile; dims, init=false)
+
+"""
+    all(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
+
+Logical AND reduction along the specified axis (1-indexed).
+Reduced dimensions become size 1.
+"""
+@inline Base.all(tile::Tile{Bool,S}; dims::Integer) where {S} =
+    reduce(&, tile; dims, init=true)
+
+"""
+    count(tile::Tile{Bool,S}; dims) -> Tile{Int32, reduced_shape}
+
+Count true elements along `dims` (1-indexed). Apply predicates via
+broadcasting before calling count:
 
 # Example
 ```julia
-maxes = ct.reduce_max(tile, 2)  # Max along axis 2
+n_positive = count(tile .> 0.0f0; dims=1)
 ```
 """
-@inline function reduce_max(tile::Tile{T, S}, axis::Integer) where {T <: AbstractFloat, S}
-    Intrinsics.reduce_max(tile, Val(axis - 1))
+@inline function Base.count(tile::Tile{Bool,S}; dims::Integer) where {S}
+    sum(astype(tile, Int32); dims)
 end
-@inline function reduce_max(tile::Tile{T, S}, ::Val{axis}) where {T <: AbstractFloat, S, axis}
-    Intrinsics.reduce_max(tile, Val(axis - 1))
+
+"""
+    argmax(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
+
+Return 1-indexed positions of maximum values along `dims`.
+Ties are broken by smallest index.
+
+# Example
+```julia
+indices = argmax(tile; dims=2)  # Column indices of max per row
+```
+"""
+@inline function Base.argmax(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
+    n = S[dims]
+    indices = reshape(Intrinsics.iota((n,), Int32),
+                      ntuple(i -> i == dims ? n : 1, length(S)))
+    indices = broadcast_to(indices, S)
+
+    function reducer(accs, elems)
+        val_acc, idx_acc = accs
+        val_elem, idx_elem = elems
+        strict = val_acc > val_elem
+        eq = val_acc == val_elem
+        cond = strict | (eq & (idx_acc < idx_elem))
+        (ifelse(cond, val_acc, val_elem),
+         ifelse(cond, idx_acc, idx_elem))
+    end
+    _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemin(T), Int32(0)))
+    idx .+ one(Int32)
+end
+
+"""
+    argmin(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
+
+Return 1-indexed positions of minimum values along `dims`.
+Ties are broken by smallest index.
+
+# Example
+```julia
+indices = argmin(tile; dims=2)  # Column indices of min per row
+```
+"""
+@inline function Base.argmin(tile::Tile{T,S}; dims::Integer) where {T<:Number, S}
+    n = S[dims]
+    indices = reshape(Intrinsics.iota((n,), Int32),
+                      ntuple(i -> i == dims ? n : 1, length(S)))
+    indices = broadcast_to(indices, S)
+
+    function reducer(accs, elems)
+        val_acc, idx_acc = accs
+        val_elem, idx_elem = elems
+        strict = val_elem > val_acc
+        eq = val_acc == val_elem
+        cond = strict | (eq & (idx_acc < idx_elem))
+        (ifelse(cond, val_acc, val_elem),
+         ifelse(cond, idx_acc, idx_elem))
+    end
+    _, idx = mapreduce(identity, reducer, tile, indices; dims, init=(typemax(T), Int32(0)))
+    idx .+ one(Int32)
+end
+
+
+"""
+    dropdims(tile::Tile{T,S}; dims) -> Tile{T, squeezed_shape}
+
+Remove singleton dimensions from a tile. The specified dimensions must have
+size 1. This is the inverse of the dimension-preserving behavior of `sum`,
+`prod`, `maximum`, and `minimum`.
+
+# Example
+```julia
+sums = sum(tile; dims=2)           # (64, 1)
+squeezed = dropdims(sums; dims=2)  # (64,)
+```
+"""
+@inline Base.dropdims(tile::Tile{T,S}; dims::Integer) where {T, S} =
+    _dropdims(tile, Val(dims))
+
+@inline function _dropdims(tile::Tile{T,S}, ::Val{D}) where {T, S, D}
+    new_shape = ntuple(i -> i < D ? S[i] : S[i + 1], Val(length(S) - 1))
+    reshape(tile, new_shape)
 end
 
 #=============================================================================
- Matmul
+ Scan (Prefix Sum) Operations
+=============================================================================#
+
+"""
+    accumulate(f, tile::Tile{T,S}; dims::Integer, init, rev::Bool=false) -> Tile{T, S}
+
+Scan (prefix sum) along the specified dimension using binary function `f`.
+The `dims` axis is 1-indexed.
+
+Supported functions: `+`, `*`, `max`, `min`.
+"""
+@inline function Base.accumulate(f, tile::Tile{T,S}; dims::Integer,
+                                 init, rev::Bool=false) where {T<:Number, S}
+    Intrinsics.scan((tile,), Val(dims - 1), f, (T(init),), rev)[1]
+end
+
+"""
+    cumsum(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
+
+Cumulative sum along the specified axis (1-indexed).
+"""
+@inline Base.cumsum(tile::Tile{T,S}; dims::Integer,
+                    rev::Bool=false) where {T<:Number, S} =
+    accumulate(+, tile; dims, init=zero(T), rev)
+
+"""
+    cumprod(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
+
+Cumulative product along the specified axis (1-indexed).
+"""
+@inline Base.cumprod(tile::Tile{T,S}; dims::Integer,
+                     rev::Bool=false) where {T<:Number, S} =
+    accumulate(*, tile; dims, init=one(T), rev)
+
+#=============================================================================
+ Matrix multiplication
 =============================================================================#
 
 # Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
-# Uses tensor cores when available.
 @inline Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
     Intrinsics.mma(a, b, acc)
 
-# Internal matmul helper (used by * operator)
-@inline function matmul(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
+# Matrix multiplication (A * B like Julia arrays)
+@inline function Base.:(*)(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
     _matmul(a, b, Val(length(SA)))
 end
 
@@ -549,19 +836,19 @@ end
 public where, extract
 
 """
-    where(cond::Tile{Bool, S}, x::Tile{T, S}, y::Tile{T, S}) -> Tile{T, S}
+    where(cond::Tile{Bool}, x, y) -> Tile
 
 Element-wise conditional selection: returns x where cond is true, y otherwise.
-Similar to numpy.where() or torch.where().
+Similar to numpy.where() or torch.where(). Supports broadcasting and scalar arguments.
 
 # Example
 ```julia
 mask = tile_a .> tile_b  # Boolean tile
 result = ct.where(mask, tile_a, tile_b)  # Element-wise max
+result = ct.where(mask, tile_a, 0.0f0)  # Zero out where mask is false
 ```
 """
-@inline where(cond::Tile{Bool, S}, x::Tile{T, S}, y::Tile{T, S}) where {T, S} =
-    Intrinsics.select(cond, x, y)
+where(cond, x, y) = ifelse.(cond, x, y)
 
 """
     extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -587,14 +874,3 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
     Intrinsics.extract(tile, Val(map(i -> i - 1, index)), Val(shape))
 @inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
     Intrinsics.extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
-
-#=============================================================================
- Matrix Multiplication
-=============================================================================#
-
-# Matrix multiplication (A * B like Julia arrays)
-@inline Base.:(*)(a::Tile, b::Tile) = matmul(a, b)
-
-# Base overloads for Int32 (special intrinsics)
-@noinline Base.rem(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))
-@noinline Base.min(a::Int32, b::Int32) = Base.inferencebarrier(zero(Int32))

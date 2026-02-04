@@ -15,7 +15,7 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     elseif expr.head === :new
         return nothing  # Struct construction handled elsewhere
     elseif expr.head === :foreigncall
-        error("Foreign calls not supported in Tile IR")
+        throw(IRError("Foreign calls not supported in Tile IR"))
     elseif expr.head === :boundscheck
         return nothing
     else
@@ -62,13 +62,18 @@ Emit bytecode for a function call.
 """
 function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     args = expr.args
-    func = resolve_function(ctx, args[1])
+    func = get_constant(ctx, args[1])
     call_args = args[2:end]
 
     # TODO: This is normally dynamic dispatch, which we should allow.
     #       However, we currently trigger this when emitting Julia intrinsics.
     #       We should switch to our own intrinsics entirely, which are only invoked.
 
+    @static if isdefined(Core, :throw_methoderror)
+        if func === Core.throw_methoderror
+            _throw_method_error(ctx, call_args)
+        end
+    end
     if func === Core.getfield
         tv = emit_getfield!(ctx, call_args, result_type)
         tv !== nothing && return tv
@@ -81,7 +86,7 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     end
 
     result = emit_intrinsic!(ctx, func, call_args)
-    result === missing && error("Unknown function call: $func")
+    result === missing && _unsupported_call(ctx, func, call_args)
     validate_result_type(result, result_type, func)
     return result
 end
@@ -93,11 +98,17 @@ Emit bytecode for a method invocation.
 """
 function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     # invoke has: (MethodInstance, func, args...)
-    func = resolve_function(ctx, expr.args[2])
+    func = get_constant(ctx, expr.args[2])
     call_args = expr.args[3:end]
 
+    @static if isdefined(Core, :throw_methoderror)
+        if func === Core.throw_methoderror
+            _throw_method_error(ctx, call_args)
+        end
+    end
+
     result = emit_intrinsic!(ctx, func, call_args)
-    result === missing && error("Unknown function call: $func")
+    result === missing && _unsupported_call(ctx, func, call_args)
     validate_result_type(result, result_type, func)
     return result
 end
@@ -111,28 +122,55 @@ function validate_result_type(@nospecialize(result), @nospecialize(expected_type
     result === nothing && return  # void return
     result isa CGVal || return
 
-    actual = unwrap_type(result.jltype)
-    expected = unwrap_type(expected_type)
+    actual = CC.widenconst(result.jltype)
+    expected = CC.widenconst(expected_type)
 
     # Check subtype relationship (actual should be at least as specific as expected)
     actual <: expected && return
 
-    error("Type mismatch in $func: expected $expected, got $actual")
+    throw(IRError("Type mismatch in $func: expected $expected, got $actual"))
 end
 
 """
-    resolve_function(ctx, ref) -> Any
+    _throw_method_error(ctx, call_args)
 
-Resolve a function reference to its actual value.
+Provide a clear error message when Julia inserts a `throw_methoderror` call,
+indicating that type inference found no matching method for a function call.
 """
-function resolve_function(ctx::CGCtx, @nospecialize(ref))
-    if ref isa GlobalRef
-        return getfield(ref.mod, ref.name)
-    elseif ref isa QuoteNode
-        return ref.value
-    elseif ref isa SSAValue
-        tv = ctx[ref]
-        tv !== nothing && tv.constant !== nothing && return something(tv.constant)
+function _throw_method_error(ctx::CGCtx, call_args)
+    # call_args typically contains: (function, arg1, arg2, ...)
+    if isempty(call_args)
+        throw(IRError("MethodError during Tile IR compilation"))
     end
-    return ref
+
+    func_val = try
+        get_constant(ctx, call_args[1])
+    catch
+        call_args[1]
+    end
+
+    argtypes = argextype.(Ref(ctx), call_args[2:end])
+    typestr = isempty(argtypes) ? "" : " with argument types ($(join(argtypes, ", ")))"
+    throw(IRError("MethodError during Tile IR compilation: no matching method for $func_val$typestr"))
+end
+
+"""
+    _unsupported_call(ctx, func, call_args)
+
+Provide a clear error message when a function has no Tile IR intrinsic mapping.
+"""
+function _unsupported_call(ctx::CGCtx, @nospecialize(func), call_args)
+    argtypes = argextype.(Ref(ctx), call_args)
+    typestr = isempty(argtypes) ? "" : " with argument types ($(join(argtypes, ", ")))"
+    throw(IRError("Unsupported function call during Tile IR compilation: $func$typestr has no Tile IR equivalent"))
+end
+
+"""
+    argextype(ctx, x) -> Type
+
+Get the Julia type of an IR value.
+"""
+function argextype(ctx::CGCtx, @nospecialize(x))
+    tv = emit_value!(ctx, x)
+    tv === nothing ? Any : CC.widenconst(tv.jltype)
 end

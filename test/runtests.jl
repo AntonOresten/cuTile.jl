@@ -41,8 +41,6 @@ end
 # Only include executing tests when CUDA is functional
 args = parse_args(ARGS)
 if filter_tests!(testsuite, args)
-    delete!(testsuite, "filecheck")
-
     cuda_functional = CUDA.functional()
     filter!(testsuite) do (test, _)
         if in(test, ["execution"]) || startswith(test, "examples/")

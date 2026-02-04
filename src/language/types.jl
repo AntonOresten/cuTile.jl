@@ -181,6 +181,13 @@ function TileArray(arr::AbstractArray{T, N}) where {T, N}
     TileArray(ptr, sizes, strides_val)
 end
 
+function TileArray(arr::PermutedDimsArray{T, N}) where {T, N}
+    ptr = reinterpret(Ptr{T}, pointer(parent(arr)))
+    sizes = NTuple{N, Int32}(Int32.(size(arr)))
+    strides_val = NTuple{N, Int32}(Int32.(strides(arr)))
+    TileArray(ptr, sizes, strides_val)
+end
+
 
 """
     Tile{T, Shape}
@@ -280,6 +287,8 @@ Base.eltype(::Type{Tile{T, Shape}}) where {T, Shape} = T
 Base.eltype(::Tile{T, Shape}) where {T, Shape} = T
 tile_shape(::Type{Tile{T, Shape}}) where {T, Shape} = Shape
 tile_shape(::Tile{T, Shape}) where {T, Shape} = Shape
+replace_eltype(::Type{Tile{T, Shape}}, ::Type{U}) where {T, Shape, U} = Tile{U, Shape}
+replace_eltype(::Type, ::Type{T}) where {T} = T  # fallback for non-Tile types
 
 
 """
@@ -309,8 +318,8 @@ primitive type TFloat32 <: AbstractFloat 32 end
 """Scalar integer types supported by Tile IR (i8, i16, i32, i64)."""
 const ScalarInt = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64}
 
-"""Scalar floating-point types supported by Tile IR (f16, tf32, f32, f64)."""
-const ScalarFloat = Union{Float16, Float32, Float64, TFloat32}
+"""Scalar floating-point types supported by Tile IR (f16, bf16, tf32, f32, f64)."""
+const ScalarFloat = Union{Float16, BFloat16, Float32, Float64, TFloat32}
 
 """Integer tile types."""
 const TileInt{S} = Tile{T, S} where {T <: ScalarInt}
