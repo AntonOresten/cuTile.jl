@@ -95,8 +95,11 @@ end
 # Symbols are compile-time only values
 emit_value!(ctx::CGCtx, val::Symbol) = ghost_value(Symbol, val)
 
-# Tuples are compile-time only values
-emit_value!(ctx::CGCtx, val::Tuple) = ghost_value(typeof(val), val)
+# Tuples populate .tuple with elements so emit_value! can recurse uniformly
+function emit_value!(ctx::CGCtx, val::Tuple)
+    elements = collect(Any, val)
+    tuple_value(typeof(val), elements, elements)
+end
 
 # Types are compile-time only values
 emit_value!(ctx::CGCtx, @nospecialize(val::Type)) = ghost_value(Type{val}, val)

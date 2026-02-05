@@ -151,7 +151,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpi), args)
 
     result_v = encode_CmpIOp!(cb, result_type_id, lhs.v, rhs.v; predicate, signedness)
     lhs_type = CC.widenconst(lhs.jltype)
-    result_jltype = replace_eltype(lhs_type, Bool)
+    result_jltype = similar_type(lhs_type, Bool)
     CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 
@@ -331,7 +331,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.cmpf), args)
 
     result_v = encode_CmpFOp!(cb, result_type_id, lhs.v, rhs.v; predicate)
     lhs_type = CC.widenconst(lhs.jltype)
-    result_jltype = replace_eltype(lhs_type, Bool)
+    result_jltype = similar_type(lhs_type, Bool)
     CGVal(result_v, result_type_id, result_jltype, result_shape)
 end
 

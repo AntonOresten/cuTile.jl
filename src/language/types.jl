@@ -1,4 +1,4 @@
-public TileArray, Tile, Constant, TFloat32,
+public TileArray, Tile, Constant, TFloat32, similar_type,
        ScalarInt, ScalarFloat, TileInt, TileFloat, ScalarOrTileInt, ScalarOrTileFloat
 
 """
@@ -144,12 +144,19 @@ struct TileArray{T, N, S}
 end
 
 # Type accessors for TileArray
-Base.eltype(::Type{TileArray{T, N, S}}) where {T, N, S} = T
-Base.eltype(::Type{TileArray{T, N}}) where {T, N} = T
-Base.eltype(::Type{TileArray{T}}) where {T} = T
-Base.eltype(::TileArray{T, N, S}) where {T, N, S} = T
-Base.ndims(::Type{TileArray{T, N, S}}) where {T, N, S} = N
-Base.ndims(::TileArray{T, N, S}) where {T, N, S} = N
+Base.eltype(::Type{<:TileArray{T}}) where {T} = T
+Base.eltype(::TileArray{T}) where {T} = T
+Base.ndims(::Type{<:TileArray{<:Any, N}}) where {N} = N
+Base.ndims(::TileArray{<:Any, N}) where {N} = N
+# Return the ArraySpec value (third type parameter) if present
+function array_spec(@nospecialize(T::Type{<:TileArray}))
+    T isa DataType || return nothing  # UnionAll types don't have full parameters
+    length(T.parameters) >= 3 || return nothing
+    S = T.parameters[3]
+    S isa ArraySpec && return S
+    nothing
+end
+array_spec(arr::TileArray) = array_spec(typeof(arr))
 
 """
     TileArray(ptr, sizes, strides)
@@ -212,7 +219,7 @@ mutable struct Tile{T, Shape}
 end
 
 """
-    Tile(val::T) -> Tile{T, ()}
+    Tile(val::T) -> Tile{T, Tuple{}}
 
 Create a 0-dimensional (scalar) tile from a scalar value.
 This is used internally to convert scalars to tiles for broadcasting.
@@ -221,7 +228,7 @@ In kernel code, this is compiled to a ConstantOp.
 """
 @noinline function Tile(val::T) where {T <: Number}
     Base.donotdelete(val)
-    Tile{T, ()}()
+    Tile{T, Tuple{}}()
 end
 
 #=============================================================================
@@ -238,8 +245,10 @@ Uses mutable struct to prevent constant folding by Julia.
 """
 mutable struct TensorView{T, N} end
 
-Base.eltype(::Type{TensorView{T,N}}) where {T,N} = T
-Base.ndims(::Type{TensorView{T,N}}) where {T,N} = N
+Base.eltype(::Type{<:TensorView{T}}) where {T} = T
+Base.eltype(::TensorView{T}) where {T} = T
+Base.ndims(::Type{<:TensorView{<:Any, N}}) where {N} = N
+Base.ndims(::TensorView{<:Any, N}) where {N} = N
 
 """
     PartitionView{T, N, Shape}
@@ -251,9 +260,15 @@ Uses mutable struct to prevent constant folding by Julia.
 """
 mutable struct PartitionView{T, N, Shape} end
 
-Base.eltype(::Type{PartitionView{T,N,Shape}}) where {T,N,Shape} = T
-Base.ndims(::Type{PartitionView{T,N,Shape}}) where {T,N,Shape} = N
-Base.size(::Type{PartitionView{T,N,Shape}}) where {T,N,Shape} = Shape
+Base.eltype(::Type{<:PartitionView{T}}) where {T} = T
+Base.eltype(::PartitionView{T}) where {T} = T
+Base.ndims(::Type{<:PartitionView{<:Any, N}}) where {N} = N
+Base.ndims(::PartitionView{<:Any, N}) where {N} = N
+# Fix: return VALUES not type (Shape is Tuple{64, 32}, return (64, 32))
+Base.size(::Type{<:PartitionView{<:Any, <:Any, Shape}}) where {Shape} = Tuple(Shape.parameters)
+Base.size(::Type{<:PartitionView{<:Any, <:Any, Shape}}, d::Integer) where {Shape} = Shape.parameters[d]
+Base.size(pv::PartitionView) = size(typeof(pv))
+Base.size(pv::PartitionView, d::Integer) = size(typeof(pv), d)
 
 """
     Constant{T, V}
@@ -285,10 +300,21 @@ Constant(val::T) where {T} = Constant{T, val}()
 # Type accessors
 Base.eltype(::Type{Tile{T, Shape}}) where {T, Shape} = T
 Base.eltype(::Tile{T, Shape}) where {T, Shape} = T
-tile_shape(::Type{Tile{T, Shape}}) where {T, Shape} = Shape
-tile_shape(::Tile{T, Shape}) where {T, Shape} = Shape
-replace_eltype(::Type{Tile{T, Shape}}, ::Type{U}) where {T, Shape, U} = Tile{U, Shape}
-replace_eltype(::Type, ::Type{T}) where {T} = T  # fallback for non-Tile types
+# Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for user convenience.
+Base.size(::Type{Tile{T, Shape}}) where {T, Shape} = Tuple(Shape.parameters)
+Base.size(::Type{Tile{T, Shape}}, d::Integer) where {T, Shape} = Shape.parameters[d]
+Base.ndims(::Type{Tile{T, Shape}}) where {T, Shape} = length(Shape.parameters)
+Base.size(::Tile{T, Shape}) where {T, Shape} = size(Tile{T, Shape})
+Base.size(t::Tile, d::Integer) = size(typeof(t), d)
+Base.ndims(::Tile{T, Shape}) where {T, Shape} = ndims(Tile{T, Shape})
+Base.length(::Type{Tile{T, Shape}}) where {T, Shape} = prod(Tuple(Shape.parameters))
+Base.length(t::Tile) = length(typeof(t))
+
+# Reconstruct Tile type with different element type and/or shape
+similar_type(::Type{Tile{T, Shape}}, ::Type{U}) where {T, Shape, U} = Tile{U, Shape}
+similar_type(::Type{Tile{T, Shape}}, ::Type{U}, new_shape::Tuple) where {T, Shape, U} =
+    Tile{U, Tuple{new_shape...}}
+similar_type(::Type, ::Type{T}) where {T} = T  # fallback for non-Tile types
 
 
 """
