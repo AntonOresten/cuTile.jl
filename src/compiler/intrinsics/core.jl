@@ -667,7 +667,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.reshape), args)
     # Get element type and source shape
     source_type = CC.widenconst(source.jltype)
     elem_type = eltype(source_type)
-    source_shape = collect(Int, tile_shape(source_type))
+    source_shape = collect(Int, size(source_type))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
 

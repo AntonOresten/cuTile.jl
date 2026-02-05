@@ -1,8 +1,12 @@
 @testset "Tile" begin
     @test eltype(ct.Tile{Float32, Tuple{16}}) == Float32
     @test eltype(ct.Tile{Float64, Tuple{32, 32}}) == Float64
-    @test ct.tile_shape(ct.Tile{Float32, Tuple{16}}) == (16,)
-    @test ct.tile_shape(ct.Tile{Float32, Tuple{32, 32}}) == (32, 32)
+    @test size(ct.Tile{Float32, Tuple{16}}) == (16,)
+    @test size(ct.Tile{Float32, Tuple{32, 32}}) == (32, 32)
+    @test size(ct.Tile{Float32, Tuple{8, 16}}, 1) == 8
+    @test size(ct.Tile{Float32, Tuple{8, 16}}, 2) == 16
+    @test ndims(ct.Tile{Float32, Tuple{16}}) == 1
+    @test ndims(ct.Tile{Float32, Tuple{32, 32}}) == 2
 end
 
 @testset "mismatched shapes with + throws MethodError" begin

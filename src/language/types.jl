@@ -286,8 +286,12 @@ Constant(val::T) where {T} = Constant{T, val}()
 Base.eltype(::Type{Tile{T, Shape}}) where {T, Shape} = T
 Base.eltype(::Tile{T, Shape}) where {T, Shape} = T
 # Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for user convenience.
-tile_shape(::Type{Tile{T, Shape}}) where {T, Shape} = Tuple(Shape.parameters)
-tile_shape(::Tile{T, Shape}) where {T, Shape} = Tuple(Shape.parameters)
+Base.size(::Type{Tile{T, Shape}}) where {T, Shape} = Tuple(Shape.parameters)
+Base.size(::Type{Tile{T, Shape}}, d::Integer) where {T, Shape} = Shape.parameters[d]
+Base.ndims(::Type{Tile{T, Shape}}) where {T, Shape} = length(Shape.parameters)
+Base.size(::Tile{T, Shape}) where {T, Shape} = size(Tile{T, Shape})
+Base.size(t::Tile, d::Integer) = size(typeof(t), d)
+Base.ndims(::Tile{T, Shape}) where {T, Shape} = ndims(Tile{T, Shape})
 replace_eltype(::Type{Tile{T, Shape}}, ::Type{U}) where {T, Shape, U} = Tile{U, Shape}
 replace_eltype(::Type, ::Type{T}) where {T} = T  # fallback for non-Tile types
 

@@ -70,7 +70,7 @@ end
 
 # Compute combined broadcast shape across all Tile arguments via tuple peeling.
 # Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for broadcast_shape.
-@inline _tile_shape(::Tile{<:Any, S}) where {S} = Tuple(S.parameters)
+@inline _tile_shape(t::Tile) = size(t)
 @inline _broadcast_shapes(t::Tile) = _tile_shape(t)
 @inline _broadcast_shapes(t::Tile, rest::Tile...) =
     broadcast_shape(_tile_shape(t), _broadcast_shapes(rest...))

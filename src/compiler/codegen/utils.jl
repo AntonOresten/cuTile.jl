@@ -324,7 +324,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
             throw(IRError("Tile type must be fully specified with element type and shape, got: $T. " *
                           "This indicates type instability in the kernel - ensure all tile operations have inferrable shapes."))
         end
-        shape_param = tile_shape(T)
+        shape_param = size(T)
         if !(shape_param isa Tuple)
             throw(IRError("Tile shape must be a tuple, got: $shape_param"))
         end
@@ -347,7 +347,7 @@ function tile_type_and_shape_for_julia!(ctx::CGCtx, @nospecialize(T))
 
     # Extract shape from Tile types
     shape = if actual_type <: Tile
-        collect(Int, tile_shape(actual_type))
+        collect(Int, size(actual_type))
     else
         Int[]
     end
@@ -437,7 +437,7 @@ Extract shape from a Tile{T, Shape} type, returning Int[] if not a Tile type.
 function extract_tile_shape(@nospecialize(T))
     T = CC.widenconst(T)
     if T <: Tile
-        return collect(Int, tile_shape(T))
+        return collect(Int, size(T))
     end
     Int[]
 end
