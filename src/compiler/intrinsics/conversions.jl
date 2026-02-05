@@ -71,7 +71,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.astype), args)
         throw(IRError("astype() unsupported conversion: $source_elem -> $target_elem"))
     end
 
-    CGVal(result, target_tile_type, Tile{target_elem, Core.apply_type(Tuple, tile_shape...)}, tile_shape)
+    CGVal(result, target_tile_type, Tile{target_elem, Tuple{tile_shape...}}, tile_shape)
 end
 
 # TODO: cuda_tile.bitcast

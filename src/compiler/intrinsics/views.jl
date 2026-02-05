@@ -154,7 +154,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), a
                                                  token=ctx.token, optimization_hints)
     ctx.token = new_token
 
-    CGVal(tile_val, tile_type, Tile{elem_type, Core.apply_type(Tuple, tile_shape...)}, tile_shape)
+    CGVal(tile_val, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
 end
 
 function pad_indices(ctx::CGCtx, index_vals::Vector{Value}, ndim::Int, idx_type::TypeId, idx_jl_type::Type)
@@ -175,7 +175,7 @@ end
     """
     @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int) where {T, N, Shape}
         donotdelete(tv)
-        PartitionView{T, N, Core.apply_type(Tuple, Shape...)}()
+        PartitionView{T, N, Tuple{Shape...}}()
     end
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args)
@@ -198,7 +198,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     pv_type = partition_view_type!(ctx.tt, tile_shape, tv_type, collect(0:ndim-1), padding_value)
     partition = encode_MakePartitionViewOp!(ctx.cb, pv_type, tensor_view)
 
-    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Core.apply_type(Tuple, tile_shape...)}, Int[], nothing, Some(ndim), nothing)
+    CGVal(partition, pv_type, PartitionView{elem_type, ndim, Tuple{tile_shape...}}, Int[], nothing, Some(ndim), nothing)
 end
 
 """
