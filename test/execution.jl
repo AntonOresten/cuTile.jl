@@ -1200,6 +1200,31 @@ end
     end
 end
 
+@testset "dropdims" begin
+    # Mean-subtract pattern: reduce row to get mean, dropdims the singleton,
+    # then broadcast-subtract from the original tile and store the column norms.
+    function dropdims_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, (pid, 1), (1, 128))            # (1, 128)
+        row_sum = sum(tile; dims=2)                       # (1, 1)
+        row_sum_1d = dropdims(row_sum; dims=2)            # (1,)
+        ct.store(b, pid, row_sum_1d)
+        return
+    end
+
+    m, n = 64, 128
+    a = CUDA.rand(Float32, m, n)
+    b = CUDA.zeros(Float32, m)
+
+    ct.launch(dropdims_kernel, m, a, b)
+
+    a_cpu = Array(a)
+    b_cpu = Array(b)
+    for i in 1:m
+        @test b_cpu[i] ≈ sum(a_cpu[i, :]) rtol=1e-3
+    end
+end
+
 end
 
 @testset "scan" begin

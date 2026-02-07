@@ -165,6 +165,34 @@
             end
         end
 
+        @testset "dropdims" begin
+            # dropdims on dim 1: (1, 8) -> dropdims(; dims=2) -> (8,)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, (pid, 1), (1, 8))
+                    @check "reshape"
+                    squeezed = dropdims(tile; dims=1)
+                    ct.store(b, pid, squeezed)
+                    return
+                end
+            end
+
+            # dropdims on dim 2: (8, 1) -> dropdims(; dims=2) -> (8,)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, (1, pid), (8, 1))
+                    @check "reshape"
+                    squeezed = dropdims(tile; dims=2)
+                    ct.store(b, pid, squeezed)
+                    return
+                end
+            end
+        end
+
         @testset "permutedims" begin
             # 2D permutedims with explicit perm (same as transpose)
             @test @filecheck begin
