@@ -1756,7 +1756,7 @@ end
         TILE_N = 1024
 
         # Use ArraySpec with shape_div_by to match real CuArray behavior
-        spec2d = ct.ArraySpec{2}(128, true, (0, 4), (32, 32))
+        spec2d = ct.ArraySpec{2}(128, true, (4, 0), (32, 32))
         spec1d = ct.ArraySpec{1}(128, true, (0,), (32,))
 
         @test @filecheck begin
@@ -1770,19 +1770,19 @@ end
                            ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
                            ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
                 bid_n = ct.bid(1)
-                num_tiles = ct.num_tiles(DW, 1, (_TILE_M[], _TILE_N[]))
+                num_tiles = ct.num_tiles(DW, 2, (_TILE_N[], _TILE_M[]))
 
-                dw = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
-                db = ct.zeros((_TILE_M[], _TILE_N[]), Float32)
+                dw = ct.zeros((_TILE_N[], _TILE_M[]), Float32)
+                db = ct.zeros((_TILE_N[], _TILE_M[]), Float32)
                 i = Int32(1)
                 while i <= num_tiles
-                    dw = dw .+ ct.load(DW, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
-                    db = db .+ ct.load(DB, (i, bid_n), (_TILE_M[], _TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    dw = dw .+ ct.load(DW, (bid_n, i), (_TILE_N[], _TILE_M[]); padding_mode=ct.PaddingMode.Zero)
+                    db = db .+ ct.load(DB, (bid_n, i), (_TILE_N[], _TILE_M[]); padding_mode=ct.PaddingMode.Zero)
                     i += Int32(1)
                 end
 
-                sum_dw = dropdims(sum(dw; dims=1); dims=1)
-                sum_db = dropdims(sum(db; dims=1); dims=1)
+                sum_dw = sum(dw; dims=2)
+                sum_db = sum(db; dims=2)
 
                 ct.store(FINAL_DW, bid_n, sum_dw)
                 ct.store(FINAL_DB, bid_n, sum_db)
@@ -1835,7 +1835,7 @@ end
                 end
                 @check "reduce"
                 @check "store_view_tko"
-                ct.store(out, bid, dropdims(sum(acc2; dims=1); dims=1))
+                ct.store(out, bid, sum(acc2; dims=1))
 
                 return
             end
