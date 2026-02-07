@@ -2160,7 +2160,7 @@ end
         cpu_result = cpu_reduce(a_reshaped, cpu_op)
 
         if elType <: AbstractFloat
-            @test b_cpu ≈ cpu_result rtol=2e-3
+            @test b_cpu ≈ cpu_result rtol=1e-3
         else
             @test b_cpu == cpu_result
         end
