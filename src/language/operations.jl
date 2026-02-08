@@ -157,6 +157,25 @@ end
     Intrinsics.to_scalar(reshape(subtile, ()))
 end
 
+# Functional setindex: Base.setindex(tile, val, i, j, ...) → new Tile with element replaced
+@inline function Base.setindex(tile::Tile, val, indices::Vararg{Int})
+    T = eltype(tile)
+    S = size(tile)
+    flat_len = prod(S)
+    linear = _linear_index(S, indices)
+    flat = reshape(tile, (flat_len,))
+    idx = Intrinsics.iota((flat_len,), Int32)
+    mask = idx .== Int32(linear)
+    val_tile = broadcast_to(Tile(T(val)), (flat_len,))
+    new_flat = where(mask, val_tile, flat)
+    reshape(new_flat, S)
+end
+
+# 0-indexed column-major linear index from 1-indexed indices
+@inline _linear_index(::Tuple{}, ::Tuple{}) = 0
+@inline _linear_index(S::NTuple{N, Int}, indices::NTuple{N, Int}) where {N} =
+    (indices[1] - 1) + S[1] * _linear_index(Base.tail(S), Base.tail(indices))
+
 # Keyword argument version → extract and delegate
 @inline function load(arr::TileArray; index, shape, kwargs...)
     load(arr, index, _extract_shape(shape); kwargs...)

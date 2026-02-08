@@ -665,6 +665,21 @@ end
     @test all(Array(y) .≈ 42.0f0)
 end
 
+@testset "scalar tile setindex" begin
+    function tile_setindex_kernel(x::ct.TileArray{Float32,1}, y::ct.TileArray{Float32,1})
+        tile = ct.load(x, 1, (8,))
+        new_tile = Base.setindex(tile, 0.0f0, 3)
+        ct.store(y, 1, new_tile)
+        return
+    end
+    x = CuArray(Float32.(1:8))
+    y = CUDA.zeros(Float32, 8)
+    ct.launch(tile_setindex_kernel, 1, x, y)
+    expected = Float32.(1:8)
+    expected[3] = 0.0f0
+    @test Array(y) ≈ expected
+end
+
 @testset "cat" begin
     @testset "cat along last axis (axis -1)" begin
         function cat_last_axis_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},

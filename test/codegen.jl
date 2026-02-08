@@ -291,6 +291,19 @@
                 end
             end
 
+            # Scalar tile setindex (functional)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    tile = ct.load(a, 1, (8,))
+                    @check "iota"
+                    @check "select"
+                    new_tile = Base.setindex(tile, 0.0f0, 3)
+                    ct.store(a, 1, new_tile)
+                    return
+                end
+            end
+
             # Extract slice from 3D tile (FFT real/imag pattern)
             @test @filecheck begin
                 @check_label "entry"
