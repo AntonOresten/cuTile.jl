@@ -650,6 +650,21 @@ end
     end
 end
 
+@testset "scalar tile getindex" begin
+    function tile_getindex_kernel(x::ct.TileArray{Float32,1}, y::ct.TileArray{Float32,1})
+        tile = ct.load(x, 1, (8,))
+        scalar = tile[3]  # Extract 3rd element
+        ct.store(y, 1, ct.broadcast_to(ct.Tile(scalar), (8,)))
+        return
+    end
+    host_x = zeros(Float32, 8)
+    host_x[3] = 42.0f0
+    x = CuArray(host_x)
+    y = CUDA.zeros(Float32, 8)
+    ct.launch(tile_getindex_kernel, 1, x, y)
+    @test all(Array(y) .≈ 42.0f0)
+end
+
 @testset "cat" begin
     @testset "cat along last axis (axis -1)" begin
         function cat_last_axis_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},

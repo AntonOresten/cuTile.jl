@@ -150,6 +150,13 @@ end
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
+# Scalar indexing: tile[i, j, ...] → scalar T
+@inline function Base.getindex(tile::Tile, indices::Vararg{Int})
+    shape = ntuple(_ -> 1, Val(length(indices)))
+    subtile = extract(tile, indices, shape)
+    Intrinsics.to_scalar(reshape(subtile, ()))
+end
+
 # Keyword argument version → extract and delegate
 @inline function load(arr::TileArray; index, shape, kwargs...)
     load(arr, index, _extract_shape(shape); kwargs...)
