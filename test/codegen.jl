@@ -343,13 +343,18 @@
         @testset "mixed-type integer comparison" begin
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{}) do
+                code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do out
                     a = ct.arange((16,), Int64)
                     b = ct.arange((16,), Int32)
                     # Should promote Int32 to Int64 and compare
                     @check "exti"
                     @check "cmpi"
+                    @check "select"
                     result = a .< b
+                    # Use same-typed operands for where to avoid Union type
+                    b_promoted = ct.astype(b, Int64)
+                    selected = ct.where(result, a, b_promoted)
+                    ct.store(out, Int32(0), selected)
                     return
                 end
             end
@@ -1070,6 +1075,32 @@
             end
         end
 
+        @testset "power operations" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "pow"
+                    Base.donotdelete(tile .^ tile)
+                    return
+                end
+            end
+
+            # scalar exponent
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "broadcast"
+                    @check "pow"
+                    Base.donotdelete(tile .^ 2.0f0)
+                    return
+                end
+            end
+        end
+
         @testset "scalar math functions" begin
             # Test scalar math functions via overlays (sin, exp, sqrt, etc. on scalars)
             # Note: We pass scalar args to avoid constant folding at compile time
@@ -1324,11 +1355,16 @@
             spec = ct.ArraySpec{2}(16, true)
             @test @filecheck begin
                 @check_label "entry"
-                code_tiled(Tuple{ct.TileArray{Float32,2,spec}}) do a
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}}) do a, b
                     @check "make_tensor_view"
                     @check "make_partition_view"
                     @check "get_index_space_shape"
                     num = ct.num_tiles(a, 1, (32, 32))
+                    # Use num as a tile index to prevent DCE
+                    @check "load_view_tko"
+                    tile = ct.load(a, (num, Int32(0)), (32, 32))
+                    @check "store_view_tko"
+                    ct.store(b, (Int32(0), Int32(0)), tile)
                     return
                 end
             end
@@ -1895,6 +1931,20 @@ end
         spec = ct.ArraySpec{1}(16, true)
 
         isdefined(Core, :throw_methoderror) &&
+        @testset "mismatched tile shapes with + produces MethodError" begin
+            spec2d = ct.ArraySpec{2}(16, true)
+            @test_throws "MethodError during Tile IR compilation" begin
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
+                    pid = ct.bid(1)
+                    tile_a = ct.load(a, pid, (4, 8))
+                    tile_b = ct.load(a, pid, (8, 4))
+                    Base.donotdelete(tile_a + tile_b)
+                    return
+                end
+            end
+        end
+
+        isdefined(Core, :throw_methoderror) &&
         @testset "no matching method produces MethodError" begin
             only_ints(x::Int) = x
             @test_throws "MethodError during Tile IR compilation" begin
@@ -2015,6 +2065,69 @@ end
                     ct.store(a, idx, tile)
                     return
                 end
+            end
+        end
+    end
+end
+
+#=============================================================================
+ External Constants (GlobalRef handling)
+=============================================================================#
+
+# Constants defined outside the kernel (module-level `const`) appear as GlobalRef
+# nodes in Julia IR. These must emit proper ConstantOp for numeric types,
+# not ghost values (which produce nothing in the bytecode).
+
+const _CODEGEN_TEST_FLOAT32 = Float32(1 / log(2))
+const _CODEGEN_TEST_FLOAT64 = 3.14159
+
+@testset "External Constants" begin
+    spec1d = ct.ArraySpec{1}(16, true)
+
+    @testset "external Float32 constant in arithmetic" begin
+        # Bug 1: GlobalRef for Float32 must emit ConstantOp, not a ghost value.
+        # Previously, emit_value!(ctx, ::GlobalRef) wrapped all values as ghosts,
+        # causing MulFOp to receive `nothing` instead of a bytecode Value.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "constant <f32"
+                @check "mulf"
+                Base.donotdelete(tile * _CODEGEN_TEST_FLOAT32)
+                return
+            end
+        end
+    end
+
+    @testset "external Float64 constant in arithmetic" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "constant <f64"
+                @check "mulf"
+                Base.donotdelete(tile * _CODEGEN_TEST_FLOAT64)
+                return
+            end
+        end
+    end
+
+    @testset "external constant assigned to local variable" begin
+        # Bug 2: GlobalRef on RHS of assignment in emit_rhs! returned nothing.
+        # Using a local variable forces Julia to emit an assignment from the GlobalRef.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                local_const = _CODEGEN_TEST_FLOAT32
+                @check "constant <f32"
+                @check "mulf"
+                Base.donotdelete(tile * local_const)
+                return
             end
         end
     end

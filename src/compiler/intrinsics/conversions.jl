@@ -10,7 +10,6 @@
     cuda_tile.exti, or cuda_tile.trunci based on source/target types.
     """
     @noinline function astype(tile::Tile{T1, Shape}, ::Type{T2}) where {T1, Shape, T2}
-        donotdelete(tile)
         Tile{T2, Shape}()
     end
 end

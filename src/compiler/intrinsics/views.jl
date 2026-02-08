@@ -32,7 +32,6 @@ end
     Compiled to cuda_tile.get_index_space_shape.
     """
     @noinline function get_index_space_shape(pv::PartitionView{T, N, Shape}, axis::Integer) where {T, N, Shape}
-        donotdelete(pv)
         compilerbarrier(:const, zero(Int32))
     end
 end
@@ -81,10 +80,19 @@ end
                                             latency::Union{Int, Nothing},
                                             allow_tma::Bool,
                                             indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
-        donotdelete(pv, latency, allow_tma)
-        # Shape is already a tuple TYPE (e.g., Tuple{64}) from make_partition_view
-        Tile{T, Shape}()
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.load_partition_view), argtypes::Vector{Any})
+    length(argtypes) >= 2 || return nothing
+    pv_type = CC.widenconst(argtypes[2])
+    pv_type <: PartitionView || return nothing
+    pv_type isa DataType || return nothing
+    length(pv_type.parameters) >= 3 || return nothing
+    T = eltype(pv_type)
+    Shape = pv_type.parameters[3]
+    Shape isa Type || return nothing
+    return Tile{T, Shape}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_partition_view), args)
     cb = ctx.cb
@@ -169,21 +177,31 @@ end
         make_partition_view(tv::TensorView, shape_val, padding_mode, order) -> PartitionView
 
     Create a PartitionView from a TensorView with the given tile shape.
-    The `order` parameter (Val{NTuple{N,Int}} or Val{nothing}) specifies
+    The `order` parameter (NTuple{N,Int} or nothing) specifies
     the logical-to-physical dimension mapping (1-indexed), or identity if nothing.
     Compiled to cuda_tile.make_partition_view.
     """
-    @noinline function make_partition_view(tv::TensorView{T, N}, ::Val{Shape}, padding_mode::Int, ::Val{Order}) where {T, N, Shape, Order}
-        donotdelete(tv)
-        PartitionView{T, N, Tuple{Shape...}}()
+    @noinline function make_partition_view(tv::TensorView{T, N}, shape::NTuple{M, Int}, padding_mode::Int, order) where {T, N, M}
+        compilerbarrier(:type, nothing)
     end
+end
+function tfunc(::typeof(Intrinsics.make_partition_view), argtypes::Vector{Any})
+    length(argtypes) >= 3 || return nothing
+    tv_type = CC.widenconst(argtypes[2])
+    tv_type <: TensorView || return nothing
+    shape_arg = argtypes[3]
+    isa(shape_arg, CC.Const) || return nothing
+    shape = shape_arg.val
+    T = eltype(tv_type)
+    N = ndims(tv_type)
+    return PartitionView{T, N, Tuple{shape...}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), args)
     tv = emit_value!(ctx, args[1])
     tv === nothing && throw(IRError("make_partition_view() requires a TensorView argument"))
 
-    # User boundary: Val{Shape} contains VALUE tuple from user call (e.g., load(arr, idx, (16,)))
-    shape = @something get_constant(ctx, args[2]) throw(IRError("make_partition_view() shape must be a compile-time constant"))
+    # Shape from user call (e.g., load(arr, idx, (16,)))
+    shape = get_constant(ctx, args[2])
     shape isa Tuple || throw(IRError("make_partition_view() shape must be a tuple, got $(typeof(shape))"))
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "load")
@@ -195,11 +213,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
     elem_type = eltype(tv.jltype)
     ndim = length(tile_shape)
 
-    # Extract order from Val{Order} (arg 4)
-    # Val{nothing} → identity dim_map, Val{(2,1)} → [1, 0] (1-indexed → 0-indexed)
-    order_arg = emit_value!(ctx, args[4])
-    order_jltype = CC.widenconst(order_arg.jltype)
-    order_val = order_jltype.parameters[1]  # nothing or NTuple{N,Int}
+    # Extract order (arg 4)
+    # nothing → identity dim_map, (2,1) → [1, 0] (1-indexed → 0-indexed)
+    order_val = get_constant(ctx, args[4])
     if order_val === nothing
         dim_map = collect(0:ndim-1)
     else
@@ -328,7 +344,6 @@ end
     Compiled to cuda_tile.make_tensor_view.
     """
     @noinline function make_tensor_view(arr::TileArray{T, N})::TensorView{T, N} where {T, N}
-        donotdelete(arr)
         TensorView{T, N}()
     end
 end
@@ -359,11 +374,11 @@ end
     Compiled to cuda_tile.store_view_tko.
     """
     @noinline function store_partition_view(pv::PartitionView{T, N, Shape},
-                                             tile::Tile{T, Shape},
+                                             tile::Tile{T},
                                              latency::Union{Int, Nothing},
                                              allow_tma::Bool,
                                              indices::NTuple{M, <:Integer}) where {T, N, Shape, M}
-        donotdelete(pv, tile, latency, allow_tma)
+        donotdelete()
         nothing
     end
 end

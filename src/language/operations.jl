@@ -61,7 +61,7 @@ Axis is 1-indexed. Equivalent to cld(arr.sizes[axis], shape[axis]).
 """
 @inline function num_tiles(arr::TileArray, axis::Integer, shape::NTuple{<:Any, Int})
     tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(shape), PaddingMode.Undetermined, Val(nothing))
+    pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
 end
 
@@ -103,7 +103,7 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Bool=true)
     tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode, Val(order))
+    pv = Intrinsics.make_partition_view(tv, shape, padding_mode, order)
     Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
 end
 
@@ -113,7 +113,7 @@ end
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Bool=true)
     tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(shape), padding_mode, Val(order))
+    pv = Intrinsics.make_partition_view(tv, shape, padding_mode, order)
     Intrinsics.load_partition_view(pv, latency, allow_tma, (index - One(),))
 end
 
@@ -125,7 +125,7 @@ end
                       allow_tma::Bool=true)
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode, Val(order))
+    pv = Intrinsics.make_partition_view(tv, shape_val, padding_mode, order)
     Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
 end
 
@@ -137,7 +137,7 @@ end
                       allow_tma::Bool=true)
     shape_val = _extract_shape(shape)
     tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(shape_val), padding_mode, Val(order))
+    pv = Intrinsics.make_partition_view(tv, shape_val, padding_mode, order)
     Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
 end
 
@@ -184,7 +184,7 @@ Returns the stored tile (enables chaining and helps constant folding).
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Bool=true) where {T}
     reshaped = _reshape_for_store(tile, Val(ndims(arr)))
-    _store_reshaped(arr, reshaped, Val(order), latency, allow_tma, promote(index...) .- One())
+    _store_reshaped(arr, reshaped, order, latency, allow_tma, promote(index...) .- One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
@@ -193,14 +193,14 @@ end
                        latency::Union{Int, Nothing}=nothing,
                        allow_tma::Bool=true) where {T}
     reshaped = _reshape_for_store(tile, Val(ndims(arr)))
-    _store_reshaped(arr, reshaped, Val(order), latency, allow_tma, (index - One(),))
+    _store_reshaped(arr, reshaped, order, latency, allow_tma, (index - One(),))
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
 end
 
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
-                                 ::Val{Order}, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T, Order}
+                                 order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
-    pv = Intrinsics.make_partition_view(tv, Val(size(tile)), PaddingMode.Undetermined, Val(Order))
+    pv = Intrinsics.make_partition_view(tv, size(tile), PaddingMode.Undetermined, order)
     Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices)
 end
 
@@ -464,11 +464,11 @@ combined_last = ct.cat((tile_a, tile_b), -1)
 """
 @inline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, axis::Int) where {T, S1, S2}
     axis0 = axis < 0 ? axis : axis - 1
-    Intrinsics.cat(tiles, Val(axis0))
+    Intrinsics.cat(tiles, axis0)
 end
 @inline function cat(tiles::Tuple{Tile{T, S1}, Tile{T, S2}}, ::Val{Axis}) where {T, S1, S2, Axis}
     axis0 = Axis < 0 ? Axis : Axis - 1
-    Intrinsics.cat(tiles, Val(axis0))
+    Intrinsics.cat(tiles, axis0)
 end
 
 """
@@ -483,7 +483,7 @@ expanded = ct.broadcast_to(row, (64, 128))  # Shape (64, 128)
 ```
 """
 @inline broadcast_to(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
-    Intrinsics.broadcast(tile, Val(shape))
+    Intrinsics.broadcast(tile, shape)
 
 """
     reshape(tile::Tile{T, S}, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -497,7 +497,7 @@ reshaped = reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
 ```
 """
 @inline Base.reshape(tile::Tile{T}, shape::NTuple{<:Any, Int}) where {T} =
-    Intrinsics.reshape(tile, Val(shape))
+    Intrinsics.reshape(tile, shape)
 
 """
     permutedims(tile::Tile{T, S}, perm) -> Tile{T, permuted_shape}
@@ -512,9 +512,9 @@ permuted = permutedims(tile, (3, 1, 2))    # Shape (4, 2, 3)
 ```
 """
 @inline Base.permutedims(tile::Tile{T}, perm::NTuple{<:Any, Int}) where {T} =
-    Intrinsics.permute(tile, Val(map(p -> p - 1, perm)))
+    Intrinsics.permute(tile, map(p -> p - 1, perm))
 @inline Base.permutedims(tile::Tile{T}, ::Val{Perm}) where {T, Perm} =
-    Intrinsics.permute(tile, Val(map(p -> p - 1, Perm)))
+    Intrinsics.permute(tile, map(p -> p - 1, Perm))
 
 """
     permutedims(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
@@ -537,9 +537,9 @@ Differs from `transpose` in that the operation is not recursive.
     first_dim = n >= 1 ? size(T, 1) : nothing
 
     if n == 2
-        return :(Intrinsics.permute(tile, Val((1, 0))))
+        return :(Intrinsics.permute(tile, (1, 0)))
     elseif n == 1
-        return :(Intrinsics.reshape(tile, Val((1, $first_dim))))
+        return :(Intrinsics.reshape(tile, (1, $first_dim)))
     else
         return :(throw(ArgumentError("permutedims(tile) only works for 1D or 2D tiles")))
     end
@@ -592,7 +592,7 @@ result = map(+, a, b)            # Element-wise addition (same shape required)
 ```
 """
 @inline function Base.map(f, a::Tile{<:Any,S}, rest::Tile{<:Any,S}...) where {S}
-    Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), Val(S))
+    Intrinsics.from_scalar(f(Intrinsics.to_scalar(a), map(Intrinsics.to_scalar, rest)...), S)
 end
 
 """
@@ -624,7 +624,7 @@ vals, idxs = mapreduce(identity, reducer, vals_tile, idx_tile;
 """
 @inline function Base.mapreduce(::typeof(identity), f, tile::Tile{T,S};
                                 dims::Integer, init) where {T<:Number, S}
-    Intrinsics.reduce((tile,), Val(dims - 1), f, (T(init),))[1]
+    Intrinsics.reduce((tile,), dims - 1, f, (T(init),))[1]
 end
 
 @inline function Base.mapreduce(f, op, tile::Tile{T,S};
@@ -641,7 +641,7 @@ end
     function _combiner(args...)
         f(_deinterleave_accs(args...), _deinterleave_elems(args...))
     end
-    Intrinsics.reduce(all_tiles, Val(dims - 1), _combiner, init)
+    Intrinsics.reduce(all_tiles, dims - 1, _combiner, init)
 end
 
 """
@@ -827,7 +827,7 @@ Supported functions: `+`, `*`, `max`, `min`.
 """
 @inline function Base.accumulate(f, tile::Tile{T,S}; dims::Integer,
                                  init, rev::Bool=false) where {T<:Number, S}
-    Intrinsics.scan((tile,), Val(dims - 1), f, (T(init),), rev)[1]
+    Intrinsics.scan((tile,), dims - 1, f, (T(init),), rev)[1]
 end
 
 """
@@ -921,6 +921,6 @@ br = ct.extract(tile, (2, 2), (4, 4))  # Bottom-right (rows 5-8, cols 5-8)
 ```
 """
 @inline extract(tile::Tile{T}, index::NTuple{<:Any, Int}, shape::NTuple{<:Any, Int}) where {T} =
-    Intrinsics.extract(tile, Val(map(i -> i - 1, index)), Val(shape))
+    Intrinsics.extract(tile, map(i -> i - 1, index), shape)
 @inline extract(tile::Tile{T}, ::Val{Index}, ::Val{Shape}) where {T, Index, Shape} =
-    Intrinsics.extract(tile, Val(map(i -> i - 1, Index)), Val(Shape))
+    Intrinsics.extract(tile, map(i -> i - 1, Index), Shape)

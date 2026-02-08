@@ -34,17 +34,7 @@ In Tile IR codegen, only ghost types (zero-size immutables like `Val{V}`,
 """
 function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     T = CC.widenconst(result_type)
-
-    # Ghost types: no runtime representation
-    if is_ghost_type(T)
-        if T <: Val && length(T.parameters) == 1
-            return ghost_value(T, T.parameters[1])
-        elseif T <: Constant && length(T.parameters) >= 2
-            return ghost_value(T, T.parameters[2])
-        end
-        return ghost_value(T)
-    end
-
+    is_ghost_type(T) && return ghost_value(T)
     throw(IRError("Struct construction not supported in Tile IR: $T"))
 end
 
@@ -69,7 +59,7 @@ function emit_rhs!(ctx::CGCtx, @nospecialize(rhs), @nospecialize(result_type))
     elseif rhs isa QuoteNode
         return emit_constant!(ctx, rhs.value, result_type)
     elseif rhs isa GlobalRef
-        return nothing
+        return emit_value!(ctx, rhs)
     else
         return emit_constant!(ctx, rhs, result_type)
     end
