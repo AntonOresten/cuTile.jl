@@ -175,10 +175,10 @@ end
 
 @testset "assert" begin
     @testset "passing assertion with message" begin
-        function assert_msg_kernel(a::ct.TileArray{Float32,1}, tile_size::ct.Constant{Int})
+        function assert_msg_kernel(a::ct.TileArray{Float32,1}, tile_size::Int)
             bid = ct.bid(1)
             ct.@assert bid > Int32(0) "bid must be positive"
-            t = ct.load(a, bid, (tile_size[],))
+            t = ct.load(a, bid, (tile_size,))
             ct.store(a, bid, t)
             return
         end
@@ -190,10 +190,10 @@ end
     end
 
     @testset "passing assertion without message" begin
-        function assert_nomsg_kernel(a::ct.TileArray{Float32,1}, tile_size::ct.Constant{Int})
+        function assert_nomsg_kernel(a::ct.TileArray{Float32,1}, tile_size::Int)
             bid = ct.bid(1)
             ct.@assert bid > Int32(0)
-            t = ct.load(a, bid, (tile_size[],))
+            t = ct.load(a, bid, (tile_size,))
             ct.store(a, bid, t)
             return
         end
@@ -211,10 +211,10 @@ end
         using CUDA
         import cuTile as ct
 
-        function assert_fail_kernel(a::ct.TileArray{Float32,1}, tile_size::ct.Constant{Int})
+        function assert_fail_kernel(a::ct.TileArray{Float32,1}, tile_size::Int)
             bid = ct.bid(1)
             ct.@assert bid > Int32(999999) "custom assert message"
-            t = ct.load(a, bid, (tile_size[],))
+            t = ct.load(a, bid, (tile_size,))
             ct.store(a, bid, t)
             return
         end

@@ -222,9 +222,9 @@ end
 
 @testset "1D cumsum (forward)" begin
     function cumsum_1d_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                              tile_size::ct.Constant{Int})
+                              tile_size::Int)
         bid = ct.bid(1)
-        tile = ct.load(a, bid, (tile_size[],))
+        tile = ct.load(a, bid, (tile_size,))
         result = cumsum(tile; dims=1)
         ct.store(b, bid, result)
         return nothing
@@ -273,9 +273,9 @@ end
 
 @testset "1D reverse cumsum" begin
     function reverse_cumsum_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                                    tile_size::ct.Constant{Int})
+                                    tile_size::Int)
         bid = ct.bid(1)
-        tile = ct.load(a, bid, (tile_size[],))
+        tile = ct.load(a, bid, (tile_size,))
         result = cumsum(tile; dims=1, rev=true)
         ct.store(b, bid, result)
         return nothing
@@ -297,9 +297,9 @@ end
 
 @testset "1D cumprod" begin
     function cumprod_1d_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                               tile_size::ct.Constant{Int})
+                               tile_size::Int)
         bid = ct.bid(1)
-        tile = ct.load(a, bid, (tile_size[],))
+        tile = ct.load(a, bid, (tile_size,))
         result = cumprod(tile; dims=1)
         ct.store(b, bid, result)
         return nothing
@@ -325,14 +325,14 @@ end
     N = 1024
 
     function reduce_sum_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1},
-                           tileSz::ct.Constant{Int}) where {T}
-        ct.store(b, ct.bid(1), sum(ct.load(a, ct.bid(1), (tileSz[],)); dims=1))
+                           tileSz::Int) where {T}
+        ct.store(b, ct.bid(1), sum(ct.load(a, ct.bid(1), (tileSz,)); dims=1))
         return nothing
     end
 
     function reduce_max_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1},
-                           tileSz::ct.Constant{Int}) where {T}
-        ct.store(b, ct.bid(1), maximum(ct.load(a, ct.bid(1), (tileSz[],)); dims=1))
+                           tileSz::Int) where {T}
+        ct.store(b, ct.bid(1), maximum(ct.load(a, ct.bid(1), (tileSz,)); dims=1))
         return nothing
     end
 
@@ -388,8 +388,8 @@ end
     TILE_SIZE = 32
     N = 1024
 
-    function scan_kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::ct.Constant{Int}) where {T}
-        ct.store(b, ct.bid(1), cumsum(ct.load(a, ct.bid(1), (tileSz[],)); dims=1))
+    function scan_kernel(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, tileSz::Int) where {T}
+        ct.store(b, ct.bid(1), cumsum(ct.load(a, ct.bid(1), (tileSz,)); dims=1))
         return nothing
     end
 
@@ -427,8 +427,8 @@ end
     TILE_SIZE = 16
 
     function any_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1},
-                        tileSz::ct.Constant{Int})
-        tile = ct.load(a, ct.bid(1), (tileSz[],))
+                        tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
         mask = tile .> 0.0f0
         result = any(mask; dims=1)
         ct.store(b, ct.bid(1), convert(ct.Tile{Int32}, result))
@@ -436,8 +436,8 @@ end
     end
 
     function all_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1},
-                        tileSz::ct.Constant{Int})
-        tile = ct.load(a, ct.bid(1), (tileSz[],))
+                        tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
         mask = tile .> 0.0f0
         result = all(mask; dims=1)
         ct.store(b, ct.bid(1), convert(ct.Tile{Int32}, result))
@@ -485,8 +485,8 @@ end
     TILE_SIZE = 16
 
     function count_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1},
-                          tileSz::ct.Constant{Int})
-        tile = ct.load(a, ct.bid(1), (tileSz[],))
+                          tileSz::Int)
+        tile = ct.load(a, ct.bid(1), (tileSz,))
         result = count(tile .> 0.0f0; dims=1)
         ct.store(b, ct.bid(1), result)
         return nothing

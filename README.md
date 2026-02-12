@@ -34,10 +34,10 @@ using CUDA
 import cuTile as ct
 
 # Define kernel
-function vadd(a, b, c, tile_size::ct.Constant{Int})
+function vadd(a, b, c, tile_size::Int)
     pid = ct.bid(1)
-    tile_a = ct.load(a, pid, (tile_size[],))
-    tile_b = ct.load(b, pid, (tile_size[],))
+    tile_a = ct.load(a, pid, (tile_size,))
+    tile_b = ct.load(b, pid, (tile_size,))
     ct.store(c, pid, tile_a + tile_b)
     return
 end
@@ -297,14 +297,15 @@ permutedims(tile, (3, 1, 2))
 
 This applies to `bid`, `num_blocks`, `permutedims`, `reshape`, dimension arguments, etc.
 
-### `Val`-like constants
+### Compile-time constants
 
-CuTile.jl uses `ct.Constant{T}` to encode compile-time constant values in the type domain, similar to how `Val` works. An explicit `[]` is needed to extract the value at runtime:
+Python annotates constant parameters in the kernel signature and passes plain values at launch.
+Julia is the reverse: kernel signatures use plain types, and constants are wrapped at launch:
 
 ```python
 # Python
 @ct.kernel
-def kernel(a, b, tile_size):
+def kernel(a, b, tile_size: ct.Constant[int]):
     tile = ct.load(a, index=(0,), shape=(tile_size,))
 
 ct.launch(stream, grid, kernel, (a, b, 16))
@@ -312,12 +313,15 @@ ct.launch(stream, grid, kernel, (a, b, 16))
 
 ```julia
 # Julia
-function kernel(a, b, tile_size::ct.Constant{Int})
-    tile = ct.load(a, 1, (tile_size[],))
+function kernel(a, b, tile_size::Int)
+    tile = ct.load(a, 1, (tile_size,))
 end
 
 ct.launch(kernel, grid, a, b, ct.Constant(16))
 ```
+
+`ct.Constant` arguments generate no kernel parameter; the value is embedded directly in
+the compiled code. Different constant values produce different kernel specializations.
 
 ### Broadcasting and Math Functions
 

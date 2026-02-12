@@ -1,10 +1,5 @@
 # cuTile DSL operations
 
-# Helper to extract compile-time shape from various tuple types
-@inline _extract_shape(s::NTuple{N, Int}) where N = s
-@inline _extract_shape(s::Tuple{Constant{Int, V}, Vararg{Constant{Int}}}) where V =
-    (V, _extract_shape(Base.tail(s))...)
-@inline _extract_shape(::Tuple{}) = ()
 
 # Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples
 @inline _deinterleave_accs(a, e, rest...) = (a, _deinterleave_accs(rest...)...)
@@ -136,11 +131,6 @@ end
     load(arr, (index,), shape; kwargs...)
 end
 
-# Constant shape → extract and delegate
-@inline function load(arr::TileArray, index, shape::Tuple{Vararg{Constant{Int}}}; kwargs...)
-    load(arr, index, _extract_shape(shape); kwargs...)
-end
-
 # Scalar indexing: arr[i, j, ...] → scalar T
 @overlay function Base.getindex(arr::TileArray{T, N}, indices::Vararg{Integer, N}) where {T, N}
     tv = Intrinsics.make_tensor_view(arr)
@@ -178,7 +168,7 @@ end
 
 # Keyword argument version → extract and delegate
 @inline function load(arr::TileArray; index, shape, kwargs...)
-    load(arr, index, _extract_shape(shape); kwargs...)
+    load(arr, index, shape; kwargs...)
 end
 
 """
@@ -433,10 +423,6 @@ indices = ct.arange((16,), Int32)  # Creates Tile with [1, 2, 3, ..., 16]
 """
 @inline arange(shape::NTuple{1, Int}, ::Type{T}) where {T} =
     Intrinsics.iota(shape, T) .+ one(T)
-
-# Helper for integer constant shape
-@inline arange(shape::Tuple{Constant{Int, V}}, ::Type{T}) where {V, T} =
-    arange((V,), T)
 
 """
     full(shape::NTuple{N, Int}, value, dtype::Type{T}) -> Tile{T, shape}

@@ -113,7 +113,7 @@ end
 @intrinsic cmpi(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate, s::Signedness) where {T<:Integer}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpi), @nospecialize(x), @nospecialize(y), @nospecialize(pred), @nospecialize(s))
     t = CC.widenconst(x)
-    if t <: Tile
+    if t isa DataType && t <: Tile
         S = t.parameters[2]
         return Tile{Bool, S}
     end
@@ -260,7 +260,7 @@ end
 @intrinsic cmpf(a::Tile{T}, b::Tile{T}, pred::ComparisonPredicate) where {T<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.cmpf), @nospecialize(x), @nospecialize(y), @nospecialize(pred))
     t = CC.widenconst(x)
-    if t <: Tile
+    if t isa DataType && t <: Tile
         S = t.parameters[2]
         return Tile{Bool, S}
     end

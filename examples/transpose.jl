@@ -8,10 +8,10 @@ import cuTile as ct
 # Transpose kernel with TileArray and constant tile sizes
 # TileArray carries size/stride metadata, Constant parameters are ghost types
 function transpose_kernel(x::ct.TileArray{T,2}, y::ct.TileArray{T,2},
-                          tm::ct.Constant{Int}, tn::ct.Constant{Int}) where {T}
+                          tm::Int, tn::Int) where {T}
     bidx = ct.bid(1)
     bidy = ct.bid(2)
-    input_tile = ct.load(x, (bidx, bidy), (tm[], tn[]))
+    input_tile = ct.load(x, (bidx, bidy), (tm, tn))
     transposed_tile = transpose(input_tile)
     ct.store(y, (bidy, bidx), transposed_tile)
     return

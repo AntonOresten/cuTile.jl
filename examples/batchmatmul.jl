@@ -12,8 +12,7 @@ import cuTile as ct
 # A: (M, K, Batch), B: (K, N, Batch), C: (M, N, Batch)
 # Grid: (M_tiles, N_tiles, Batch)
 function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.TileArray{T,3},
-                             tm::ct.Constant{Int}, tn::ct.Constant{Int},
-                             tk::ct.Constant{Int}) where {T}
+                             tm::Int, tn::Int, tk::Int) where {T}
     # Grid dimensions (1-indexed)
     bid_m = ct.bid(1)      # M tile index
     bid_n = ct.bid(2)      # N tile index
@@ -21,23 +20,23 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
 
     # Number of K tiles to iterate over
     K = size(A, 2)
-    num_k = cld(K, Int32(tk[]))
+    num_k = cld(K, Int32(tk))
 
     # Initialize accumulator with Float32 for precision
-    acc = ct.full((tm[], tn[]), zero(Float32), Float32)
+    acc = ct.full((tm, tn), zero(Float32), Float32)
 
     # K reduction loop
     k = Int32(1)
     while k <= num_k
         # Load 3D tiles: (tm, tk, 1) and (tk, tn, 1)
-        a = ct.load(A, (bid_m, k, pid_batch), (tm[], tk[], 1);
+        a = ct.load(A, (bid_m, k, pid_batch), (tm, tk, 1);
                     padding_mode=ct.PaddingMode.Zero)
-        b = ct.load(B, (k, bid_n, pid_batch), (tk[], tn[], 1);
+        b = ct.load(B, (k, bid_n, pid_batch), (tk, tn, 1);
                     padding_mode=ct.PaddingMode.Zero)
 
         # Reshape 3D tiles to 2D for mma
-        a_2d = reshape(a, (tm[], tk[]))
-        b_2d = reshape(b, (tk[], tn[]))
+        a_2d = reshape(a, (tm, tk))
+        b_2d = reshape(b, (tk, tn))
 
         # Convert to TF32 for tensor cores (Float32 inputs only)
         if T === Float32
@@ -51,7 +50,7 @@ function batch_matmul_kernel(A::ct.TileArray{T,3}, B::ct.TileArray{T,3}, C::ct.T
 
     # Convert to output type, reshape to 3D, and store
     result = convert(ct.Tile{T}, acc)
-    result_3d = reshape(result, (tm[], tn[], 1))
+    result_3d = reshape(result, (tm, tn, 1))
     ct.store(C, (bid_m, bid_n, pid_batch), result_3d)
 
     return nothing

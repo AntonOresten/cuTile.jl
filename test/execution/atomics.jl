@@ -22,9 +22,9 @@ end
 
 @testset "atomic_add Float32" begin
     # Test atomic_add with Float32
-    function atomic_add_f32_kernel(out::ct.TileArray{Float32,1}, val::ct.Constant{Float32})
+    function atomic_add_f32_kernel(out::ct.TileArray{Float32,1}, val::Float32)
         bid = ct.bid(1)
-        ct.atomic_add(out, 1, val[];
+        ct.atomic_add(out, 1, val;
                      memory_order=ct.MemoryOrder.AcqRel)
         return
     end

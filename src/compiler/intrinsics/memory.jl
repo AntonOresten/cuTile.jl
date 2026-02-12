@@ -6,7 +6,7 @@
 @intrinsic load_ptr_tko(ptrs, latency=nothing, mask=nothing, padding=nothing)
 function tfunc(𝕃, ::typeof(Intrinsics.load_ptr_tko), @nospecialize(ptrs), @nospecialize args...)
     ptrs_type = CC.widenconst(ptrs)
-    ptrs_type <: Tile || return nothing
+    ptrs_type isa DataType && ptrs_type <: Tile || return nothing
     ptr_type = eltype(ptrs_type)
     ptr_type <: Ptr || return nothing
     T = eltype(ptr_type)

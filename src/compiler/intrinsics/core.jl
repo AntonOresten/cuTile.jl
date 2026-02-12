@@ -101,7 +101,7 @@ end
 @intrinsic cat(tiles, axis)
 function tfunc(𝕃, ::typeof(Intrinsics.cat), @nospecialize(tiles), @nospecialize(axis_arg))
     tuple_type = CC.widenconst(tiles)
-    tuple_type <: Tuple{Tile, Tile} || return nothing
+    tuple_type isa DataType && tuple_type <: Tuple{Tile, Tile} || return nothing
     isa(axis_arg, CC.Const) || return nothing
     axis = axis_arg.val
     t1_type = tuple_type.parameters[1]
@@ -336,7 +336,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.offset), @nospecialize(base), @nospecia
     base_type = CC.widenconst(base)
     base_type <: Ptr || return nothing
     offsets_type = CC.widenconst(offsets)
-    offsets_type <: Tile || return nothing
+    offsets_type isa DataType && offsets_type <: Tile || return nothing
     T = eltype(base_type)
     S = offsets_type.parameters[2]
     return Tile{Ptr{T}, S}
