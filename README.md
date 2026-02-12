@@ -416,11 +416,17 @@ b = ct.load(B, (expert_id, k, bid_n), (1, TILE_K, TILE_N))
 
 ## Differences from Julia
 
-### Float-to-integer conversion truncates
+### Some operations are non-throwing
 
-Inside cuTile kernels, `Int32(x::Float32)` and similar float-to-integer constructors
-truncate toward zero (like C-style casts), rather than throwing `InexactError` as in
-standard Julia. This matches the behavior of GPU hardware and cuTile Python's `ct.astype`.
+cuTile kernels cannot throw Julia exceptions. Operations that would throw in
+standard Julia silently produce truncated or wrapped results instead:
+
+- **Float-to-integer conversions:** `Int32(x)`, `trunc(Int32, x)`, and
+  `round(Int32, x, RoundToZero)` silently truncate toward zero rather than
+  throwing `InexactError` for non-integer or out-of-range values. Use
+  `unsafe_trunc` for the explicit non-throwing primitive.
+
+Assertions may be added in the future for testing purposes.
 
 
 ## Limitations

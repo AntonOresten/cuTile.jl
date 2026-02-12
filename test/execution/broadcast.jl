@@ -721,6 +721,23 @@ end
     @test Array(b) == Float32.(Array(a))
 end
 
+@testset "unsafe_trunc.(Int32, float_tile)" begin
+    function unsafe_trunc_i32_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, unsafe_trunc.(Int32, tile))
+        return
+    end
+
+    n = 1024
+    a = CuArray(Float32.(rand(-100:100, n)) .+ 0.7f0)
+    b = CUDA.zeros(Int32, n)
+
+    ct.launch(unsafe_trunc_i32_kernel, cld(n, 16), a, b)
+
+    @test Array(b) == unsafe_trunc.(Int32, Array(a))
+end
+
 end # type argument broadcasting
 
 @testset "multi-arg map" begin

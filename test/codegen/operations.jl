@@ -875,6 +875,18 @@
                 end
             end
 
+            # unsafe_trunc.(Int32, float32_tile) — ftoi via Type arg
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    @check "ftoi"
+                    ct.store(b, pid, unsafe_trunc.(Int32, tile))
+                    return
+                end
+            end
+
         end
     end
 
