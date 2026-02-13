@@ -8,9 +8,7 @@ import cuTile as ct
 import NNlib
 import CUDA.GPUArrays: AllocCache, @cached # more fair NNlib comparison
 
-const INV_LOG_2 = Float32(1 / log(2))
-const ConstInt = ct.Constant{Int}
-const ConstBool = ct.Constant{Bool}
+const INV_LOG_2 = 1 / log(2f0)
 
 # cuTile kernel for Fused Multi-Head Attention (FMHA)
 #
@@ -22,85 +20,85 @@ function fmha_kernel(
     Q::ct.TileArray{T,4},
     K::ct.TileArray{T,4},
     V::ct.TileArray{T,4},
-    Out::ct.TileArray{T,4},
-    qk_scale::AbstractFloat,
-    input_pos::Integer,
-    D_K::ConstInt,   # Head dimension of Q and K
-    D_V::ConstInt,   # Head dimension of V
-    H::ConstInt,
-    TILE_M::ConstInt,
-    TILE_N::ConstInt,
-    QUERY_GROUP_SIZE::ConstInt,
-    CAUSAL::ConstBool,
-    EVEN_K::ConstBool
-) where T
+    Out::ct.TileArray{Tout,4},
+    qk_scale::Float32,
+    input_pos::Int, # 32?
+    D_K::Int,   # Head dimension of Q and K
+    D_V::Int,   # Head dimension of V
+    H::Int,
+    TILE_M::Int,
+    TILE_N::Int,
+    QUERY_GROUP_SIZE::Int,
+    CAUSAL::Bool,
+    EVEN_K::Bool
+) where {T,Tout}
     # Map block IDs to batch and head indices
     bid_x = ct.bid(1)
     bid_y = ct.bid(2)
-    batch_idx, head_idx = fldmod1(bid_y, H[]) # floored division and modulus for 1-based indexing
-    off_kv_h = cld(head_idx, QUERY_GROUP_SIZE[])
+    batch_idx, head_idx = fldmod1(bid_y, H) # floored division and modulus for 1-based indexing
+    off_kv_h = cld(head_idx, QUERY_GROUP_SIZE)
 
     # Adjust qk_scale for exp2
-    qk_scale = Float32(qk_scale) * Float32(INV_LOG_2)
+    qk_scale = qk_scale * INV_LOG_2
 
     # Initialize offsets for current query tile (M-dimension)
     # bid_x is 1-indexed, so first tile (bid_x=1) has offsets [0, TILE_M-1]
-    offs_m = (bid_x - 1) * TILE_M[] .+ (ct.arange((TILE_M[],), Int32) .- 1)
+    offs_m = (bid_x - 1) * TILE_M .+ (ct.arange((TILE_M,), Int32) .- 1)
     offs_m = offs_m .+ input_pos
-    offs_m = reshape(offs_m, (1, TILE_M[]))
+    offs_m = reshape(offs_m, (1, TILE_M))
 
     # local offsets for key/value tile (N-dimension)
-    offs_n_tile = ct.arange((TILE_N[],), Int32) .- 1
-    offs_n_tile = reshape(offs_n_tile, (TILE_N[], 1))
+    offs_n_tile = ct.arange((TILE_N,), Int32) .- 1
+    offs_n_tile = reshape(offs_n_tile, (TILE_N, 1))
 
     # online softmax accumulators in Float32 for stability
-    m_i = ct.full((1, TILE_M[]), -Inf32, Float32)
-    l_i = ct.zeros((1, TILE_M[]), Float32)
-    acc = ct.zeros((D_V[], TILE_M[]), Float32)
+    m_i = ct.full((1, TILE_M), -Inf32, Float32)
+    l_i = ct.zeros((1, TILE_M), Float32)
+    acc = ct.zeros((D_V, TILE_M), Float32)
 
     # query tile for this batch, head, and M-chunk
-    q = ct.load(Q, (1, bid_x, head_idx, batch_idx), (D_K[], TILE_M[], 1, 1))
-    q = reshape(q, (D_K[], TILE_M[]))
+    q = ct.load(Q, (1, bid_x, head_idx, batch_idx), (D_K, TILE_M, 1, 1))
+    q = reshape(q, (D_K, TILE_M))
 
     # m_end: one past the last query position in this tile
-    m_end = input_pos + bid_x * TILE_M[]
+    m_end = input_pos + bid_x * TILE_M
     k_seqlen = K.sizes[2]
-    if CAUSAL[]
+    if CAUSAL
         # Python: mask_start = (input_pos + bid_x * TILE_M) // TILE_N
         # In Julia with 1-indexed bid_x: mask_start = (input_pos + (bid_x-1) * TILE_M) // TILE_N + 1
-        mask_start = fld(input_pos + (bid_x - 1) * TILE_M[], TILE_N[]) + 1
+        mask_start = fld(input_pos + (bid_x - 1) * TILE_M, TILE_N) + 1
         # Python: mask_start = min(mask_start, k_seqlen // TILE_N)
-        mask_start = min(mask_start, fld(k_seqlen, TILE_N[]) + 1)
-        Tc = cld(min(m_end, k_seqlen), TILE_N[])
+        mask_start = min(mask_start, fld(k_seqlen, TILE_N) + 1)
+        Tc = cld(min(m_end, k_seqlen), TILE_N)
     else
-        Tc = cld(k_seqlen, TILE_N[])
+        Tc = cld(k_seqlen, TILE_N)
         # Python: mask_start = k_seqlen // TILE_N
-        mask_start = fld(k_seqlen, TILE_N[]) + 1
+        mask_start = fld(k_seqlen, TILE_N) + 1
     end
 
     # loop over K, V blocks (N-dimension chunks)
     j = Int32(1)
     while j <= Tc
         k = ct.load(
-            K, (1, j, off_kv_h, batch_idx), (D_K[], TILE_N[], 1, 1),
+            K, (1, j, off_kv_h, batch_idx), (D_K, TILE_N, 1, 1),
             latency=2)
-        k = reshape(k, (D_K[], TILE_N[]))
+        k = reshape(k, (D_K, TILE_N))
         k = transpose(k)
 
-        qk = ct.zeros((TILE_N[], TILE_M[]), Float32)
+        qk = ct.zeros((TILE_N, TILE_M), Float32)
         qk = ct.muladd(k, q, qk)
 
         # Apply masking (matches Python: if (CAUSAL or not EVEN_K) and j >= mask_start)
-        if (CAUSAL[] || !EVEN_K[]) && j >= mask_start
-            offs_n = (j - 1) * TILE_N[] .+ offs_n_tile
+        if (CAUSAL || !EVEN_K) && j >= mask_start
+            offs_n = (j - 1) * TILE_N .+ offs_n_tile
             # Build mask: start with all true
-            mask = ct.full((TILE_N[], TILE_M[]), true, Bool)
+            mask = ct.full((TILE_N, TILE_M), true, Bool)
             # out of bound mask (Python: if not EVEN_K: mask = mask & (offs_n < k_seqlen))
-            if !EVEN_K[]
+            if !EVEN_K
                 mask = mask .& (offs_n .< k_seqlen)
             end
             # causal mask (Python: if CAUSAL: mask = mask & (offs_m >= offs_n))
-            if CAUSAL[]
+            if CAUSAL
                 mask = mask .& (offs_m .>= offs_n)
             end
             # Apply mask: set invalid positions to -Inf
@@ -121,20 +119,18 @@ function fmha_kernel(
         acc = acc .* alpha
 
         v = ct.load(
-            V, (1, j, off_kv_h, batch_idx), (D_V[], TILE_N[], 1, 1),
+            V, (1, j, off_kv_h, batch_idx), (D_V, TILE_N, 1, 1),
             latency=4)
-        v = reshape(v, (D_V[], TILE_N[]))
-        p = ct.astype(p, eltype(q))
-        acc = ct.muladd(v, p, acc)
+        v = reshape(v, (D_V, TILE_N))
+        acc = ct.muladd(v, T.(p), acc)
         m_i = m_ij
 
         j += Int32(1)
     end
 
     acc = acc ./ l_i  # XXX: flush_to_zero=True, rounding_mode=APPROX
-    acc = reshape(acc, (D_V[], TILE_M[], 1, 1))
-    acc = ct.astype(acc, eltype(Out))
-    ct.store(Out, (1, bid_x, head_idx, batch_idx), acc)
+    acc = reshape(acc, (D_V, TILE_M, 1, 1))
+    ct.store(Out, (1, bid_x, head_idx, batch_idx), Tout.(acc))
 
     return
 end
@@ -165,7 +161,7 @@ function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     grid_y = Heads * Batch
     grid = (grid_x, grid_y)
 
-    qk_scale = 1 / sqrt(D_k)
+    qk_scale = Float32(1 / sqrt(D_k))
     input_pos = 0
 
     query_group_size, remainder = divrem(Heads, Heads_KV)
