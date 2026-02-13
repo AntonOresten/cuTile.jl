@@ -9,6 +9,14 @@ end
 
 
 #=============================================================================
+ Broadcasting
+=============================================================================#
+
+# Route Type values through TypeRef instead of RefValue (which can't be constructed in Tile IR).
+@overlay Base.Broadcast.broadcastable(::Type{T}) where T = TypeRef{T}()
+
+
+#=============================================================================
  Type Conversions
 =============================================================================#
 
@@ -51,13 +59,13 @@ end
     sizeof(S) > sizeof(T) ? Intrinsics.exti(x, S, SignednessUnsigned) :
     sizeof(S) < sizeof(T) ? Intrinsics.trunci(x, S) : x
 
-# Float to float (specific type pairs)
+# Float to float
 for T in Floats, S in Floats
     T === S && continue
     @eval @overlay $T(x::$S) = Intrinsics.ftof(x, $T)
 end
 
-# Integer to float (specific type pairs)
+# Integer to float
 for F in Floats
     for I in SignedInts
         @eval @overlay $F(x::$I) = Intrinsics.itof(x, $F, SignednessSigned)
@@ -78,12 +86,26 @@ for F in Floats
     end
 end
 
-# Float to integer (direct constructor - truncates like C-style cast)
+# Float to integer (round with RoundToZero)
+for F in Floats, I in (SignedInts..., UnsignedInts...)
+    @eval @overlay function Base.round(::Type{$I}, x::$F, ::Base.Rounding.RoundingMode{:ToZero})
+        # TODO: assert that x is within bounds etc
+        unsafe_trunc($I, x)
+    end
+end
+
+# Float to integer (direct constructor)
 for F in Floats
     for I in SignedInts
-        @eval @overlay $I(x::$F) = Intrinsics.ftoi(x, $I, SignednessSigned)
+        @eval @overlay function $I(x::$F)
+            # TODO: assert that x is within bounds etc
+            unsafe_trunc($I, x)
+        end
     end
     for I in UnsignedInts
-        @eval @overlay $I(x::$F) = Intrinsics.ftoi(x, $I, SignednessUnsigned)
+        @eval @overlay function $I(x::$F)
+            # TODO: assert that x is within bounds etc
+            unsafe_trunc($I, x)
+        end
     end
 end

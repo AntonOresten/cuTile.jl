@@ -1,9 +1,12 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code
+using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code, sanitize_name,
+              constant_eltype, constant_value
 
 using CompilerCaching: CacheView, method_instance, results
+
+import Core.Compiler as CC
 
 using CUDA: CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
@@ -11,15 +14,16 @@ using CUDA_Compiler_jll
 public launch
 
 """
-    emit_binary(cache, mi) -> Vector{UInt8}
+    emit_binary(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
 
 Binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 """
-function emit_binary(cache::CacheView, mi::Core.MethodInstance)
-    bytecode = emit_code(cache, mi)
+function emit_binary(cache::CacheView, mi::Core.MethodInstance;
+                     const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+    bytecode = emit_code(cache, mi; const_argtypes)
 
     ci = get(cache, mi)
-    res = results(cache, ci)
+    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
     res.cuda_bin !== nothing && return res.cuda_bin
 
     opts = cache.owner[2]
@@ -40,18 +44,19 @@ function emit_binary(cache::CacheView, mi::Core.MethodInstance)
 end
 
 """
-    emit_function(cache, mi) -> CuFunction
+    emit_function(cache, mi; const_argtypes=nothing) -> CuFunction
 
 Function phase: load CUBIN into GPU memory as a CuFunction.
 """
-function emit_function(cache::CacheView, mi::Core.MethodInstance)
-    cubin = emit_binary(cache, mi)
+function emit_function(cache::CacheView, mi::Core.MethodInstance;
+                       const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+    cubin = emit_binary(cache, mi; const_argtypes)
 
     ci = get(cache, mi)
-    res = results(cache, ci)
+    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
     res.cuda_func !== nothing && return res.cuda_func
 
-    kernel_name = string(mi.def.name)
+    kernel_name = sanitize_name(string(mi.def.name))
     cumod = CuModule(cubin)
     cufunc = CuFunction(cumod, kernel_name)
     res.cuda_func = cufunc
@@ -106,8 +111,11 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     # Convert CuArray -> TileArray (and other conversions)
     tile_args = map(to_tile_arg, args)
 
-    # Compute argument types from the converted arguments
-    argtypes = Tuple{map(typeof, tile_args)...}
+    # Unwrap Constant{T,V} → T for MI lookup (kernel sees plain types)
+    unwrapped_types = map(tile_args) do arg
+        arg isa Constant ? constant_eltype(typeof(arg)) : typeof(arg)
+    end
+    argtypes = Tuple{unwrapped_types...}
 
     # Get world age and method instance
     # Don't pass method_table - kernel functions are in the global table
@@ -116,12 +124,24 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
 
+    # Build const_argtypes for const-seeded inference
+    has_consts = any(x -> x isa Constant, tile_args)
+    const_argtypes = if has_consts
+        cats = Any[CC.Const(f)]
+        for arg in tile_args
+            push!(cats, arg isa Constant ? CC.Const(arg[]) : typeof(arg))
+        end
+        cats
+    else
+        nothing
+    end
+
     # Create cache view with compilation options as sharding keys
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
 
     # Run cached compilation
-    cufunc = emit_function(cache, mi)
+    cufunc = emit_function(cache, mi; const_argtypes)
 
     # Flatten arguments for cudacall - Constant returns () so ghost types disappear
     flat_args = Tuple(Iterators.flatten(map(flatten, tile_args)))

@@ -685,6 +685,61 @@ end
 
 end # fma broadcasting
 
+@testset "type argument broadcasting" begin
+
+@testset "convert.(Float16, tile)" begin
+    function convert_f16_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float16,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, convert.(Float16, tile))
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float16, n)
+
+    ct.launch(convert_f16_kernel, cld(n, 16), a, b)
+
+    @test Array(b) == Float16.(Array(a))
+end
+
+@testset "convert.(Float32, float16_tile)" begin
+    function convert_f32_kernel(a::ct.TileArray{Float16,1}, b::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, convert.(Float32, tile))
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float16, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(convert_f32_kernel, cld(n, 16), a, b)
+
+    @test Array(b) == Float32.(Array(a))
+end
+
+@testset "unsafe_trunc.(Int32, float_tile)" begin
+    function unsafe_trunc_i32_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, unsafe_trunc.(Int32, tile))
+        return
+    end
+
+    n = 1024
+    a = CuArray(Float32.(rand(-100:100, n)) .+ 0.7f0)
+    b = CUDA.zeros(Int32, n)
+
+    ct.launch(unsafe_trunc_i32_kernel, cld(n, 16), a, b)
+
+    @test Array(b) == unsafe_trunc.(Int32, Array(a))
+end
+
+end # type argument broadcasting
+
 @testset "multi-arg map" begin
     @testset "binary map(+, ...)" begin
         function map_add_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},

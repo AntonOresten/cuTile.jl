@@ -9,9 +9,6 @@ NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
 ParallelTestRunner = "d3525ed8-44d0-4b2c-a655-542cee43accc"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
-[sources]
-FileCheck = {url = "https://github.com/JuliaLLVM/FileCheck.jl", rev = "main"}
-
 [compat]
 FileCheck = "1.0"
 ParallelTestRunner = "2.0"

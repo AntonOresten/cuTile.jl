@@ -74,9 +74,9 @@ end
                 @check "get_tile_block_id"
                 bid = ct.bid(1)
                 @check "load_view_tko"
-                a_tile = ct.load(a, bid, (tile[],))
+                a_tile = ct.load(a, bid, (tile,))
                 @check "load_view_tko"
-                b_tile = ct.load(b, bid, (tile[],))
+                b_tile = ct.load(b, bid, (tile,))
                 @check "addf"
                 result = a_tile + b_tile
                 @check "store_view_tko"
@@ -96,7 +96,7 @@ end
                 bidx = ct.bid(1)
                 bidy = ct.bid(2)
                 @check "load_view_tko"
-                input_tile = ct.load(x, (bidx, bidy), (tm[], tn[]))
+                input_tile = ct.load(x, (bidx, bidy), (tm, tn))
                 @check "permute"
                 transposed_tile = transpose(input_tile)
                 @check "store_view_tko"
@@ -113,8 +113,8 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec}, ct.Constant{Int,32}, ct.Constant{Int,32}, ct.Constant{Int,16}}) do A, B, C, tm, tn, tk
                 bid = ct.bid(1)
-                num_k = ct.num_tiles(A, 2, (tm[], tk[]))
-                acc = ct.full((tm[], tn[]), zero(Float32), Float32)
+                num_k = ct.num_tiles(A, 2, (tm, tk))
+                acc = ct.full((tm, tn), zero(Float32), Float32)
                 # NOTE: Uses while-loop pattern because Julia's for-loop generates
                 # complex iterator IR with PhiNodes that isn't fully supported.
                 # The structurizer upgrades this counting while-loop to a ForOp.
@@ -122,9 +122,9 @@ end
                 k = Int32(1)
                 while k <= num_k
                     @check "load_view_tko"
-                    a = ct.load(A, (bid, k), (tm[], tk[]); padding_mode=ct.PaddingMode.Zero)
+                    a = ct.load(A, (bid, k), (tm, tk); padding_mode=ct.PaddingMode.Zero)
                     @check "load_view_tko"
-                    b = ct.load(B, (k, bid), (tk[], tn[]); padding_mode=ct.PaddingMode.Zero)
+                    b = ct.load(B, (k, bid), (tk, tn); padding_mode=ct.PaddingMode.Zero)
                     @check "mma"
                     acc = muladd(a, b, acc)
                     k += Int32(1)
@@ -146,14 +146,14 @@ end
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Float32,2,spec},
                            ct.TileArray{Float32,1,spec1d}, ct.Constant{Int,16}}) do X, Y, Sum, TILE_N
                 bid_m = ct.bid(1)
-                num_tiles = ct.num_tiles(X, 2, (1, TILE_N[]))
+                num_tiles = ct.num_tiles(X, 2, (1, TILE_N))
 
                 # First for loop: compute sum
                 @check "for"
-                acc = ct.full((1, TILE_N[]), 0.0f0, Float32)
+                acc = ct.full((1, TILE_N), 0.0f0, Float32)
                 j = Int32(1)
                 while j <= num_tiles
-                    tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
                     acc = acc .+ tx
                     j += Int32(1)
                 end
@@ -165,7 +165,7 @@ end
                 @check "for"
                 j = Int32(1)
                 while j <= num_tiles
-                    tx = ct.load(X, (bid_m, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    tx = ct.load(X, (bid_m, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
                     ty = tx .* sum_val
                     ct.store(Y, (bid_m, j), ty)
                     j += Int32(1)
@@ -185,13 +185,13 @@ end
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d},
                            ct.TileArray{Int32,1,spec}, Int32, ct.Constant{Int,16}}) do DW, Partial, Locks, group_bid, TILE_N
                 bid = ct.bid(1)
-                num_tiles = ct.num_tiles(DW, 2, (1, TILE_N[]))
+                num_tiles = ct.num_tiles(DW, 2, (1, TILE_N))
 
                 @check "for"
                 j = Int32(1)
                 while j <= num_tiles
                     # Load and compute partial result
-                    partial = ct.load(Partial, (bid, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    partial = ct.load(Partial, (bid, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
 
                     @check "loop"
                     # Acquire spinlock (nested inside for loop)
@@ -202,7 +202,7 @@ end
 
                     # Critical section: accumulate
                     @check "load_view_tko"
-                    acc = ct.load(DW, (group_bid, j), (1, TILE_N[]); padding_mode=ct.PaddingMode.Zero)
+                    acc = ct.load(DW, (group_bid, j), (1, TILE_N); padding_mode=ct.PaddingMode.Zero)
                     @check "addf"
                     acc = acc .+ partial
                     @check "store_view_tko"
@@ -238,7 +238,7 @@ end
                            Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(1)
                 # group_bid_m: 1-indexed group ID
-                group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M[])) + Int32(1)
+                group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M)) + Int32(1)
 
                 j = Int32(1)
                 while j <= num_iters
@@ -247,7 +247,7 @@ end
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
                     end
 
-                    val = ct.full((1, TILE_N[]), 1.0f0, Float32)
+                    val = ct.full((1, TILE_N), 1.0f0, Float32)
                     ct.store(DB, (group_bid_m, j), val)
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
@@ -278,7 +278,7 @@ end
                                Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(1)
                 # group_bid_m: 1-indexed group ID
-                group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M[])) + Int32(1)
+                group_bid_m = ((bid_m - Int32(1)) % Int32(GROUP_SIZE_M)) + Int32(1)
 
                 j = Int32(1)
                 while j <= num_iters
@@ -287,7 +287,7 @@ end
                                        memory_order=ct.MemoryOrder.Acquire) == Int32(1)
                     end
 
-                    val = ct.full((1, TILE_N[]), 1.0f0, Float32)
+                    val = ct.full((1, TILE_N), 1.0f0, Float32)
                     ct.store(DB, (group_bid_m, j), val)
 
                     ct.atomic_xchg(Locks, group_bid_m, Int32(0);
@@ -376,14 +376,14 @@ end
                            ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d},
                            ct.Constant{Int, TILE_M}, ct.Constant{Int, TILE_N}}) do DW, DB, FINAL_DW, FINAL_DB, _TILE_M, _TILE_N
                 bid_n = ct.bid(1)
-                num_tiles = ct.num_tiles(DW, 2, (_TILE_N[], _TILE_M[]))
+                num_tiles = ct.num_tiles(DW, 2, (_TILE_N, _TILE_M))
 
-                dw = ct.zeros((_TILE_N[], _TILE_M[]), Float32)
-                db = ct.zeros((_TILE_N[], _TILE_M[]), Float32)
+                dw = ct.zeros((_TILE_N, _TILE_M), Float32)
+                db = ct.zeros((_TILE_N, _TILE_M), Float32)
                 i = Int32(1)
                 while i <= num_tiles
-                    dw = dw .+ ct.load(DW, (bid_n, i), (_TILE_N[], _TILE_M[]); padding_mode=ct.PaddingMode.Zero)
-                    db = db .+ ct.load(DB, (bid_n, i), (_TILE_N[], _TILE_M[]); padding_mode=ct.PaddingMode.Zero)
+                    dw = dw .+ ct.load(DW, (bid_n, i), (_TILE_N, _TILE_M); padding_mode=ct.PaddingMode.Zero)
+                    db = db .+ ct.load(DB, (bid_n, i), (_TILE_N, _TILE_M); padding_mode=ct.PaddingMode.Zero)
                     i += Int32(1)
                 end
 
@@ -415,14 +415,14 @@ end
             code_tiled(Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec},
                            ct.Constant{Int,16}}) do out, inp, TILE_N
                 bid = ct.bid(1)
-                num_tiles = ct.num_tiles(inp, 1, (TILE_N[],))
+                num_tiles = ct.num_tiles(inp, 1, (TILE_N,))
 
                 # First loop: accumulate and reduce
                 @check "for"
-                acc = ct.zeros((TILE_N[],), Float32)
+                acc = ct.zeros((TILE_N,), Float32)
                 i = Int32(1)
                 while i <= num_tiles
-                    tile = ct.load(inp, i, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+                    tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
                     acc = acc .+ tile
                     i += Int32(1)
                 end
@@ -431,10 +431,10 @@ end
 
                 # Second loop: use sum_val AND accumulate
                 @check "for"
-                acc2 = ct.zeros((TILE_N[],), Float32)
+                acc2 = ct.zeros((TILE_N,), Float32)
                 i = Int32(1)
                 while i <= num_tiles
-                    tile = ct.load(inp, i, (TILE_N[],); padding_mode=ct.PaddingMode.Zero)
+                    tile = ct.load(inp, i, (TILE_N,); padding_mode=ct.PaddingMode.Zero)
                     @check "subf"
                     acc2 = acc2 .+ (tile .- sum_val)  # Uses sum_val from first loop
                     i += Int32(1)
@@ -684,6 +684,52 @@ end
                     idx = Int32(1)
                     tile = ct.load(a, idx, (16,))
                     ct.store(a, idx, tile)
+                    return
+                end
+            end
+        end
+
+        @testset "float constant addition folds through addf" begin
+            @test @filecheck begin
+                @check_label "entry"
+                @check_not "addf"
+                @check "constant <f32: 5"
+                @check "mulf"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    scale = 2.0f0 + 3.0f0
+                    Base.donotdelete(tile .* scale)
+                    return
+                end
+            end
+        end
+
+        @testset "integer constant subtraction folds through subi" begin
+            @test @filecheck begin
+                @check_label "entry"
+                @check_not "subi"
+                @check "load_view"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    idx = Int32(5) - Int32(2)
+                    tile = ct.load(a, idx, (16,))
+                    Base.donotdelete(tile)
+                    return
+                end
+            end
+        end
+
+        @testset "float constant multiplication folds through mulf" begin
+            @test @filecheck begin
+                @check_label "entry"
+                @check "constant <f32: 6"
+                @check "broadcast"
+                @check "mulf"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
+                    pid = ct.bid(1)
+                    tile = ct.load(a, pid, (16,))
+                    scale = 2.0f0 * 3.0f0
+                    Base.donotdelete(tile .* scale)
                     return
                 end
             end

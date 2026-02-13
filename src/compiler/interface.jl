@@ -7,6 +7,7 @@
 
 export code_tiled, @device_code_tiled
 
+import CompilerCaching
 using CompilerCaching: CacheView, @setup_caching, method_instance, typeinf!, results, get_source
 
 # Compilation hook for @device_code_* macros - intercepts compilations for reflection
@@ -74,14 +75,20 @@ CC.may_compress(::cuTileInterpreter) = true
 CC.may_discard_trees(::cuTileInterpreter) = false
 
 #=============================================================================
- Custom return-type inference (tfuncs) for intrinsics
+ Custom inference for intrinsics
 =============================================================================#
 
-# Per-intrinsic return type overrides using multiple dispatch.
+# Per-intrinsic return type overrides.
 # Returns nothing when no override applies (fallback).
-# Concrete per-intrinsic methods are defined in intrinsics/ (after the
-# Intrinsics module exists).
-tfunc(@nospecialize(f), argtypes::Vector{Any}) = nothing
+tfunc(𝕃, @nospecialize(f), @nospecialize args...) = nothing
+
+# Per-intrinsic effect overrides.
+# Returns nothing when no override applies (fallback).
+efunc(@nospecialize(f), effects::CC.Effects) = nothing
+
+# Predicate for functions defined in the Intrinsics module.
+# These get NoCallInfo() so they stay as Expr(:call) rather than Expr(:invoke).
+isintrinsic(@nospecialize(f)) = isa(f, Function) && parentmodule(f) === Intrinsics
 
 #=============================================================================
  Subprogram inference for reduce/scan
@@ -137,7 +144,8 @@ function _infer_subprogram(interp::cuTileInterpreter, @nospecialize(f),
 
     # Build body arg types: [f_type, T₁, T₁, T₂, T₂, ...] for each operand
     body_argtypes = Any[f_type]
-    if tile_type <: Tuple && all(p -> p <: Tile, tile_type.parameters)
+    if tile_type isa DataType && tile_type <: Tuple &&
+            all(p -> p isa DataType && p <: Tile, tile_type.parameters)
         # always-tuple interface — Tuple{Tile{T1,S1}, ...}
         for p in tile_type.parameters
             T = p.parameters[1]
@@ -172,9 +180,11 @@ end
         result = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any,
             arginfo::CC.ArgInfo, si::CC.StmtInfo, vtypes::Union{CC.VarTable,Nothing},
             sv::CC.InferenceState, max_methods::Int)
-        rt_override = tfunc(f, arginfo.argtypes)
+        is_intr = isintrinsic(f)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, vtypes, sv)
-        rt_override === nothing && subprog === nothing && return result
+        !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
         push!(sv.tasks, function (interp′, sv′)
             isready(result) || return false
@@ -182,8 +192,11 @@ end
             cm = result[]
             sp = subprog !== nothing ? subprog[] : nothing
             rt = rt_override !== nothing ? rt_override : cm.rt
-            info = sp !== nothing ? SubprogramCallInfo(cm.info, sp.info) : cm.info
-            wrapped[] = CC.CallMeta(rt, cm.exct, cm.effects, info, cm.refinements)
+            efunc_override = is_intr ? efunc(f, cm.effects) : nothing
+            effects = efunc_override !== nothing ? efunc_override : cm.effects
+            info = is_intr ? CC.NoCallInfo() : cm.info
+            info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
+            wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
             return true
         end)
         return wrapped
@@ -195,9 +208,11 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
         result = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any,
             arginfo::CC.ArgInfo, si::CC.StmtInfo,
             sv::CC.InferenceState, max_methods::Int)
-        rt_override = tfunc(f, arginfo.argtypes)
+        is_intr = isintrinsic(f)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
         subprog = _infer_subprogram(interp, f, arginfo, si, nothing, sv)
-        rt_override === nothing && subprog === nothing && return result
+        !is_intr && rt_override === nothing && subprog === nothing && return result
         wrapped = CC.Future{CC.CallMeta}()
         push!(sv.tasks, function (interp′, sv′)
             isready(result) || return false
@@ -205,8 +220,11 @@ elseif isdefined(CC, :Future)   # 1.12–1.13
             cm = result[]
             sp = subprog !== nothing ? subprog[] : nothing
             rt = rt_override !== nothing ? rt_override : cm.rt
-            info = sp !== nothing ? SubprogramCallInfo(cm.info, sp.info) : cm.info
-            wrapped[] = CC.CallMeta(rt, cm.exct, cm.effects, info, cm.refinements)
+            efunc_override = is_intr ? efunc(f, cm.effects) : nothing
+            effects = efunc_override !== nothing ? efunc_override : cm.effects
+            info = is_intr ? CC.NoCallInfo() : cm.info
+            info = sp !== nothing ? SubprogramCallInfo(info, sp.info) : info
+            wrapped[] = CC.CallMeta(rt, cm.exct, effects, info, cm.refinements)
             return true
         end)
         return wrapped
@@ -219,10 +237,15 @@ else   # 1.11: synchronous, edges auto-tracked via stmt_edges
             arginfo::CC.ArgInfo, si::CC.StmtInfo,
             sv::CC.AbsIntState, max_methods::Int)
         _infer_subprogram(interp, f, arginfo, si, nothing, sv)  # side-effect only
-        rt_override = tfunc(f, arginfo.argtypes)
-        if rt_override !== nothing
-            return CC.CallMeta(rt_override, result.exct, result.effects,
-                               result.info)
+        is_intr = isintrinsic(f)
+        𝕃 = CC.typeinf_lattice(interp)
+        rt_override = tfunc(𝕃, f, arginfo.argtypes[2:end]...)
+        rt = rt_override !== nothing ? rt_override : result.rt
+        efunc_override = is_intr ? efunc(f, result.effects) : nothing
+        effects = efunc_override !== nothing ? efunc_override : result.effects
+        info = is_intr ? CC.NoCallInfo() : result.info
+        if is_intr || rt_override !== nothing
+            return CC.CallMeta(rt, result.exct, effects, info)
         end
         return result
     end
@@ -281,11 +304,16 @@ mutable struct CuTileResults
 end
 
 """
-    emit_ir(cache, mi) -> (StructuredIRCode, rettype)
+    emit_ir(cache, mi; const_argtypes=nothing) -> (StructuredIRCode, rettype)
 
 IR phase: run inference if needed and return structured IR.
+
+When `const_argtypes` is provided (a `Vector{Any}` with `CC.Const` entries for
+compile-time constants), const-seeded inference is used, producing specialized
+IR where constant values are folded in.
 """
-function emit_ir(cache::CacheView, mi::Core.MethodInstance)
+function emit_ir(cache::CacheView, mi::Core.MethodInstance;
+                 const_argtypes::Union{Vector{Any}, Nothing}=nothing)
     # Invoke compile hook if set (for @device_code_* reflection)
     # Pass (f, tt) tuple to enable direct use with reflection utilities
     if compile_hook[] !== nothing
@@ -295,7 +323,7 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance)
         compile_hook[](f, tt)
     end
 
-    # Ensure CI exists
+    # Ensure generic CI exists
     ci = get(cache, mi, nothing)
     if ci === nothing
         interp = cuTileInterpreter(cache)
@@ -303,31 +331,63 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance)
         ci = get(cache, mi)
     end
 
-    # Check IR cache
-    res = results(cache, ci)
-    res.julia_ir !== nothing && return res.julia_ir
-
-    # Compute IR from CodeInfo
-    src = @something get_source(ci)
-    ir = CC.inflate_ir(src, mi)
-    sci = StructuredIRCode(ir)
-
-    res.julia_ir = (sci, ci.rettype)
-    return res.julia_ir
+    if const_argtypes !== nothing
+        # Const-seeded path: run const-prop inference and use specialized source
+        interp = cuTileInterpreter(cache)
+        typeinf!(cache, interp, mi, const_argtypes)
+        res = results(cache, ci, const_argtypes)
+        res.julia_ir !== nothing && return res.julia_ir
+        src = @something get_source(ci, const_argtypes)
+        ir = CC.inflate_ir(src, mi)
+        sci = StructuredIRCode(ir)
+        rettype = _specialized_rettype(cache, ci, const_argtypes)
+        res.julia_ir = (sci, rettype)
+        return res.julia_ir
+    else
+        # Generic path (unchanged)
+        res = results(cache, ci)
+        res.julia_ir !== nothing && return res.julia_ir
+        src = @something get_source(ci)
+        ir = CC.inflate_ir(src, mi)
+        sci = StructuredIRCode(ir)
+        res.julia_ir = (sci, ci.rettype)
+        return res.julia_ir
+    end
 end
 
 """
-    emit_code(cache, mi) -> Vector{UInt8}
+    _specialized_rettype(cache, ci, argtypes) -> Type
+
+Extract the return type from a const-specialized entry.
+"""
+function _specialized_rettype(cache::CacheView{K,V}, ci, argtypes) where {K,V}
+    cached = CC.traverse_analysis_results(ci) do @nospecialize(result)
+        result isa CompilerCaching.CachedResult{V} ? result : nothing
+    end
+    for entry in cached.const_entries
+        if entry.argtypes == argtypes
+            return CC.widenconst(entry.rettype)
+        end
+    end
+    return CC.widenconst(ci.rettype)
+end
+
+# Encode characters outside [a-zA-Z0-9_] as _XX hex escapes for PTX/MLIR compatibility.
+sanitize_name(name::String) = replace(name, r"[^a-zA-Z0-9_]" => c -> "_$(string(UInt8(only(c)); base=16, pad=2))")
+
+"""
+    emit_code(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
 
 Code phase: generate Tile IR bytecode from StructuredIRCode.
 """
-function emit_code(cache::CacheView, mi::Core.MethodInstance)
+function emit_code(cache::CacheView, mi::Core.MethodInstance;
+                   const_argtypes::Union{Vector{Any}, Nothing}=nothing)
     # Delegate to previous phase (handles CI + IR)
-    sci, rettype = emit_ir(cache, mi)
+    sci, rettype = emit_ir(cache, mi; const_argtypes)
 
     # Check code cache
     ci = get(cache, mi)
-    res = results(cache, ci)
+    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
     res.tile_bc !== nothing && return res.tile_bc
 
     # Compute bytecode
@@ -336,11 +396,12 @@ function emit_code(cache::CacheView, mi::Core.MethodInstance)
     # Generate Tile IR bytecode
     bytecode = write_bytecode!(1) do writer, func_buf
         emit_kernel!(writer, func_buf, sci, rettype;
-            name = string(mi.def.name),
+            name = sanitize_name(string(mi.def.name)),
             sm_arch = opts.sm_arch,
             num_ctas = opts.num_ctas,
             occupancy = opts.occupancy,
-            cache = cache
+            cache = cache,
+            const_argtypes = const_argtypes
         )
     end
 
@@ -405,6 +466,37 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
 end
 
 """
+    process_const_argtypes(f, argtypes) -> (stripped, const_argtypes)
+
+Split `Constant{T,V}` types from argtypes for method lookup, and build a
+`const_argtypes` vector with `CC.Const(V)` entries for const-seeded inference.
+
+Returns `(stripped, nothing)` when no Constant types are present.
+"""
+function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
+    params = argtypes isa DataType ? argtypes.parameters :
+             argtypes isa Tuple ? argtypes : fieldtypes(argtypes)
+    has_consts = any(T -> T <: Constant, params)
+    stripped_params = map(params) do T
+        T <: Constant ? constant_eltype(T) : T
+    end
+    stripped = Tuple{stripped_params...}
+    const_argtypes = if has_consts
+        cats = Any[CC.Const(f)]
+        for T in params
+            push!(cats, T <: Constant ? CC.Const(constant_value(T)) : T)
+        end
+        cats
+    else
+        nothing
+    end
+    return stripped, const_argtypes
+end
+
+constant_eltype(::Type{Constant{T,V}}) where {T,V} = T
+constant_value(::Type{Constant{T,V}}) where {T,V} = V
+
+"""
     code_tiled([io::IO], f, argtypes; sm_arch, opt_level, num_ctas, occupancy)
 
 Print the CUDA Tile IR for a Julia function as a textual MLIR representation.
@@ -417,16 +509,18 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
                     world::UInt=Base.get_world_counter())
-    tt = Base.signature_type(f, argtypes)
+    # Strip Constant types from argtypes for MI lookup, build const_argtypes
+    stripped, const_argtypes = process_const_argtypes(f, argtypes)
+    tt = Base.signature_type(f, stripped)
     if !Base.isdispatchtuple(tt)
         throw(ArgumentError("code_tiled requires a dispatch tuple, got non-concrete signature"))
     end
-    mi = @something(method_instance(f, argtypes; world, method_table=cuTileMethodTable),
-                    method_instance(f, argtypes; world),
-                    throw(MethodError(f, argtypes)))
+    mi = @something(method_instance(f, stripped; world, method_table=cuTileMethodTable),
+                    method_instance(f, stripped; world),
+                    throw(MethodError(f, stripped)))
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
-    bytecode = emit_code(cache, mi)
+    bytecode = emit_code(cache, mi; const_argtypes)
     print(io, disassemble_tileir(bytecode))
 end
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =

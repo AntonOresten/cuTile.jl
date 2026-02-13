@@ -29,28 +29,28 @@ function fft_kernel(
     W2::ct.TileArray{Float32, 3},            # W2 (F2, F2, 2)
     T0::ct.TileArray{Float32, 3},            # T0 (F1F2, F0, 2) twiddle factors
     T1::ct.TileArray{Float32, 3},            # T1 (F0F2, F1, 2) twiddle factors
-    n_const::ct.Constant{Int},
-    f0_const::ct.Constant{Int},
-    f1_const::ct.Constant{Int},
-    f2_const::ct.Constant{Int},
-    f0f1_const::ct.Constant{Int},
-    f1f2_const::ct.Constant{Int},
-    f0f2_const::ct.Constant{Int},
-    bs_const::ct.Constant{Int},
-    d_const::ct.Constant{Int},
-    n2d_const::ct.Constant{Int}
+    n_const::Int,
+    f0_const::Int,
+    f1_const::Int,
+    f2_const::Int,
+    f0f1_const::Int,
+    f1f2_const::Int,
+    f0f2_const::Int,
+    bs_const::Int,
+    d_const::Int,
+    n2d_const::Int
 )
     # Extract constant values
-    N = n_const[]
-    F0 = f0_const[]
-    F1 = f1_const[]
-    F2 = f2_const[]
-    F0F1 = f0f1_const[]
-    F1F2 = f1f2_const[]
-    F0F2 = f0f2_const[]
-    BS = bs_const[]
-    D = d_const[]
-    N2D = n2d_const[]
+    N = n_const
+    F0 = f0_const
+    F1 = f1_const
+    F2 = f2_const
+    F0F1 = f0f1_const
+    F1F2 = f1f2_const
+    F0F2 = f0f2_const
+    BS = bs_const
+    D = d_const
+    N2D = n2d_const
 
     bid = ct.bid(1)
 

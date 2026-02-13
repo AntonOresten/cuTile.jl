@@ -7,33 +7,33 @@ import cuTile as ct
 
 # 1D kernel
 function vec_add_kernel_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
-                           tile::ct.Constant{Int}) where {T}
+                           tile::Int) where {T}
     bid = ct.bid(1)
-    a_tile = ct.load(a, bid, (tile[],))
-    b_tile = ct.load(b, bid, (tile[],))
+    a_tile = ct.load(a, bid, (tile,))
+    b_tile = ct.load(b, bid, (tile,))
     ct.store(c, bid, a_tile + b_tile)
     return
 end
 
 # 2D kernel
 function vec_add_kernel_2d(a::ct.TileArray{T,2}, b::ct.TileArray{T,2}, c::ct.TileArray{T,2},
-                           tile_x::ct.Constant{Int}, tile_y::ct.Constant{Int}) where {T}
+                           tile_x::Int, tile_y::Int) where {T}
     bid_x = ct.bid(1)
     bid_y = ct.bid(2)
-    a_tile = ct.load(a, (bid_x, bid_y), (tile_x[], tile_y[]))
-    b_tile = ct.load(b, (bid_x, bid_y), (tile_x[], tile_y[]))
+    a_tile = ct.load(a, (bid_x, bid_y), (tile_x, tile_y))
+    b_tile = ct.load(b, (bid_x, bid_y), (tile_x, tile_y))
     ct.store(c, (bid_x, bid_y), a_tile + b_tile)
     return
 end
 
 # 1D kernel using gather/scatter
 function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
-                                   tile::ct.Constant{Int}) where {T}
+                                   tile::Int) where {T}
     bid = ct.bid(1)
     # Create index tile for this block's elements
-    offsets = ct.arange((tile[],), Int32)
-    base = ct.Tile((bid - Int32(1)) * Int32(tile[]))
-    indices = ct.broadcast_to(base, (tile[],)) .+ offsets
+    offsets = ct.arange((tile,), Int32)
+    base = ct.Tile((bid - Int32(1)) * Int32(tile))
+    indices = ct.broadcast_to(base, (tile,)) .+ offsets
 
     # Gather, add, scatter
     a_tile = ct.gather(a, indices)

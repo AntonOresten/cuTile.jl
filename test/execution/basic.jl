@@ -261,10 +261,10 @@ end
 
     @testset "1D → 2D matches Julia reshape exactly" begin
         function reshape_1d_to_2d_exact_kernel(x::ct.TileArray{Float32,1}, y::ct.TileArray{Float32,2},
-                                               n::ct.Constant{Int}, shape::ct.Constant{NTuple{2,Int}})
+                                               n::Int, shape::NTuple{2,Int})
             bid = ct.bid(1)
-            tile = ct.load(x, bid, (n[],))
-            reshaped = reshape(tile, shape[])
+            tile = ct.load(x, bid, (n,))
+            reshaped = reshape(tile, shape)
             ct.store(y, (bid, 1), reshaped)
             return
         end
@@ -284,10 +284,10 @@ end
 
     @testset "2D → 1D matches Julia vec exactly" begin
         function reshape_2d_to_1d_exact_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,1},
-                                               shape::ct.Constant{NTuple{2,Int}}, n::ct.Constant{Int})
+                                               shape::NTuple{2,Int}, n::Int)
             bid = ct.bid(1)
-            tile = ct.load(x, (bid, 1), shape[])
-            reshaped = reshape(tile, (n[],))
+            tile = ct.load(x, (bid, 1), shape)
+            reshaped = reshape(tile, (n,))
             ct.store(y, bid, reshaped)
             return
         end
@@ -307,11 +307,11 @@ end
 
     @testset "2D → 2D reshape matches Julia reshape exactly" begin
         function reshape_2d_to_2d_exact_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2},
-                                               src_shape::ct.Constant{NTuple{2,Int}},
-                                               tgt_shape::ct.Constant{NTuple{2,Int}})
+                                               src_shape::NTuple{2,Int},
+                                               tgt_shape::NTuple{2,Int})
             bid = ct.bid(1)
-            tile = ct.load(x, (bid, 1), src_shape[])
-            reshaped = reshape(tile, tgt_shape[])
+            tile = ct.load(x, (bid, 1), src_shape)
+            reshaped = reshape(tile, tgt_shape)
             ct.store(y, (bid, 1), reshaped)
             return
         end
@@ -331,11 +331,11 @@ end
 
     @testset "3D → 2D reshape matches Julia reshape exactly" begin
         function reshape_3d_to_2d_exact_kernel(x::ct.TileArray{Float32,3}, y::ct.TileArray{Float32,2},
-                                               src_shape::ct.Constant{NTuple{3,Int}},
-                                               tgt_shape::ct.Constant{NTuple{2,Int}})
+                                               src_shape::NTuple{3,Int},
+                                               tgt_shape::NTuple{2,Int})
             bid = ct.bid(1)
-            tile = ct.load(x, (bid, 1, 1), src_shape[])
-            reshaped = reshape(tile, tgt_shape[])
+            tile = ct.load(x, (bid, 1, 1), src_shape)
+            reshaped = reshape(tile, tgt_shape)
             ct.store(y, (bid, 1), reshaped)
             return
         end
@@ -356,12 +356,12 @@ end
     @testset "3D reshape round-trip with packing dim D=$D" for D in [2, 4]
         # This is the atom_packing pattern: (BS, N, 2) → (BS, N*2/D, D) → (BS, N, 2)
         function reshape_roundtrip_3d_kernel(x::ct.TileArray{Float32,3}, y::ct.TileArray{Float32,3},
-                                             orig_shape::ct.Constant{NTuple{3,Int}},
-                                             packed_shape::ct.Constant{NTuple{3,Int}})
+                                             orig_shape::NTuple{3,Int},
+                                             packed_shape::NTuple{3,Int})
             bid = ct.bid(1)
-            tile = ct.load(x, (bid, 1, 1), orig_shape[])
-            packed = reshape(tile, packed_shape[])
-            unpacked = reshape(packed, orig_shape[])
+            tile = ct.load(x, (bid, 1, 1), orig_shape)
+            packed = reshape(tile, packed_shape)
+            unpacked = reshape(packed, orig_shape)
             ct.store(y, (bid, 1, 1), unpacked)
             return
         end
@@ -383,11 +383,11 @@ end
 
     @testset "2D → 1D → 2D round-trip preserves exact layout" begin
         function reshape_2d_1d_2d_kernel(x::ct.TileArray{Float32,2}, y::ct.TileArray{Float32,2},
-                                         shape::ct.Constant{NTuple{2,Int}})
+                                         shape::NTuple{2,Int})
             bid = ct.bid(1)
-            tile = ct.load(x, (bid, 1), shape[])
-            flat = reshape(tile, (prod(shape[]),))
-            back = reshape(flat, shape[])
+            tile = ct.load(x, (bid, 1), shape)
+            flat = reshape(tile, (prod(shape),))
+            back = reshape(flat, shape)
             ct.store(y, (bid, 1), back)
             return
         end
@@ -459,11 +459,11 @@ end
     @testset "PermutedDimsArray" begin
         function copy_kernel_2d(
             src::ct.TileArray{Float32, 2}, dst::ct.TileArray{Float32, 2},
-            tile_x::ct.Constant{Int}, tile_y::ct.Constant{Int}
+            tile_x::Int, tile_y::Int
         )
             bid_x = ct.bid(1)
             bid_y = ct.bid(2)
-            tile = ct.load(src, (bid_x, bid_y), (tile_x[], tile_y[]))
+            tile = ct.load(src, (bid_x, bid_y), (tile_x, tile_y))
             ct.store(dst, (bid_x, bid_y), tile)
             return
         end
@@ -483,11 +483,11 @@ end
     @testset "load with order=(2,1)" begin
         function order_load_kernel(
             src::ct.TileArray{Float32, 2}, dst::ct.TileArray{Float32, 2},
-            t::ct.Constant{Int}
+            t::Int
         )
             bid_x = ct.bid(1)
             bid_y = ct.bid(2)
-            tile = ct.load(src, (bid_x, bid_y), (t[], t[]); order=(2, 1))
+            tile = ct.load(src, (bid_x, bid_y), (t, t); order=(2, 1))
             ct.store(dst, (bid_x, bid_y), tile)
             return
         end
@@ -504,11 +504,11 @@ end
     @testset "store with order=(2,1)" begin
         function order_store_kernel(
             src::ct.TileArray{Float32, 2}, dst::ct.TileArray{Float32, 2},
-            t::ct.Constant{Int}
+            t::Int
         )
             bid_x = ct.bid(1)
             bid_y = ct.bid(2)
-            tile = ct.load(src, (bid_x, bid_y), (t[], t[]))
+            tile = ct.load(src, (bid_x, bid_y), (t, t))
             ct.store(dst, (bid_x, bid_y), tile; order=(2, 1))
             return
         end
@@ -834,10 +834,10 @@ end
 
 @testset "1D with Constant tile size" begin
     function vadd_const_tile(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
-                             c::ct.TileArray{Float32,1}, tile::ct.Constant{Int})
+                             c::ct.TileArray{Float32,1}, tile::Int)
         pid = ct.bid(1)
-        tile_a = ct.load(a, pid, (tile[],))
-        tile_b = ct.load(b, pid, (tile[],))
+        tile_a = ct.load(a, pid, (tile,))
+        tile_b = ct.load(b, pid, (tile,))
         ct.store(c, pid, tile_a + tile_b)
         return
     end
@@ -856,11 +856,11 @@ end
 @testset "2D with Constant tile sizes" begin
     function madd_const_tiles(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
                               c::ct.TileArray{Float32,2},
-                              tx::ct.Constant{Int}, ty::ct.Constant{Int})
+                              tx::Int, ty::Int)
         bidx = ct.bid(1)
         bidy = ct.bid(2)
-        tile_a = ct.load(a, (bidx, bidy), (tx[], ty[]))
-        tile_b = ct.load(b, (bidx, bidy), (tx[], ty[]))
+        tile_a = ct.load(a, (bidx, bidy), (tx, ty))
+        tile_b = ct.load(b, (bidx, bidy), (tx, ty))
         ct.store(c, (bidx, bidy), tile_a + tile_b)
         return
     end
@@ -1056,5 +1056,12 @@ const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
     ct.launch(global_const_arith_kernel, cld(n, tile_size), a, b, scale)
 
     @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
+end
+
+@testset "kernel name with !" begin
+    function kernel!()
+        return
+    end
+    ct.launch(kernel!, 1)
 end
 

@@ -23,22 +23,22 @@ end
 # Matrix multiplication kernel with K reduction loop and 2D swizzle
 # C = A @ B where A is (M, K), B is (K, N), C is (M, N)
 function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArray{T,2},
-                       tm::ct.Constant{Int}, tn::ct.Constant{Int}, tk::ct.Constant{Int}) where {T}
+                       tm::Int, tn::Int, tk::Int) where {T}
     # Use 1D grid with swizzle for better cache locality
     bid = ct.bid(1)
     M = size(A, 1)
     N = size(B, 2)
     # swizzle_2d expects 0-indexed bid, returns 0-indexed tile coords
-    bid_m_0, bid_n_0 = swizzle_2d(M, N, tm[], tn[], 8, bid - Int32(1))
+    bid_m_0, bid_n_0 = swizzle_2d(M, N, tm, tn, 8, bid - Int32(1))
     # Convert to 1-indexed tile coordinates
     bid_m = bid_m_0 + Int32(1)
     bid_n = bid_n_0 + Int32(1)
 
     # Number of K tiles to iterate over
-    num_k = ct.num_tiles(A, 2, (tm[], tk[]))
+    num_k = ct.num_tiles(A, 2, (tm, tk))
 
     # Initialize accumulator with Float32 for precision
-    acc = ct.full((tm[], tn[]), zero(Float32), Float32)
+    acc = ct.full((tm, tn), zero(Float32), Float32)
 
     # K reduction loop - accumulate partial products
     # NOTE: Uses while-loop pattern. Native `for k in 0:n` syntax generates complex
@@ -47,8 +47,8 @@ function matmul_kernel(A::ct.TileArray{T,2}, B::ct.TileArray{T,2}, C::ct.TileArr
     while k <= num_k
         # Load and convert to TF32 for tensor cores (Float32 only)
         # padding_mode=Zero ensures out-of-bounds reads return zero (for non-aligned dimensions)
-        a = ct.load(A, (bid_m, k), (tm[], tk[]); padding_mode=ct.PaddingMode.Zero)
-        b = ct.load(B, (k, bid_n), (tk[], tn[]); padding_mode=ct.PaddingMode.Zero)
+        a = ct.load(A, (bid_m, k), (tm, tk); padding_mode=ct.PaddingMode.Zero)
+        b = ct.load(B, (k, bid_n), (tk, tn); padding_mode=ct.PaddingMode.Zero)
         if T === Float32
             a = convert(ct.Tile{ct.TFloat32}, a)
             b = convert(ct.Tile{ct.TFloat32}, b)

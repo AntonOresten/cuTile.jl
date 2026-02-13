@@ -1,9 +1,14 @@
 # kernel and argument handling
 
 """
-    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing)
+    emit_kernel!(writer, func_buf, sci, rettype; name, sm_arch=nothing, is_entry=true, num_ctas=nothing, occupancy=nothing, const_argtypes=nothing)
 
 Compile a StructuredIRCode to Tile IR bytecode.
+
+When `const_argtypes` is provided, arguments with `CC.Const` entries are treated
+as compile-time constants: no kernel parameter is generated and a ConstantOp is
+emitted instead. The `const_argtypes` vector is 1-indexed matching `sci.argtypes`
+(index 1 = function itself, user args from index 2).
 """
 function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       sci::StructuredIRCode, rettype::Type;
@@ -12,18 +17,26 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       is_entry::Bool = true,
                       num_ctas::Union{Int, Nothing} = nothing,
                       occupancy::Union{Int, Nothing} = nothing,
-                      cache::CacheView)
+                      cache::CacheView,
+                      const_argtypes::Union{Vector{Any}, Nothing} = nothing)
     tt = writer.type_table
     cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
     ctx = CGCtx(; cb, tt, sci, sm_arch, cache)
 
-    # Validate non-ghost argument types are concrete
+    # Determine which argument positions are const-seeded
+    # const_argtypes is 1-indexed: [Const(f), arg2, arg3, ...]
+    # sci.argtypes is also 1-indexed: [f_type, arg2_type, arg3_type, ...]
+    is_const_arg(i) = const_argtypes !== nothing && i <= length(const_argtypes) &&
+                      const_argtypes[i] isa CC.Const
+
+    # Validate non-ghost, non-const argument types are concrete
     for (i, argtype) in enumerate(sci.argtypes)
         is_ghost_type(CC.widenconst(argtype)) && continue
+        is_const_arg(i) && continue
         require_concrete_type(argtype, "kernel argument $i")
     end
 
-    # Build parameter list, handling ghost types and struct destructuring
+    # Build parameter list, handling ghost types, const args, and struct destructuring
     param_types = TypeId[]
     param_mapping = Tuple{Int, Union{Nothing, Symbol}}[]
 
@@ -31,6 +44,8 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         argtype_unwrapped = CC.widenconst(argtype)
         if is_ghost_type(argtype_unwrapped)
             continue
+        elseif is_const_arg(i)
+            continue  # const arg: no kernel parameter
         elseif should_destructure(argtype_unwrapped)
             # Destructure TileArray into flat parameters
             params = argtype_unwrapped.parameters
@@ -100,6 +115,28 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             tv = CGVal(val, type_id, sci.argtypes[arg_idx])
             ctx[SlotNumber(arg_idx)] = tv
             ctx[Argument(arg_idx)] = tv
+        end
+    end
+
+    # Emit ConstantOps for const-seeded arguments (no kernel parameter)
+    if const_argtypes !== nothing
+        for (i, cat) in enumerate(const_argtypes)
+            cat isa CC.Const || continue
+            i > length(sci.argtypes) && continue
+            val = cat.val
+            T = typeof(val)
+            type_id = tile_type_for_julia!(ctx, T; throw_error=false)
+            if type_id !== nothing
+                # Scalar: emit ConstantOp
+                bytes = constant_to_bytes(val, T)
+                v = encode_ConstantOp!(ctx.cb, type_id, bytes)
+                tv = CGVal(v, type_id, T, Int[], nothing, Some(val), nothing)
+            else
+                # Non-primitive (tuple etc.): ghost with constant
+                tv = ghost_value(T, val)
+            end
+            ctx[SlotNumber(i)] = tv
+            ctx[Argument(i)] = tv
         end
     end
 
