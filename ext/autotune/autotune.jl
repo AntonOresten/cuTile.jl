@@ -11,9 +11,9 @@ struct VerificationError <: Exception
 end
 
 const TUNING_PRESETS = (
-    fast     = (warmup=1, reps=3,  refine_topk=0, refine_reps=0),
-    default  = (warmup=2, reps=6,  refine_topk=2, refine_reps=8),
-    thorough = (warmup=2, reps=9, refine_topk=4, refine_reps=16),
+    fast     = (warmup=1, reps=3,  refine_topk=0, refine_reps=2),
+    default  = (warmup=2, reps=5,  refine_topk=2, refine_reps=4),
+    thorough = (warmup=2, reps=7, refine_topk=4, refine_reps=6),
 )
 
 function normalize_tuning(tuning::NamedTuple)
