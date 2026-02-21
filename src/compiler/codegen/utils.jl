@@ -374,6 +374,7 @@ end
 Check if a type is a ghost type (zero-size singleton).
 """
 function is_ghost_type(@nospecialize(T))
+    T isa Type && T <: Type && return true
     try
         isbitstype(T) && sizeof(T) == 0
     catch
