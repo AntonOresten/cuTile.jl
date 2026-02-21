@@ -2,7 +2,7 @@ module CUDAExt
 
 using cuTile
 using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code, sanitize_name,
-              constant_eltype, constant_value
+              constant_eltype, constant_value, is_ghost_type
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -117,7 +117,8 @@ function cuTile.launch(@nospecialize(f), grid, args...;
 
     # Unwrap Constant{T,V} → T for MI lookup (kernel sees plain types)
     unwrapped_types = map(tile_args) do arg
-        arg isa Constant ? constant_eltype(typeof(arg)) : typeof(arg)
+        arg isa Constant ? constant_eltype(typeof(arg)) :
+        arg isa Type ? Type{arg} : typeof(arg)
     end
     argtypes = Tuple{unwrapped_types...}
 
@@ -191,9 +192,8 @@ return their fields in order.
 
 This is used by the launch helper to splat arguments to cudacall.
 """
-flatten(x) = (x,)
+flatten(x) = is_ghost_type(typeof(x)) ? () : (x,)
 flatten(arr::TileArray{T, N}) where {T, N} = (arr.ptr, arr.sizes..., arr.strides...)
-flatten(::Constant) = ()  # Ghost types are not passed to cudacall
 
 """
     to_tile_arg(x)
