@@ -369,37 +369,6 @@ end
     @test all(Array(arr) .== 1)  # now incremented
 end
 
-@testset "atomic_xchg tile-space" begin
-    function atomic_xchg_ts_kernel(arr::ct.TileArray{Int,1})
-        bid = ct.bid(1)
-        tile = ct.full((16,), 42, Int)
-        ct.atomic_xchg(arr, bid, tile)
-        return
-    end
-
-    arr = CUDA.zeros(Int, 32)
-
-    ct.launch(atomic_xchg_ts_kernel, 2, arr)
-
-    @test all(Array(arr) .== 42)
-end
-
-@testset "atomic_cas tile-space" begin
-    function atomic_cas_ts_kernel(arr::ct.TileArray{Int32,1})
-        bid = ct.bid(1)
-        expected = ct.full((16,), Int32(0), Int32)
-        desired = ct.full((16,), Int32(1), Int32)
-        ct.atomic_cas(arr, bid, expected, desired)
-        return
-    end
-
-    arr = CUDA.zeros(Int32, 32)
-
-    ct.launch(atomic_cas_ts_kernel, 2, arr)
-
-    @test all(Array(arr) .== 1)
-end
-
 @testset "atomic_add tile-space 1D tuple index" begin
     # Test the N-D path with a 1-tuple index (not the scalar convenience)
     function atomic_add_ts_tuple1d_kernel(arr::ct.TileArray{Int,1})

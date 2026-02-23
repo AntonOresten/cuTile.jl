@@ -167,23 +167,6 @@ for (op, intrinsic) in _ATOMIC_RMW_OPS
         $fname(array, (indices,), val; memory_order, memory_scope)
     end
 
-    # Tile-space: N-D tuple index + tile value (like store)
-    @eval @inline function $fname(array::TileArray{T, N},
-                                   index::NTuple{N, Integer}, tile::Tile{T};
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T, N}
-        reshaped = _reshape_to_rank(tile, Val(N))
-        ptr_tile, mask = _tile_space_ptrs_mask(array, index, Val(size(reshaped)))
-        Intrinsics.$intrinsic(ptr_tile, reshaped, mask, memory_order, memory_scope)
-    end
-
-    # Tile-space: 1D convenience (scalar index)
-    @eval @inline function $fname(array::TileArray{T, 1},
-                                   index::Integer, tile::Tile{T};
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T}
-        $fname(array, (index,), tile; memory_order, memory_scope)
-    end
 end
 
 # --- CAS operations (separate due to different signature) ---
@@ -263,26 +246,22 @@ end
     (ptr_tile, mask)
 end
 
-# --- Tile-space CAS ---
+# --- Tile-space atomic_add ---
 
-# N-D tuple index
-@inline function atomic_cas(array::TileArray{T, N},
-                            index::NTuple{N, Integer},
-                            expected::Tile{T}, desired::Tile{T};
+# N-D tuple index + tile value (like store)
+@inline function atomic_add(array::TileArray{T, N},
+                            index::NTuple{N, Integer}, tile::Tile{T};
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T, N}
-    expected_r = _reshape_to_rank(expected, Val(N))
-    desired_r = _reshape_to_rank(desired, Val(N))
-    ptr_tile, mask = _tile_space_ptrs_mask(array, index, Val(size(expected_r)))
-    Intrinsics.atomic_cas_tile(ptr_tile, expected_r, desired_r, mask,
-                               memory_order, memory_scope)
+    reshaped = _reshape_to_rank(tile, Val(N))
+    ptr_tile, mask = _tile_space_ptrs_mask(array, index, Val(size(reshaped)))
+    Intrinsics.atomic_add_tile(ptr_tile, reshaped, mask, memory_order, memory_scope)
 end
 
-# 1D convenience
-@inline function atomic_cas(array::TileArray{T, 1},
-                            index::Integer,
-                            expected::Tile{T}, desired::Tile{T};
+# 1D convenience (scalar index)
+@inline function atomic_add(array::TileArray{T, 1},
+                            index::Integer, tile::Tile{T};
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T}
-    atomic_cas(array, (index,), expected, desired; memory_order, memory_scope)
+    atomic_add(array, (index,), tile; memory_order, memory_scope)
 end
