@@ -1434,6 +1434,23 @@
             end
         end
 
+        @testset "tile-indexed 3D atomic_add" begin
+            spec3d = ct.ArraySpec{3}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,3,spec3d}}) do arr
+                    @check "iota"
+                    i = ct.arange((4,), Int)
+                    j = ct.arange((4,), Int)
+                    k = ct.arange((4,), Int)
+                    @check "offset"
+                    @check "atomic_rmw_tko"
+                    ct.atomic_add(arr, (i, j, k), Int32(1))
+                    return
+                end
+            end
+        end
+
         @testset "tile-indexed atomic_rmw_tko" begin
             spec = ct.ArraySpec{1}(16, true)
             # xchg

@@ -314,6 +314,24 @@ end
     @test all(Array(arr) .== 1)
 end
 
+@testset "atomic_add tile-indexed 3D" begin
+    function atomic_add_3d_kernel(arr::ct.TileArray{Int,3})
+        # 3D index tiles — each is length 4, will broadcast to (4,4,4) = 64 elements
+        i = ct.reshape(ct.arange((4,), Int), (4, 1, 1))
+        j = ct.reshape(ct.arange((4,), Int), (1, 4, 1))
+        k = ct.reshape(ct.arange((4,), Int), (1, 1, 4))
+        ct.atomic_add(arr, (i, j, k), 1;
+                     memory_order=ct.MemoryOrder.AcqRel)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 4, 4)
+
+    ct.launch(atomic_add_3d_kernel, 1, arr)
+
+    @test all(Array(arr) .== 1)
+end
+
 @testset "1D gather - simple" begin
     # Simple 1D gather: copy first 16 elements using gather
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
