@@ -170,8 +170,10 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     trials = collect(space)
 
     trials = Any[trials...]
-    trials, precompile_error = precompile_candidates(f, trials, grid_fn, args_fn;
+    trials, precompile_error = Base.ScopedValues.with(cuTile._SCOPED_INF_CACHE => CC.InferenceResult[]) do
+        precompile_candidates(f, trials, grid_fn, args_fn;
         sm_arch, opt_level, workers=tuning.precompile_workers)
+    end
 
     record, first_error = measure_candidates(f, trials, grid_fn, args_fn;
         sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.reps, verify=checker)
