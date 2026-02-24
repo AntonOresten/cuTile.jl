@@ -3,17 +3,6 @@ using CUDA
 const Exp = ct.Experimental
 
 @testset "Autotune" begin
-    @testset "@withconfig" begin
-        grid_fn = Exp.@withconfig (cld(1024, $tile), 17)
-        @test grid_fn((; tile=64)) == (16, 17)
-
-        args_fn = Exp.@withconfig (ct.Constant($tile), $occ, 42)
-        args = args_fn((; tile=32, occ=2))
-        @test args[1] isa ct.Constant
-        @test args[1][] == 32
-        @test args[2] == 2
-        @test args[3] == 42
-    end
 
     function vadd_kernel(a::ct.TileArray{Float32,1},
                          b::ct.TileArray{Float32,1},

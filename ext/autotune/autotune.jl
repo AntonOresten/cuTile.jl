@@ -111,16 +111,30 @@ function precompile_candidates(@nospecialize(f), configs::Vector{Any},
     compiled = fill(true, length(configs))
     errors = Vector{Any}(nothing, length(configs))
     sem = Base.Semaphore(workers)
+    cancelled = Threads.Atomic{Bool}(false)
 
-    @sync for (i, cfg) in enumerate(configs)
-        Threads.@spawn Base.acquire(sem) do
-            try
-                precompile_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level)
-            catch err
-                compiled[i] = false
-                errors[i] = (cfg, err)
+    try
+        @sync for (i, cfg) in enumerate(configs)
+            Threads.@spawn begin
+                cancelled[] && return
+                Base.acquire(sem) do
+                    cancelled[] && return
+                    try
+                        precompile_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level)
+                    catch err
+                        compiled[i] = false
+                        errors[i] = (cfg, err)
+                    end
+                end
             end
         end
+    catch e
+        cancelled[] = true
+        e isa InterruptException || rethrow()
+        @warn "Precompilation interrupted, waiting for in-flight workers…"
+        # @sync already waits for spawned tasks before propagating,
+        # but the atomic flag ensures queued ones exit early.
+        rethrow()
     end
 
     first_err = nothing
@@ -144,6 +158,10 @@ function measure_candidates(@nospecialize(f), configs::Vector{Any},
         ms = try
             eval_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level, warmup, reps, verify)
         catch err
+            if err isa InterruptException
+                @warn "Benchmarking interrupted after $(length(record)) configs"
+                break
+            end
             err isa VerificationError && @warn "Config $cfg failed verification, skipping"
             first_error === nothing && (first_error = (cfg, err))
             continue
@@ -170,8 +188,10 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     trials = collect(space)
 
     trials = Any[trials...]
-    trials, precompile_error = precompile_candidates(f, trials, grid_fn, args_fn;
-        sm_arch, opt_level, workers=tuning.precompile_workers)
+    trials, precompile_error = Base.ScopedValues.with(cuTile._SCOPED_INF_CACHE => CC.InferenceResult[]) do
+        precompile_candidates(f, trials, grid_fn, args_fn;
+            sm_arch, opt_level, workers=tuning.precompile_workers)
+    end
 
     record, first_error = measure_candidates(f, trials, grid_fn, args_fn;
         sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.reps, verify=checker)
