@@ -37,26 +37,4 @@ function Base.iterate(space::CartesianSpace{names}, state=nothing) where names
     return cfg, (; inner, cursor)
 end
 
-
-function _withconfig_rewrite(ex, cfg)
-    if ex isa Expr
-        if ex.head === :$
-            key = ex.args[1]
-            key isa Symbol || throw(ArgumentError(
-                "@withconfig placeholders must be symbols like `\$tile`"))
-            return :($(cfg).$(key))
-        elseif ex.head === :quote
-            return ex
-        end
-        return Expr(ex.head, map(arg -> _withconfig_rewrite(arg, cfg), ex.args)...)
-    end
-    return ex
-end
-
-macro withconfig(ex)
-    cfg = gensym(:cfg)
-    rewritten = _withconfig_rewrite(ex, cfg)
-    return esc(:($cfg -> $rewritten))
-end
-
 end
