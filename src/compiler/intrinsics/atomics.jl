@@ -34,7 +34,7 @@ end
     atomic_tfunc(ptrs) -> Type
 
 Shared tfunc for atomic operations (add, xchg, cas).
-Returns raw T for 0D pointer tiles, Tile{T, S} for N-D.
+Always returns Tile{T, S}, even for 0D (S = Tuple{}).
 """
 function atomic_tfunc(𝕃, @nospecialize(ptrs), @nospecialize args...)
     ptrs_type = CC.widenconst(ptrs)
@@ -43,7 +43,6 @@ function atomic_tfunc(𝕃, @nospecialize(ptrs), @nospecialize args...)
     ptr_type <: Ptr || return nothing
     T = eltype(ptr_type)
     S = ptrs_type.parameters[2]
-    S === Tuple{} && return T
     return Tile{T, S}
 end
 
@@ -105,12 +104,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     end
     ctx.token = new_token
 
-    # Return type depends on shape: raw T for 0D, Tile{T, S} for N-D
-    if isempty(shape)
-        CGVal(old_val, result_tile_type, elem_type, Int[])
-    else
-        CGVal(old_val, result_tile_type, Tile{elem_type, Tuple{shape...}}, collect(shape))
-    end
+    CGVal(old_val, result_tile_type, Tile{elem_type, Tuple{shape...}}, collect(shape))
 end
 
 # cuda_tile.atomic_rmw_tko (shared helper for atomic RMW operations)
@@ -171,12 +165,7 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     end
     ctx.token = new_token
 
-    # Return type depends on shape: raw T for 0D, Tile{T, S} for N-D
-    if isempty(shape)
-        CGVal(old_val, result_tile_type, elem_type, Int[])
-    else
-        CGVal(old_val, result_tile_type, Tile{elem_type, Tuple{shape...}}, collect(shape))
-    end
+    CGVal(old_val, result_tile_type, Tile{elem_type, Tuple{shape...}}, collect(shape))
 end
 
 # cuda_tile.atomic_rmw_tko with XCHG

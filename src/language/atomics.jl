@@ -116,7 +116,8 @@ for op in (:add, :xchg)
                                    memory_order::Int=MemoryOrder.AcqRel,
                                    memory_scope::Int=MemScope.Device) where {T}
         ptr_tile, mask, _ = _atomic_ptr_and_mask(array, index)
-        Intrinsics.$intrinsic(ptr_tile, Tile(val), mask, memory_order, memory_scope)
+        Intrinsics.to_scalar(
+            Intrinsics.$intrinsic(ptr_tile, Tile(val), mask, memory_order, memory_scope))
     end
 
     # N-D tile indices, scalar val
@@ -177,8 +178,9 @@ end
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T}
     ptr_tile, mask, _ = _atomic_ptr_and_mask(array, index)
-    Intrinsics.atomic_cas(ptr_tile, Tile(expected), Tile(desired), mask,
-                           memory_order, memory_scope)
+    Intrinsics.to_scalar(
+        Intrinsics.atomic_cas(ptr_tile, Tile(expected), Tile(desired), mask,
+                               memory_order, memory_scope))
 end
 
 # N-D tile indices, scalar expected/desired
