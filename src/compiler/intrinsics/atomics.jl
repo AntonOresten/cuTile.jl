@@ -86,21 +86,21 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     mem_ordering = memory_order_to_semantics(memory_order)
     mem_scope = memory_scope_to_scope(memory_scope)
 
-    if has_mask
+    old_val, new_token = if has_mask
         mask_tv = emit_value!(ctx, args[4])
         mask_tv === nothing && throw(IRError("atomic CAS: cannot resolve mask"))
-        old_val, new_token = encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
-                                                     ptr_tv.v, expected_tv.v, desired_tv.v;
-                                                     mask=mask_tv.v,
-                                                     token=ctx.token,
-                                                     memory_ordering=mem_ordering,
-                                                     memory_scope=mem_scope)
+        encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
+                               ptr_tv.v, expected_tv.v, desired_tv.v;
+                               mask=mask_tv.v,
+                               token=ctx.token,
+                               memory_ordering=mem_ordering,
+                               memory_scope=mem_scope)
     else
-        old_val, new_token = encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
-                                                     ptr_tv.v, expected_tv.v, desired_tv.v;
-                                                     token=ctx.token,
-                                                     memory_ordering=mem_ordering,
-                                                     memory_scope=mem_scope)
+        encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
+                               ptr_tv.v, expected_tv.v, desired_tv.v;
+                               token=ctx.token,
+                               memory_ordering=mem_ordering,
+                               memory_scope=mem_scope)
     end
     ctx.token = new_token
 
@@ -147,21 +147,21 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     mem_ordering = memory_order_to_semantics(memory_order)
     mem_scope = memory_scope_to_scope(memory_scope)
 
-    if has_mask
+    old_val, new_token = if has_mask
         mask_tv = emit_value!(ctx, args[3])
         mask_tv === nothing && throw(IRError("atomic RMW: cannot resolve mask"))
-        old_val, new_token = encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
-                                                     ptr_tv.v, val_tv.v, actual_mode;
-                                                     mask=mask_tv.v,
-                                                     token=ctx.token,
-                                                     memory_ordering=mem_ordering,
-                                                     memory_scope=mem_scope)
+        encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
+                                ptr_tv.v, val_tv.v, actual_mode;
+                                mask=mask_tv.v,
+                                token=ctx.token,
+                                memory_ordering=mem_ordering,
+                                memory_scope=mem_scope)
     else
-        old_val, new_token = encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
-                                                     ptr_tv.v, val_tv.v, actual_mode;
-                                                     token=ctx.token,
-                                                     memory_ordering=mem_ordering,
-                                                     memory_scope=mem_scope)
+        encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
+                                ptr_tv.v, val_tv.v, actual_mode;
+                                token=ctx.token,
+                                memory_ordering=mem_ordering,
+                                memory_scope=mem_scope)
     end
     ctx.token = new_token
 
