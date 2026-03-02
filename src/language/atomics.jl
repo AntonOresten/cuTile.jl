@@ -77,7 +77,7 @@ end
 end
 
 # ============================================================================
-# Atomic CAS operations
+# Atomic CAS
 # ============================================================================
 
 """
@@ -95,57 +95,17 @@ while ct.atomic_cas(locks, idx, Int32(0), Int32(1); memory_order=ct.MemoryOrder.
 end
 ```
 """
-# Scalar index
-@inline function atomic_cas(array::TileArray{T}, index, expected::T, desired::T;
+@inline function atomic_cas(array::TileArray{T}, indices,
+                            expected::TileOrScalar{T}, desired::TileOrScalar{T};
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T}
-    ptr_tile, mask, _ = _atomic_ptr_and_mask(array, index)
-    Intrinsics.to_scalar(
-        Intrinsics.atomic_cas(ptr_tile, Tile(expected), Tile(desired), mask,
-                               memory_order, memory_scope))
-end
-
-# N-D tile indices, scalar expected/desired
-@inline function atomic_cas(array::TileArray{T, N},
-                            indices::NTuple{N, Tile{<:Integer}},
-                            expected::T, desired::T;
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T, N}
     ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
-    expected_tile = broadcast_to(Tile(expected), S)
-    desired_tile = broadcast_to(Tile(desired), S)
-    Intrinsics.atomic_cas(ptr_tile, expected_tile, desired_tile, mask,
-                           memory_order, memory_scope)
+    expected_bc = S === () ? Tile(expected) : broadcast_to(Tile(expected), S)
+    desired_bc = S === () ? Tile(desired) : broadcast_to(Tile(desired), S)
+    result = Intrinsics.atomic_cas(ptr_tile, expected_bc, desired_bc, mask,
+                                   memory_order, memory_scope)
+    S === () ? Intrinsics.to_scalar(result) : result
 end
-
-# N-D tile indices, tile expected/desired
-@inline function atomic_cas(array::TileArray{T, N},
-                            indices::NTuple{N, Tile{<:Integer}},
-                            expected::Tile{T}, desired::Tile{T};
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T, N}
-    ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
-    expected_bc = broadcast_to(expected, S)
-    desired_bc = broadcast_to(desired, S)
-    Intrinsics.atomic_cas(ptr_tile, expected_bc, desired_bc, mask,
-                           memory_order, memory_scope)
-end
-
-# 1D convenience: single Tile index
-@inline function atomic_cas(array::TileArray{T, 1}, indices::Tile{<:Integer},
-                            expected::T, desired::T;
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T}
-    atomic_cas(array, (indices,), expected, desired; memory_order, memory_scope)
-end
-
-@inline function atomic_cas(array::TileArray{T, 1}, indices::Tile{<:Integer},
-                            expected::Tile{T}, desired::Tile{T};
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T}
-    atomic_cas(array, (indices,), expected, desired; memory_order, memory_scope)
-end
-
 
 # ============================================================================
 # Atomic RMW operations (atomic_add, atomic_xchg)
@@ -182,45 +142,12 @@ for op in (:add, :xchg)
     fname = Symbol(:atomic_, op)
     intrinsic = Symbol(:atomic_, op)
 
-    # Scalar index, scalar val
-    @eval @inline function $fname(array::TileArray{T}, index, val::T;
+    @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar{T};
                                    memory_order::Int=MemoryOrder.AcqRel,
                                    memory_scope::Int=MemScope.Device) where {T}
-        ptr_tile, mask, _ = _atomic_ptr_and_mask(array, index)
-        Intrinsics.to_scalar(
-            Intrinsics.$intrinsic(ptr_tile, Tile(val), mask, memory_order, memory_scope))
-    end
-
-    # N-D tile indices, scalar val
-    @eval @inline function $fname(array::TileArray{T, N},
-                                   indices::NTuple{N, Tile{<:Integer}}, val::T;
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T, N}
         ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
-        val_tile = broadcast_to(Tile(val), S)
-        Intrinsics.$intrinsic(ptr_tile, val_tile, mask, memory_order, memory_scope)
-    end
-
-    # N-D tile indices, tile val
-    @eval @inline function $fname(array::TileArray{T, N},
-                                   indices::NTuple{N, Tile{<:Integer}}, val::Tile{T};
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T, N}
-        ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
-        val_bc = broadcast_to(val, S)
-        Intrinsics.$intrinsic(ptr_tile, val_bc, mask, memory_order, memory_scope)
-    end
-
-    # 1D convenience: single Tile index
-    @eval @inline function $fname(array::TileArray{T, 1}, indices::Tile{<:Integer}, val::T;
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T}
-        $fname(array, (indices,), val; memory_order, memory_scope)
-    end
-
-    @eval @inline function $fname(array::TileArray{T, 1}, indices::Tile{<:Integer}, val::Tile{T};
-                                   memory_order::Int=MemoryOrder.AcqRel,
-                                   memory_scope::Int=MemScope.Device) where {T}
-        $fname(array, (indices,), val; memory_order, memory_scope)
+        val_bc = S === () ? Tile(val) : broadcast_to(Tile(val), S)
+        result = Intrinsics.$intrinsic(ptr_tile, val_bc, mask, memory_order, memory_scope)
+        S === () ? Intrinsics.to_scalar(result) : result
     end
 end

@@ -1,5 +1,6 @@
 public TileArray, Tile, Constant, TFloat32, similar_type,
-       ScalarInt, ScalarFloat, TileInt, TileFloat, ScalarOrTileInt, ScalarOrTileFloat
+       ScalarInt, ScalarFloat, IntTile, FloatTile, TileOrInt, TileOrFloat,
+       TileOrScalar
 
 """
     ArraySpec{N}
@@ -250,6 +251,9 @@ In kernel code, this is compiled to a ConstantOp.
     Tile{T, Tuple{}}()
 end
 
+# No-op: pass-through for values already wrapped as Tile
+@inline Tile(tile::Tile) = tile
+
 #=============================================================================
  View Types
 =============================================================================#
@@ -367,16 +371,19 @@ const ScalarInt = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64
 const ScalarFloat = Union{Float16, BFloat16, Float32, Float64, TFloat32}
 
 """Integer tile types."""
-const TileInt{S} = Tile{T, S} where {T <: ScalarInt}
+const IntTile{S} = Tile{T, S} where {T <: ScalarInt}
 
 """Floating-point tile types."""
-const TileFloat{S} = Tile{T, S} where {T <: ScalarFloat}
+const FloatTile{S} = Tile{T, S} where {T <: ScalarFloat}
+
+"""Scalar or tile of element type T."""
+const TileOrScalar{T} = Union{T, Tile{T}}
 
 """Integer values (scalar or tile)."""
-const ScalarOrTileInt = Union{ScalarInt, TileInt}
+const TileOrInt = TileOrScalar{<:ScalarInt}
 
 """Floating-point values (scalar or tile)."""
-const ScalarOrTileFloat = Union{ScalarFloat, TileFloat}
+const TileOrFloat = TileOrScalar{<:ScalarFloat}
 
 
 #=============================================================================
