@@ -1,8 +1,8 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code, sanitize_name,
-              constant_eltype, constant_value, is_ghost_type
+using cuTile: TileArray, Constant, CGOpts, CuTileResults, DEFAULT_BYTECODE_VERSION,
+              emit_code, sanitize_name, constant_eltype, constant_value, is_ghost_type
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -38,6 +38,9 @@ function check_tile_ir_support()
     else
         error("Tile IR is not supported on compute capability $cap ($sm_arch)")
     end
+
+    # Return bytecode version matching the toolkit
+    return VersionNumber(cuda_ver.major, cuda_ver.minor)
 end
 
 """
@@ -137,7 +140,7 @@ function cuTile.launch(@nospecialize(f), grid, args...;
                        opt_level::Int=3,
                        num_ctas::Union{Int, Nothing}=nothing,
                        occupancy::Union{Int, Nothing}=nothing)
-    check_tile_ir_support()
+    bytecode_version = check_tile_ir_support()
 
     # Convert CuArray -> TileArray (and other conversions)
     tile_args = map(to_tile_arg, args)
@@ -168,7 +171,8 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     end
 
     # Create cache view with compilation options as sharding keys
-    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
+    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
+            bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
 
     # Run cached compilation

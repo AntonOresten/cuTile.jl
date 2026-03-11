@@ -1,7 +1,7 @@
 # Bytecode file writer - handles sections and overall structure
 
 # Bytecode version
-const BYTECODE_VERSION = (13, 1, 0)
+const DEFAULT_BYTECODE_VERSION = v"13.1"
 
 # Magic number
 const MAGIC = UInt8[0x7f, 0x54, 0x69, 0x6c, 0x65, 0x49, 0x52, 0x00]  # "\x7fTileIR\x00"
@@ -97,9 +97,11 @@ mutable struct CodeBuilder
     next_value_id::Int
     cur_debug_attr::DebugAttrId
     num_ops::Int
+    version::VersionNumber
 end
 
-function CodeBuilder(string_table::StringTable, constant_table::ConstantTable, type_table::TypeTable)
+function CodeBuilder(string_table::StringTable, constant_table::ConstantTable, type_table::TypeTable;
+                     version::VersionNumber=DEFAULT_BYTECODE_VERSION)
     CodeBuilder(
         UInt8[],
         string_table,
@@ -108,7 +110,8 @@ function CodeBuilder(string_table::StringTable, constant_table::ConstantTable, t
         DebugAttrId[],
         0,
         DebugAttrId(0),  # No debug info
-        0
+        0,
+        version
     )
 end
 
@@ -374,9 +377,10 @@ mutable struct BytecodeWriter
     debug_attr_table::DebugAttrTable
     debug_info::Vector{Vector{DebugAttrId}}
     num_functions::Int
+    version::VersionNumber
 end
 
-function BytecodeWriter()
+function BytecodeWriter(; version::VersionNumber=DEFAULT_BYTECODE_VERSION)
     string_table = StringTable()
     BytecodeWriter(
         UInt8[],
@@ -385,21 +389,21 @@ function BytecodeWriter()
         TypeTable(),
         DebugAttrTable(string_table),
         Vector{Vector{DebugAttrId}}[],
-        0
+        0,
+        version
     )
 end
 
 """
 Write the bytecode header.
 """
-function write_header!(buf::Vector{UInt8})
+function write_header!(buf::Vector{UInt8}, version::VersionNumber)
     append!(buf, MAGIC)
-    major, minor, tag = BYTECODE_VERSION
-    push!(buf, UInt8(major))
-    push!(buf, UInt8(minor))
-    # Tag as 2-byte little-endian
-    push!(buf, UInt8(tag & 0xff))
-    push!(buf, UInt8((tag >> 8) & 0xff))
+    push!(buf, UInt8(version.major))
+    push!(buf, UInt8(version.minor))
+    # Patch as 2-byte little-endian
+    push!(buf, UInt8(version.patch & 0xff))
+    push!(buf, UInt8((version.patch >> 8) & 0xff))
 end
 
 """
@@ -486,8 +490,9 @@ end
 Write complete bytecode to a buffer.
 Returns the buffer with all sections.
 """
-function write_bytecode!(f::Function, num_functions::Int)
-    writer = BytecodeWriter()
+function write_bytecode!(f::Function, num_functions::Int;
+                         version::VersionNumber=DEFAULT_BYTECODE_VERSION)
+    writer = BytecodeWriter(; version)
 
     # Function section content
     func_buf = UInt8[]
@@ -502,7 +507,7 @@ function write_bytecode!(f::Function, num_functions::Int)
 
     # Build final output
     buf = UInt8[]
-    write_header!(buf)
+    write_header!(buf, version)
 
     # Sections in order: Func, Global (if any), Constant, Debug, Type, String, End
     write_section!(buf, Section.Func, func_buf, 8)
@@ -574,7 +579,8 @@ function add_function!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     end
 
     # Create code builder for function body
-    cb = CodeBuilder(writer.string_table, writer.constant_table, writer.type_table)
+    cb = CodeBuilder(writer.string_table, writer.constant_table, writer.type_table;
+                     version=writer.version)
 
     return cb
 end
