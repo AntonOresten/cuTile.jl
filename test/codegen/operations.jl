@@ -1511,6 +1511,22 @@
                 end
             end
         end
+
+        @testset "element_indices + atomic_add" begin
+            spec = ct.ArraySpec{1}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec}, Int}) do arr, bid
+                    @check "iota"
+                    tile = ct.full((16,), Int32(1), Int32)
+                    indices = ct.element_indices((16,), bid)
+                    @check "offset"
+                    @check "atomic_rmw_tko"
+                    ct.atomic_add(arr, indices, tile)
+                    return
+                end
+            end
+        end
     end
 
     #=========================================================================

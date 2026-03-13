@@ -409,7 +409,7 @@ end
  Factory
 =============================================================================#
 
-public arange, full, zeros
+public arange, full, zeros, element_indices
 
 """
     arange(shape::NTuple{1, Int}, dtype::Type{T}) -> Tile{T, shape}
@@ -451,6 +451,39 @@ zeros_tile = ct.zeros((32, 32), Float32)
 """
 @inline zeros(shape::NTuple{N, Int}, ::Type{T}) where {N, T} =
     full(shape, zero(T), T)
+
+"""
+    element_indices(shape, index) -> Tile{Int32} or NTuple{N, Tile{Int32}}
+
+Convert tile-space block indices to per-element index tiles (1-indexed).
+`shape` is the tile shape, `index` is the 1-indexed block position.
+
+Returns element-index tiles suitable for tile-indexed operations like
+`atomic_add`, `atomic_xchg`, etc.
+
+# 1D example
+```julia
+indices = ct.element_indices((16,), bid)
+ct.atomic_add(arr, indices, tile)
+```
+
+# 2D example
+```julia
+row_idx, col_idx = ct.element_indices((4, 4), (bid_r, bid_c))
+ct.atomic_add(arr, (row_idx, col_idx), tile)
+```
+"""
+@inline function element_indices(shape::NTuple{1, Int}, index::Integer)
+    arange(shape, Int32) .+ Int32((index - One()) * shape[1])
+end
+
+@inline function element_indices(shape::NTuple{N, Int}, index::NTuple{N, Integer}) where {N}
+    ntuple(Val(N)) do d
+        bcast_shape = ntuple(i -> i == d ? shape[d] : 1, Val(N))
+        base = Int32((index[d] - One()) * shape[d])
+        reshape(arange((shape[d],), Int32), bcast_shape) .+ base
+    end
+end
 
 #=============================================================================
  Shape & DType

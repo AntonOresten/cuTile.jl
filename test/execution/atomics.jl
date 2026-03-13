@@ -333,6 +333,85 @@ end
     @test all(Array(arr) .== 1)
 end
 
+# element_indices + atomic operations
+
+@testset "element_indices + atomic_add 1D" begin
+    function atomic_add_ti_kernel(arr::ct.TileArray{Int,1}, TILE::Int)
+        bid = ct.bid(1)
+        tile = ct.full((TILE,), 1, Int)
+        indices = ct.element_indices((TILE,), bid)
+        ct.atomic_add(arr, indices, tile)
+        return
+    end
+
+    TILE = 16
+    arr = CUDA.zeros(Int, 64)
+    ct.launch(atomic_add_ti_kernel, 4, arr, ct.Constant(TILE))
+    @test all(Array(arr) .== 1)
+end
+
+@testset "element_indices + atomic_add returns old values" begin
+    function atomic_add_ti_old_kernel(arr::ct.TileArray{Int,1},
+                                      out::ct.TileArray{Int,1})
+        bid = ct.bid(1)
+        tile = ct.full((16,), 1, Int)
+        indices = ct.element_indices((16,), bid)
+        old = ct.atomic_add(arr, indices, tile)
+        ct.store(out, bid, old)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 16)
+    out = CUDA.fill(Int(-1), 16)
+    ct.launch(atomic_add_ti_old_kernel, 1, arr, out)
+    @test all(Array(out) .== 0)
+    @test all(Array(arr) .== 1)
+end
+
+@testset "element_indices + atomic_add 2D" begin
+    function atomic_add_ti_2d_kernel(arr::ct.TileArray{Int,2})
+        bid = ct.bid(1)
+        row_idx, col_idx = ct.element_indices((4, 4), (bid, Int32(1)))
+        tile = ct.full((4, 4), 1, Int)
+        ct.atomic_add(arr, (row_idx, col_idx), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 8)
+    ct.launch(atomic_add_ti_2d_kernel, 1, arr)
+    result = Array(arr)
+    @test all(result[:, 1:4] .== 1)
+    @test all(result[:, 5:8] .== 0)
+end
+
+@testset "element_indices + atomic_add 2D both dims" begin
+    function atomic_add_ti_2d_both_kernel(arr::ct.TileArray{Int,2})
+        bid = ct.bid(1)
+        row_idx, col_idx = ct.element_indices((4, 4), (Int32(1), bid))
+        tile = ct.full((4, 4), 1, Int)
+        ct.atomic_add(arr, (row_idx, col_idx), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 8)
+    ct.launch(atomic_add_ti_2d_both_kernel, 2, arr)
+    @test all(Array(arr) .== 1)
+end
+
+@testset "element_indices + atomic_add 3D" begin
+    function atomic_add_ti_3d_kernel(arr::ct.TileArray{Int,3})
+        bid = ct.bid(1)
+        i, j, k = ct.element_indices((2, 2, 2), (bid, Int32(1), Int32(1)))
+        tile = ct.full((2, 2, 2), 1, Int)
+        ct.atomic_add(arr, (i, j, k), tile)
+        return
+    end
+
+    arr = CUDA.zeros(Int, 4, 2, 2)
+    ct.launch(atomic_add_ti_3d_kernel, 2, arr)
+    @test all(Array(arr) .== 1)
+end
+
 @testset "1D gather - simple" begin
     # Simple 1D gather: copy first 16 elements using gather
     function gather_simple_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
