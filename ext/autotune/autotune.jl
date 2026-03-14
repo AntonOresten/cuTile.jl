@@ -38,9 +38,11 @@ function hints_from_cfg(cfg)
 end
 
 function time_ms(run_once::Function, get_args::Function;
-                 warmup::Int, reps::Int, verify::Union{Nothing, Function}=nothing)
+                 warmup::Int, reps::Int, verify::Union{Nothing, Function}=nothing,
+                 reset::Union{Nothing, Function}=nothing)
     CUDA.synchronize()
     for _ in 1:max(warmup, verify !== nothing ? 1 : 0)
+        reset !== nothing && reset()
         run_once(get_args())
     end
 
@@ -51,6 +53,7 @@ function time_ms(run_once::Function, get_args::Function;
 
     best_ms = Inf32
     for _ in 1:reps
+        reset !== nothing && reset()
         args = get_args()
         CUDA.synchronize()
         elapsed_s = CUDA.@elapsed run_once(args)
@@ -62,10 +65,11 @@ end
 
 function eval_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Function;
                   sm_arch::String, opt_level::Int, warmup::Int, reps::Int,
-                  verify::Union{Nothing, Function}=nothing)
+                  verify::Union{Nothing, Function}=nothing,
+                  reset::Union{Nothing, Function}=nothing)
     run_once = args -> cuTile.launch(f, grid_fn(cfg), args...;
         sm_arch, opt_level, hints_from_cfg(cfg)...)
-    return time_ms(run_once, () -> args_fn(cfg); warmup, reps, verify)
+    return time_ms(run_once, () -> args_fn(cfg); warmup, reps, verify, reset)
 end
 
 function precompile_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Function;
@@ -153,12 +157,13 @@ end
 function measure_candidates(@nospecialize(f), configs::Vector{Any},
                             grid_fn::Function, args_fn::Function;
                             sm_arch::String, opt_level::Int, warmup::Int, reps::Int,
-                            verify::Union{Nothing, Function}=nothing)
+                            verify::Union{Nothing, Function}=nothing,
+                            reset::Union{Nothing, Function}=nothing)
     record = Tuple{Any, Float32}[]
     first_error = nothing
     for cfg in configs
         ms = try
-            eval_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level, warmup, reps, verify)
+            eval_cfg(f, cfg, grid_fn, args_fn; sm_arch, opt_level, warmup, reps, verify, reset)
         catch err
             if err isa InterruptException
                 @warn "Benchmarking interrupted after $(length(record)) configs"
@@ -176,16 +181,18 @@ end
 function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::AbstractRNG,
                       grid_fn::Function, args_fn::Function, tuning;
                       sm_arch::String, opt_level::Int, kernel_key, arg_key,
-                      verify::Union{Nothing, Function}=nothing)
+                      verify::Union{Nothing, Function}=nothing,
+                      setup::Union{Nothing, Function}=nothing)
     if !tuning.force
         entry = lock(AUTOTUNE_LOCK) do
             per_kernel = get(AUTOTUNE_CACHE, kernel_key, nothing)
             per_kernel !== nothing ? get(per_kernel, arg_key, nothing) : nothing
         end
-        entry !== nothing && return entry, true
+        entry !== nothing && return entry, true, nothing
     end
 
     checker = verify !== nothing ? verify() : nothing
+    reset = setup !== nothing ? setup() : nothing
 
     trials = collect(space)
 
@@ -196,7 +203,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     end
 
     record, first_error = measure_candidates(f, trials, grid_fn, args_fn;
-        sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.reps, verify=checker)
+        sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.reps, verify=checker, reset)
 
     if isempty(record)
         # Prefer showing the precompile error (more informative) over the benchmark error
@@ -215,7 +222,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
         sort!(record, by=last)
         top_configs = Any[first(r) for r in record[1:min(tuning.refine_topk, length(record))]]
         refined, _ = measure_candidates(f, top_configs, grid_fn, args_fn;
-            sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.refine_reps)
+            sm_arch, opt_level, warmup=tuning.warmup, reps=tuning.refine_reps, reset)
         if !isempty(refined)
             record = refined
         end
@@ -224,7 +231,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     _, best_idx = findmin(last, record)
     candidate = (; best_config=record[best_idx][1], tuning_record=record)
 
-    return lock(AUTOTUNE_LOCK) do
+    entry, cache_hit = lock(AUTOTUNE_LOCK) do
         per_kernel = get!(Dict{Any,Any}, AUTOTUNE_CACHE, kernel_key)
         if !tuning.force && haskey(per_kernel, arg_key)
             per_kernel[arg_key], true
@@ -233,6 +240,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
             candidate, false
         end
     end
+    return entry, cache_hit, reset
 end
 
 function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
@@ -241,6 +249,7 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
                          key_fn::Union{Nothing, Function}=nothing,
                          launch_args_fn::Union{Nothing, Function}=nothing,
                          verify::Union{Nothing, Function}=nothing,
+                         setup::Union{Nothing, Function}=nothing,
                          tuning::NamedTuple=NamedTuple(),
                          sm_arch::String=default_sm_arch(),
                          opt_level::Int=3)
@@ -250,12 +259,15 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
     kernel_key = (f, sm_arch, opt_level)
     arg_key = key !== nothing ? key : (key_fn !== nothing ? key_fn() : nothing)
 
-    entry, cache_hit = find_or_tune(f, space, rng, grid_fn, args_fn, tuning;
-        sm_arch, opt_level, kernel_key, arg_key, verify)
+    entry, cache_hit, reset = find_or_tune(f, space, rng, grid_fn, args_fn, tuning;
+        sm_arch, opt_level, kernel_key, arg_key, verify, setup)
 
     cfg = entry.best_config
     grid = grid_fn(cfg)
     args = launch_args_fn !== nothing ? launch_args_fn(cfg) : args_fn(cfg)
+
+    # Reset state before the final "real" launch
+    reset !== nothing && reset()
 
     cuTile.launch(f, grid, args...; sm_arch, opt_level, hints_from_cfg(cfg)...)
 
