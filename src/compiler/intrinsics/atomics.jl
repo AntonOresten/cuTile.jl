@@ -30,69 +30,81 @@ function memory_scope_to_scope(scope::Int)
     end
 end
 
+"""
+    atomic_tfunc(ptrs) -> Type
+
+Shared tfunc for atomic operations (add, xchg, cas).
+Always returns Tile{T, S}, even for 0D (S = Tuple{}).
+"""
+function atomic_tfunc(𝕃, @nospecialize(ptrs), @nospecialize args...)
+    ptrs_type = CC.widenconst(ptrs)
+    ptrs_type isa DataType && ptrs_type <: Tile || return nothing
+    ptr_type = eltype(ptrs_type)
+    ptr_type <: Ptr || return nothing
+    T = eltype(ptr_type)
+    S = ptrs_type.parameters[2]
+    return Tile{T, S}
+end
+
 # cuda_tile.atomic_cas_tko
-@intrinsic atomic_cas(array, index, expected, desired,
-                      memory_order, memory_scope)
-tfunc(𝕃, ::typeof(Intrinsics.atomic_cas), @nospecialize(array), @nospecialize args...) = eltype(CC.widenconst(array))
+@intrinsic atomic_cas(ptr_tile, expected, desired, mask, memory_order, memory_scope)
+function tfunc(𝕃, ::typeof(Intrinsics.atomic_cas), @nospecialize(ptrs), @nospecialize args...)
+    atomic_tfunc(𝕃, ptrs, args...)
+end
 efunc(::typeof(Intrinsics.atomic_cas), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_cas), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (array, index, expected, desired, memory_order, memory_scope)
-    array_arg = args[1]
+    # args: (ptr_tile, expected, desired, mask, memory_order, memory_scope)
+    ptr_tv = emit_value!(ctx, args[1])
+    ptr_tv === nothing && throw(IRError("atomic CAS requires ptr_tile"))
+    expected_tv = emit_value!(ctx, args[2])
+    expected_tv === nothing && throw(IRError("atomic CAS requires expected value"))
+    desired_tv = emit_value!(ctx, args[3])
+    desired_tv === nothing && throw(IRError("atomic CAS requires desired value"))
 
-    # Get array info
-    arg_idx = extract_argument_index(array_arg)
-    is_tilearray = arg_idx !== nothing && is_destructured_arg(ctx, arg_idx)
+    # Check if mask is provided (ghost Nothing = no mask)
+    has_mask = get_constant(ctx, args[4]) !== nothing
 
-    if !is_tilearray
-        throw(IRError("atomic_cas requires a TileArray argument"))
-    end
+    memory_order = @something get_constant(ctx, args[5]) throw(IRError("atomic CAS requires constant memory_order"))
+    memory_scope = @something get_constant(ctx, args[6]) throw(IRError("atomic CAS requires constant memory_scope"))
 
-    ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
-    isempty(ptr_vals) && throw(IRError("Cannot get ptr from TileArray argument"))
-    array_val = ptr_vals[1]
-    tilearray_type = get_arg_type(ctx, arg_idx)
-    elem_type = eltype(tilearray_type)
+    shape = ptr_tv.shape
 
-    # Get expected and desired values
-    expected_tv = emit_value!(ctx, args[3])
-    expected_tv === nothing && throw(IRError("atomic_cas requires expected value"))
-    desired_tv = emit_value!(ctx, args[4])
-    desired_tv === nothing && throw(IRError("atomic_cas requires desired value"))
+    # Get element type from pointer tile: Tile{Ptr{T}, S} -> T
+    ptrs_type = CC.widenconst(ptr_tv.jltype)
+    ptr_type = eltype(ptrs_type)
+    elem_type = eltype(ptr_type)
 
-    # Get memory order and scope from args
-    memory_order = @something get_constant(ctx, args[5]) throw(IRError("atomic_cas requires constant memory_order"))
-    memory_scope = @something get_constant(ctx, args[6]) throw(IRError("atomic_cas requires constant memory_scope"))
-
-    # Create result type (0D tile of element type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    result_tile_type = tile_type!(tt, dtype, Int[])
+    result_tile_type = tile_type!(tt, dtype, collect(shape))
     token_type = Token(tt)
-
-    # Get index and create pointer type
-    index_tv = emit_value!(ctx, args[2])
-    ptr_type = pointer_type!(tt, dtype)
-    ptr_tile_type = tile_type!(tt, ptr_type, Int[])
-
-    # Compute pointer using OffsetOp (handles any integer index type)
-    pointers = encode_OffsetOp!(cb, ptr_tile_type, array_val, index_tv.v)
 
     # Emit atomic CAS
     mem_ordering = memory_order_to_semantics(memory_order)
     mem_scope = memory_scope_to_scope(memory_scope)
 
-    old_val, new_token = encode_AtomicCASPtrOp!(cb, result_tile_type, token_type, pointers,
-                                         expected_tv.v, desired_tv.v;
-                                         token=ctx.token,
-                                         memory_ordering=mem_ordering,
-                                         memory_scope=mem_scope)
+    old_val, new_token = if has_mask
+        mask_tv = emit_value!(ctx, args[4])
+        mask_tv === nothing && throw(IRError("atomic CAS: cannot resolve mask"))
+        encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
+                               ptr_tv.v, expected_tv.v, desired_tv.v;
+                               mask=mask_tv.v,
+                               token=ctx.token,
+                               memory_ordering=mem_ordering,
+                               memory_scope=mem_scope)
+    else
+        encode_AtomicCASPtrOp!(cb, result_tile_type, token_type,
+                               ptr_tv.v, expected_tv.v, desired_tv.v;
+                               token=ctx.token,
+                               memory_ordering=mem_ordering,
+                               memory_scope=mem_scope)
+    end
     ctx.token = new_token
 
-    # Return scalar type (not Tile) to match the intrinsic signature
-    CGVal(old_val, result_tile_type, elem_type, Int[])
+    CGVal(old_val, result_tile_type, Tile{elem_type, Tuple{shape...}}, collect(shape))
 end
 
 # cuda_tile.atomic_rmw_tko (shared helper for atomic RMW operations)
@@ -100,43 +112,30 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (array, index, val, memory_order, memory_scope)
-    array_arg = args[1]
+    # args: (ptr_tile, val, mask, memory_order, memory_scope)
+    ptr_tv = emit_value!(ctx, args[1])
+    ptr_tv === nothing && throw(IRError("atomic RMW requires ptr_tile"))
+    val_tv = emit_value!(ctx, args[2])
+    val_tv === nothing && throw(IRError("atomic RMW requires value"))
 
-    # Get array info
-    arg_idx = extract_argument_index(array_arg)
-    is_tilearray = arg_idx !== nothing && is_destructured_arg(ctx, arg_idx)
-
-    if !is_tilearray
-        throw(IRError("atomic operations require a TileArray argument"))
-    end
-
-    ptr_vals = get_arg_flat_values(ctx, arg_idx, :ptr)
-    isempty(ptr_vals) && throw(IRError("Cannot get ptr from TileArray argument"))
-    array_val = ptr_vals[1]
-    tilearray_type = get_arg_type(ctx, arg_idx)
-    elem_type = eltype(tilearray_type)
-
-    # Get update value
-    val_tv = emit_value!(ctx, args[3])
-    val_tv === nothing && throw(IRError("atomic operation requires value"))
+    # Check if mask is provided (ghost Nothing = no mask)
+    has_mask = get_constant(ctx, args[3]) !== nothing
 
     # Get memory order and scope from args
-    memory_order = @something get_constant(ctx, args[4]) throw(IRError("atomic operation requires constant memory_order"))
-    memory_scope = @something get_constant(ctx, args[5]) throw(IRError("atomic operation requires constant memory_scope"))
+    memory_order = @something get_constant(ctx, args[4]) throw(IRError("atomic RMW requires constant memory_order"))
+    memory_scope = @something get_constant(ctx, args[5]) throw(IRError("atomic RMW requires constant memory_scope"))
 
-    # Create result type (0D tile of element type)
+    shape = ptr_tv.shape
+
+    # Get element type from pointer tile: Tile{Ptr{T}, S} -> T
+    ptrs_type = CC.widenconst(ptr_tv.jltype)
+    ptr_type = eltype(ptrs_type)
+    elem_type = eltype(ptr_type)
+
+    # Create result type
     dtype = julia_to_tile_dtype!(tt, elem_type)
-    result_tile_type = tile_type!(tt, dtype, Int[])
+    result_tile_type = tile_type!(tt, dtype, collect(shape))
     token_type = Token(tt)
-
-    # Get index and create pointer type
-    index_tv = emit_value!(ctx, args[2])
-    ptr_type = pointer_type!(tt, dtype)
-    ptr_tile_type = tile_type!(tt, ptr_type, Int[])
-
-    # Compute pointer using OffsetOp (handles any integer index type)
-    pointers = encode_OffsetOp!(cb, ptr_tile_type, array_val, index_tv.v)
 
     # Use float add mode for floating point types
     actual_mode = mode
@@ -148,20 +147,30 @@ function emit_atomic_rmw!(ctx::CGCtx, args::AbstractVector, mode::AtomicRMWMode)
     mem_ordering = memory_order_to_semantics(memory_order)
     mem_scope = memory_scope_to_scope(memory_scope)
 
-    old_val, new_token = encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type, pointers,
-                                         val_tv.v, actual_mode;
-                                         token=ctx.token,
-                                         memory_ordering=mem_ordering,
-                                         memory_scope=mem_scope)
+    old_val, new_token = if has_mask
+        mask_tv = emit_value!(ctx, args[3])
+        mask_tv === nothing && throw(IRError("atomic RMW: cannot resolve mask"))
+        encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
+                                ptr_tv.v, val_tv.v, actual_mode;
+                                mask=mask_tv.v,
+                                token=ctx.token,
+                                memory_ordering=mem_ordering,
+                                memory_scope=mem_scope)
+    else
+        encode_AtomicRMWPtrOp!(cb, result_tile_type, token_type,
+                                ptr_tv.v, val_tv.v, actual_mode;
+                                token=ctx.token,
+                                memory_ordering=mem_ordering,
+                                memory_scope=mem_scope)
+    end
     ctx.token = new_token
 
-    # Return scalar type (not Tile) to match the intrinsic signature
-    CGVal(old_val, result_tile_type, elem_type, Int[])
+    CGVal(old_val, result_tile_type, Tile{elem_type, Tuple{shape...}}, collect(shape))
 end
 
 # cuda_tile.atomic_rmw_tko with XCHG
-@intrinsic atomic_xchg(array, index, val, memory_order, memory_scope)
-tfunc(𝕃, ::typeof(Intrinsics.atomic_xchg), @nospecialize(array), @nospecialize args...) = eltype(CC.widenconst(array))
+@intrinsic atomic_xchg(ptr_tile, val, mask, memory_order, memory_scope)
+tfunc(𝕃, ::typeof(Intrinsics.atomic_xchg), @nospecialize args...) = atomic_tfunc(𝕃, args...)
 efunc(::typeof(Intrinsics.atomic_xchg), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
@@ -169,9 +178,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_xchg), args)
 end
 
 # cuda_tile.atomic_rmw_tko with ADD
-@intrinsic atomic_add(array, index, val,
-                      memory_order, memory_scope)
-tfunc(𝕃, ::typeof(Intrinsics.atomic_add), @nospecialize(array), @nospecialize args...) = eltype(CC.widenconst(array))
+@intrinsic atomic_add(ptr_tile, val, mask, memory_order, memory_scope)
+tfunc(𝕃, ::typeof(Intrinsics.atomic_add), @nospecialize args...) = atomic_tfunc(𝕃, args...)
 efunc(::typeof(Intrinsics.atomic_add), effects::CC.Effects) =
     CC.Effects(effects; effect_free=CC.ALWAYS_FALSE)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.atomic_add), args)

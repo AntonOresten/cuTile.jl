@@ -63,7 +63,7 @@ end
 """
     broadcast_tile_to_shape!(cb, tt, tv::CGVal, target_shape::Vector{Int}, dtype::TypeId) -> Value
 
-Broadcast a tile to a target shape by inserting ReshapeOp (for leading 1s) and BroadcastOp.
+Broadcast a tile to a target shape by inserting ReshapeOp (for trailing 1s) and BroadcastOp.
 Returns the value after broadcasting, or the original value if shapes already match.
 """
 function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
@@ -78,11 +78,11 @@ function broadcast_tile_to_shape!(cb::CodeBuilder, tt::TypeTable, tv::CGVal,
     current_val = tv.v
     current_shape = src_shape
 
-    # Step 1: Add leading 1s via ReshapeOp if needed (dimension mismatch)
+    # Step 1: Add trailing 1s via ReshapeOp if needed (dimension mismatch)
+    # Follows Julia convention: (n,) pads to (n, 1) — first dimension aligns.
     if length(current_shape) < length(target_shape)
-        # Prepend 1s to match target ndim
         n_extra = length(target_shape) - length(current_shape)
-        new_shape = vcat(fill(1, n_extra), current_shape)
+        new_shape = vcat(current_shape, fill(1, n_extra))
         reshaped_type = tile_type!(tt, dtype, new_shape)
         current_val = encode_ReshapeOp!(cb, reshaped_type, current_val)
         current_shape = new_shape
@@ -181,18 +181,22 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     tile_shape = collect(Int, shape)
     validate_tile_shape(tile_shape, "full")
 
-    # Extract value
-    value = @something get_constant(ctx, args[2]) throw(IRError("full() value must be a compile-time constant"))
-
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[3]) throw(IRError("constant() requires a compile-time element type"))
 
     dtype = julia_to_tile_dtype!(tt, elem_type)
     tile_type = tile_type!(tt, dtype, tile_shape)
 
-    # Create constant directly at target shape
-    value_bytes = constant_to_bytes(value, elem_type)
-    result = encode_ConstantOp!(cb, tile_type, value_bytes)
+    tv = emit_value!(ctx, args[2])
+    tv === nothing && throw(IRError("full() value must be a constant or a runtime scalar"))
+    if tv.constant !== nothing
+        # Compile-time constant: use ConstantOp directly
+        value_bytes = constant_to_bytes(something(tv.constant), elem_type)
+        result = encode_ConstantOp!(cb, tile_type, value_bytes)
+    else
+        # Runtime value: broadcast 0D tile to the target shape
+        result = broadcast_tile_to_shape!(cb, tt, tv, tile_shape, dtype)
+    end
 
     CGVal(result, tile_type, Tile{elem_type, Tuple{tile_shape...}}, tile_shape)
 end

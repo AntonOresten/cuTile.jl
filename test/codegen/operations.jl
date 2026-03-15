@@ -428,6 +428,21 @@
             end
         end
 
+        @testset "constant with runtime value" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32}) do a, val
+                    pid = ct.bid(1)
+                    @check "itof"
+                    @check "reshape"
+                    @check "broadcast"
+                    tile = ct.full((16,), val, Float32)
+                    ct.store(a, pid, tile)
+                    return
+                end
+            end
+        end
+
         @testset "get_num_tile_blocks" begin
             @test @filecheck begin
                 @check_label "entry"
@@ -1384,6 +1399,7 @@
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
                     bid = ct.bid(1)
+                    @check "offset"
                     @check "atomic_cas_tko"
                     old = ct.atomic_cas(locks, bid, Int32(0), Int32(1);
                                         memory_order=ct.MemoryOrder.Acquire)
@@ -1399,6 +1415,7 @@
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do locks
                     bid = ct.bid(1)
+                    @check "offset"
                     @check "atomic_rmw_tko"
                     ct.atomic_xchg(locks, bid, Int32(0);
                                   memory_order=ct.MemoryOrder.Release)
@@ -1412,8 +1429,84 @@
                 @check_label "entry"
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do counters
                     bid = ct.bid(1)
+                    @check "offset"
                     @check "atomic_rmw_tko"
                     ct.atomic_add(counters, bid, 1.0f0)
+                    return
+                end
+            end
+        end
+
+        @testset "tile-indexed atomic_cas_tko" begin
+            spec = ct.ArraySpec{1}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                    @check "iota"
+                    indices = ct.arange((16,), Int)
+                    @check "offset"
+                    @check "atomic_cas_tko"
+                    ct.atomic_cas(arr, indices, Int32(0), Int32(1))
+                    return
+                end
+            end
+        end
+
+        @testset "tile-indexed 3D atomic_add" begin
+            spec3d = ct.ArraySpec{3}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,3,spec3d}}) do arr
+                    @check "iota"
+                    i = ct.arange((4,), Int)
+                    j = ct.arange((4,), Int)
+                    k = ct.arange((4,), Int)
+                    @check "offset"
+                    @check "atomic_rmw_tko"
+                    ct.atomic_add(arr, (i, j, k), Int32(1))
+                    return
+                end
+            end
+        end
+
+        @testset "tile-indexed atomic_rmw_tko" begin
+            spec = ct.ArraySpec{1}(16, true)
+            # xchg
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                    @check "iota"
+                    indices = ct.arange((16,), Int)
+                    @check "offset"
+                    @check "atomic_rmw_tko"
+                    ct.atomic_xchg(arr, indices, Int32(42))
+                    return
+                end
+            end
+
+            # add (integer)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                    @check "iota"
+                    indices = ct.arange((16,), Int)
+                    @check "offset"
+                    @check "atomic_rmw_tko"
+                    ct.atomic_add(arr, indices, Int32(1))
+                    return
+                end
+            end
+
+            # add (float)
+            spec_f32 = ct.ArraySpec{1}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do arr
+                    @check "iota"
+                    indices = ct.arange((16,), Int)
+                    @check "offset"
+                    @check "atomic_rmw_tko"
+                    ct.atomic_add(arr, indices, 1.5f0)
                     return
                 end
             end
@@ -1524,6 +1617,21 @@
                     tile = ct.load(a, (pid, 1), (16,))
                     @check "store_view_tko"
                     ct.store(b, (pid, 1), tile)
+                    return
+                end
+            end
+        end
+
+        @testset "TileArray scalar getindex" begin
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do lengths, out
+                    bid = ct.bid(1)
+                    @check "make_partition_view"
+                    @check "load_view_tko"
+                    @check "reshape"
+                    len = lengths[bid]
+                    ct.store(out, bid, ct.broadcast_to(ct.Tile(len), (16,)))
                     return
                 end
             end

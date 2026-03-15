@@ -1,8 +1,8 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, CGOpts, CuTileResults, emit_code, sanitize_name,
-              constant_eltype, constant_value
+using cuTile: TileArray, Constant, CGOpts, CuTileResults, DEFAULT_BYTECODE_VERSION,
+              emit_code, sanitize_name, constant_eltype, constant_value, is_ghost_type
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -12,6 +12,46 @@ using CUDA: CUDA, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
 
 public launch
+
+function run_and_collect(cmd)
+    stdout = Pipe()
+    proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
+    close(stdout.in)
+    reader = Threads.@spawn String(read(stdout))
+    Base.wait(proc)
+    log = strip(fetch(reader))
+    return proc, log
+end
+
+"""
+    check_tile_ir_support()
+
+Validate that the current CUDA toolkit version supports Tile IR on the active device.
+"""
+function check_tile_ir_support()
+    if !CUDA_Compiler_jll.is_available()
+        error("CUDA_Compiler_jll is not available; cannot compile Tile IR kernels")
+    end
+
+    cuda_ver = CUDA_Compiler_jll.cuda_version
+    cap = capability(device())
+    sm_arch = "sm_$(cap.major)$(cap.minor)"
+
+    if cap >= v"10.0"       # Blackwell
+        cuda_ver >= v"13.1" ||
+            error("Tile IR on Blackwell ($sm_arch) requires CUDA ≥ 13.1, got $cuda_ver")
+    elseif cap >= v"9.0"    # Hopper — not supported
+        error("Tile IR is not supported on Hopper ($sm_arch)")
+    elseif cap >= v"8.0"    # Ampere / Ada
+        cuda_ver >= v"13.2" ||
+            error("Tile IR on Ampere/Ada ($sm_arch) requires CUDA ≥ 13.2, got $cuda_ver")
+    else
+        error("Tile IR is not supported on compute capability $cap ($sm_arch)")
+    end
+
+    # Return bytecode version matching the toolkit
+    return VersionNumber(cuda_ver.major, cuda_ver.minor)
+end
 
 const EMIT_CODE_LOCK = ReentrantLock()
 
@@ -35,12 +75,29 @@ function emit_binary(cache::CacheView, mi::Core.MethodInstance;
     # Run tileiras to produce CUBIN
     input_path = tempname() * ".tile"
     output_path = tempname() * ".cubin"
+    compiled = false
     try
         write(input_path, bytecode)
-        run(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(opts.sm_arch) -O$(opts.opt_level)`)
+        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(opts.sm_arch) -O$(opts.opt_level)`,
+                     "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
+        proc, log = run_and_collect(cmd)
+        if !success(proc)
+            reason = proc.termsignal > 0 ? "tileiras received signal $(proc.termsignal)" :
+                                           "tileiras exited with code $(proc.exitcode)"
+            msg = "Failed to compile Tile IR ($reason)"
+            if !isempty(log)
+                msg *= "\n" * log
+            end
+            msg *= "\nIf you think this is a bug, please file an issue and attach $(input_path)"
+            if parse(Bool, get(ENV, "BUILDKITE", "false"))
+                run(`buildkite-agent artifact upload $(input_path)`)
+            end
+            error(msg)
+        end
+        compiled = true
         res.cuda_bin = read(output_path)
     finally
-        rm(input_path, force=true)
+        compiled && rm(input_path, force=true)
         rm(output_path, force=true)
     end
 
@@ -112,6 +169,8 @@ function cuTile.launch(@nospecialize(f), grid, args...;
                        opt_level::Int=3,
                        num_ctas::Union{Int, Nothing}=nothing,
                        occupancy::Union{Int, Nothing}=nothing)
+    bytecode_version = check_tile_ir_support()
+
     # Convert CuArray -> TileArray (and other conversions)
     tile_args = map(to_tile_arg, args)
 
@@ -141,7 +200,8 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     end
 
     # Create cache view with compilation options as sharding keys
-    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
+    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
+            bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
 
     # Run cached compilation
@@ -191,9 +251,8 @@ return their fields in order.
 
 This is used by the launch helper to splat arguments to cudacall.
 """
-flatten(x) = (x,)
+flatten(x) = is_ghost_type(typeof(x)) ? () : (x,)
 flatten(arr::TileArray{T, N}) where {T, N} = (arr.ptr, arr.sizes..., arr.strides...)
-flatten(::Constant) = ()  # Ghost types are not passed to cudacall
 
 """
     to_tile_arg(x)

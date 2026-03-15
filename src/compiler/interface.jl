@@ -297,7 +297,8 @@ const CGOpts = @NamedTuple{
     sm_arch::Union{String, Nothing},
     opt_level::Int,
     num_ctas::Union{Int, Nothing},
-    occupancy::Union{Int, Nothing}
+    occupancy::Union{Int, Nothing},
+    bytecode_version::VersionNumber
 }
 
 # Results struct for caching compilation phases
@@ -400,7 +401,7 @@ function emit_code(cache::CacheView, mi::Core.MethodInstance;
     opts = cache.owner[2]
 
     # Generate Tile IR bytecode
-    bytecode = write_bytecode!(1) do writer, func_buf
+    bytecode = write_bytecode!(1; version=opts.bytecode_version) do writer, func_buf
         emit_kernel!(writer, func_buf, sci, rettype;
             name = sanitize_name(string(mi.def.name)),
             sm_arch = opts.sm_arch,
@@ -514,6 +515,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     opt_level::Int=3,
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
+                    bytecode_version::VersionNumber=DEFAULT_BYTECODE_VERSION,
                     world::UInt=Base.get_world_counter())
     # Strip Constant types from argtypes for MI lookup, build const_argtypes
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
@@ -524,7 +526,8 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
     mi = @something(method_instance(f, stripped; world, method_table=cuTileMethodTable),
                     method_instance(f, stripped; world),
                     throw(MethodError(f, stripped)))
-    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy)
+    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
+            bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
     bytecode = emit_code(cache, mi; const_argtypes)
     print(io, disassemble_tileir(bytecode))

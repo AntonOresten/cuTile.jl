@@ -25,6 +25,61 @@ module MemScope
     const System = 2
 end
 
+# ============================================================================
+# Pointer/mask helpers
+#
+# Both scalar and tile-indexed paths compute (ptr_tile, mask, shape) here,
+# then pass to a single set of intrinsics.
+# ============================================================================
+
+# Scalar index -> 0D pointer tile, no mask
+@inline function _atomic_ptr_and_mask(array::TileArray{T}, index::Integer) where {T}
+    idx_0 = Tile(Int32(index - One()))
+    ptr_tile = Intrinsics.offset(array.ptr, idx_0)
+    (ptr_tile, nothing, ())
+end
+
+# N-D tile indices -> N-D pointer tile with bounds mask
+@inline function _atomic_ptr_and_mask(array::TileArray{T, N},
+                                       indices::NTuple{N, Tile{<:Integer}}) where {T, N}
+    # Convert each index to 0-indexed
+    indices_0 = ntuple(Val(N)) do d
+        indices[d] .- one(eltype(indices[d]))
+    end
+
+    # Broadcast all index tiles to a common shape
+    S = reduce(broadcast_shape, ntuple(d -> size(indices[d]), Val(N)))
+
+    # Broadcast and convert to Int32
+    indices_i32 = ntuple(Val(N)) do d
+        convert(Tile{Int32}, broadcast_to(indices_0[d], S))
+    end
+
+    # Linear index: sum(idx[d] * stride[d])
+    linear_idx = reduce(.+, ntuple(Val(N)) do d
+        indices_i32[d] .* broadcast_to(Tile(array.strides[d]), S)
+    end)
+
+    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+
+    # Bounds mask: 0 <= idx[d] < size[d] for all d
+    zero_bc = broadcast_to(Tile(Int32(0)), S)
+    mask = reduce(.&, ntuple(Val(N)) do d
+        (indices_i32[d] .>= zero_bc) .& (indices_i32[d] .< broadcast_to(Tile(size(array, d)), S))
+    end)
+
+    (ptr_tile, mask, S)
+end
+
+# 1D convenience: single Tile -> 1-tuple
+@inline function _atomic_ptr_and_mask(array::TileArray{T, 1}, indices::Tile{<:Integer}) where {T}
+    _atomic_ptr_and_mask(array, (indices,))
+end
+
+# ============================================================================
+# Atomic CAS
+# ============================================================================
+
 """
     atomic_cas(array::TileArray, index, expected, desired; memory_order, memory_scope) -> T
 
@@ -40,11 +95,42 @@ while ct.atomic_cas(locks, idx, Int32(0), Int32(1); memory_order=ct.MemoryOrder.
 end
 ```
 """
-@inline function atomic_cas(array::TileArray{T}, index, expected::T, desired::T;
+@inline function atomic_cas(array::TileArray{T}, indices,
+                            expected::TileOrScalar{T}, desired::TileOrScalar{T};
                             memory_order::Int=MemoryOrder.AcqRel,
                             memory_scope::Int=MemScope.Device) where {T}
-    Intrinsics.atomic_cas(array, index - One(), expected, desired, memory_order, memory_scope)
+    ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
+    expected_bc = S === () ? Tile(expected) : broadcast_to(Tile(expected), S)
+    desired_bc = S === () ? Tile(desired) : broadcast_to(Tile(desired), S)
+    result = Intrinsics.atomic_cas(ptr_tile, expected_bc, desired_bc, mask,
+                                   memory_order, memory_scope)
+    S === () ? Intrinsics.to_scalar(result) : result
 end
+
+# Convert mismatched scalar/tile types to match array element type
+@inline function atomic_cas(array::TileArray{T}, indices,
+                            expected::TileOrScalar, desired::TileOrScalar;
+                            memory_order::Int=MemoryOrder.AcqRel,
+                            memory_scope::Int=MemScope.Device) where {T}
+    atomic_cas(array, indices, T(expected), T(desired); memory_order, memory_scope)
+end
+
+# ============================================================================
+# Atomic RMW operations (atomic_add, atomic_xchg)
+# ============================================================================
+
+"""
+    atomic_add(array::TileArray, index, val; memory_order, memory_scope) -> T
+
+Atomic addition. Atomically adds `val` to the value at `index` and returns
+the original value. Index is 1-indexed.
+
+# Example
+```julia
+old_val = ct.atomic_add(counters, idx, Int32(1))
+```
+"""
+function atomic_add end
 
 """
     atomic_xchg(array::TileArray, index, val; memory_order, memory_scope) -> T
@@ -58,25 +144,25 @@ the original value. Index is 1-indexed.
 ct.atomic_xchg(locks, idx, Int32(0); memory_order=ct.MemoryOrder.Release)
 ```
 """
-@inline function atomic_xchg(array::TileArray{T}, index, val::T;
-                             memory_order::Int=MemoryOrder.AcqRel,
-                             memory_scope::Int=MemScope.Device) where {T}
-    Intrinsics.atomic_xchg(array, index - One(), val, memory_order, memory_scope)
-end
+function atomic_xchg end
 
-"""
-    atomic_add(array::TileArray, index, val; memory_order, memory_scope) -> T
+for op in (:add, :xchg)
+    fname = Symbol(:atomic_, op)
+    intrinsic = Symbol(:atomic_, op)
 
-Atomic addition. Atomically adds `val` to the value at `index` and returns
-the original value. Index is 1-indexed.
+    @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar{T};
+                                   memory_order::Int=MemoryOrder.AcqRel,
+                                   memory_scope::Int=MemScope.Device) where {T}
+        ptr_tile, mask, S = _atomic_ptr_and_mask(array, indices)
+        val_bc = S === () ? Tile(val) : broadcast_to(Tile(val), S)
+        result = Intrinsics.$intrinsic(ptr_tile, val_bc, mask, memory_order, memory_scope)
+        S === () ? Intrinsics.to_scalar(result) : result
+    end
 
-# Example
-```julia
-old_val = ct.atomic_add(counters, idx, Int32(1))
-```
-"""
-@inline function atomic_add(array::TileArray{T}, index, val::T;
-                            memory_order::Int=MemoryOrder.AcqRel,
-                            memory_scope::Int=MemScope.Device) where {T}
-    Intrinsics.atomic_add(array, index - One(), val, memory_order, memory_scope)
+    # Convert mismatched scalar/tile types to match array element type
+    @eval @inline function $fname(array::TileArray{T}, indices, val::TileOrScalar;
+                                   memory_order::Int=MemoryOrder.AcqRel,
+                                   memory_scope::Int=MemScope.Device) where {T}
+        $fname(array, indices, T(val); memory_order, memory_scope)
+    end
 end

@@ -18,9 +18,12 @@ using CUDA
     b = CUDA.ones(Float32, n) .* 2
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_kernel_num_ctas, 64, a, b, c; num_ctas=2)
-
-    @test Array(c) ≈ ones(Float32, n) .* 3
+    if capability(device()) >= v"10"
+        ct.launch(vadd_kernel_num_ctas, 64, a, b, c; num_ctas=2)
+        @test Array(c) ≈ ones(Float32, n) .* 3
+    else
+        @test_throws "num_cta_in_cga" ct.launch(vadd_kernel_num_ctas, 64, a, b, c; num_ctas=2)
+    end
 end
 
 @testset "launch with occupancy" begin
@@ -60,9 +63,12 @@ end
     b = CUDA.ones(Float32, n) .* 2
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_kernel_both_hints, 64, a, b, c; num_ctas=4, occupancy=8)
-
-    @test Array(c) ≈ ones(Float32, n) .* 3
+    if capability(device()) >= v"10"
+        ct.launch(vadd_kernel_both_hints, 64, a, b, c; num_ctas=4, occupancy=8)
+        @test Array(c) ≈ ones(Float32, n) .* 3
+    else
+        @test_throws "num_cta_in_cga" ct.launch(vadd_kernel_both_hints, 64, a, b, c; num_ctas=4, occupancy=8)
+    end
 end
 
 end

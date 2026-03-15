@@ -1122,9 +1122,14 @@ Example:
 function encode_ForOp!(body::Function, cb::CodeBuilder,
                        result_types::Vector{TypeId}, iv_type::TypeId,
                        lower::Value, upper::Value, step::Value,
-                       init_values::Vector{Value})
+                       init_values::Vector{Value};
+                       unsigned_cmp::Bool=false)
     encode_varint!(cb.buf, Opcode.ForOp)
     encode_typeid_seq!(cb.buf, result_types)
+    # Flags
+    if cb.version >= v"13.2"
+        encode_varint!(cb.buf, unsigned_cmp ? 1 : 0)
+    end
     # Operands: lower, upper, step, init_values...
     encode_varint!(cb.buf, 3 + length(init_values))
     encode_operand!(cb.buf, lower)
@@ -1558,7 +1563,9 @@ function encode_NegIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
                         overflow::IntegerOverflow=OverflowNone)
     encode_varint!(cb.buf, Opcode.NegIOp)
     encode_typeid!(cb.buf, result_type)
-    encode_enum!(cb.buf, overflow)
+    if cb.version >= v"13.2"
+        encode_enum!(cb.buf, overflow)
+    end
     encode_operand!(cb.buf, source)
     return new_op!(cb)
 end
@@ -1956,9 +1963,13 @@ end
 Element-wise hyperbolic tangent.
 Opcode: 106
 """
-function encode_TanHOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+function encode_TanHOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
+                        rounding_mode::RoundingMode=RoundingFull)
     encode_varint!(cb.buf, Opcode.TanHOp)
     encode_typeid!(cb.buf, result_type)
+    if cb.version >= v"13.2"
+        encode_enum!(cb.buf, rounding_mode)
+    end
     encode_operand!(cb.buf, source)
     return new_op!(cb)
 end
