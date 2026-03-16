@@ -200,6 +200,16 @@ end
     store(arr, (index,), tile; kwargs...)
 end
 
+# Scalar value → wrap in 1-element tile and store
+@inline function store(arr::TileArray{T}, index, val::T; kwargs...) where {T}
+    shape = ntuple(_ -> 1, Val(ndims(arr)))
+    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
+    store(arr, index, tile; kwargs...)
+end
+@inline function store(arr::TileArray{T}, index::Integer, val::T; kwargs...) where {T}
+    store(arr, (index,), val; kwargs...)
+end
+
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
                                  order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
@@ -221,7 +231,7 @@ end
 # would DCE the entire call as a pure function with unused result.
 Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(arr::TileArray{T, N}, val::T, indices::Vararg{Integer, N}) where {T, N}
     shape = ntuple(_ -> 1, Val(N))
-    tile = reshape(Intrinsics.from_scalar(val, Val(Tuple{})), shape)
+    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
     store(arr, indices, tile)
     return
 end
@@ -697,6 +707,16 @@ Reduced dimensions become size 1.
 @inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
     reduce(min, tile; dims, init=typemax(T))
 
+# sum/prod/max/min without dims — reduce all dimensions, return scalar T
+# Recursive: reduce dim 1, dropdims, recurse. Base case: 0D tile → scalar.
+for f in (:sum, :prod, :maximum, :minimum)
+    @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:Number} =
+        Intrinsics.to_scalar(tile)
+
+    @eval @inline Base.$f(tile::Tile{T,S}) where {T<:Number, S<:Tuple{Any,Vararg}} =
+        $f(dropdims($f(tile; dims=1); dims=1))
+end
+
 """
     any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
 
@@ -729,6 +749,22 @@ n_positive = count(tile .> 0.0f0; dims=1)
 @inline function Base.count(tile::Tile{Bool,S}; dims::Integer) where {S}
     sum(convert(Tile{Int32}, tile); dims)
 end
+
+# any/all without dims — return scalar Bool
+for f in (:any, :all)
+    @eval @inline Base.$f(tile::Tile{Bool,Tuple{}}) =
+        Intrinsics.to_scalar(tile)
+
+    @eval @inline Base.$f(tile::Tile{Bool,S}) where {S<:Tuple{Any,Vararg}} =
+        $f(dropdims($f(tile; dims=1); dims=1))
+end
+
+# count without dims — return scalar Int32
+# count reduces to Int32 (not Bool), so after first dim use sum for remaining.
+@inline Base.count(tile::Tile{Bool,Tuple{}}) =
+    Intrinsics.to_scalar(tile)
+@inline Base.count(tile::Tile{Bool,S}) where {S<:Tuple{Any,Vararg}} =
+    sum(dropdims(count(tile; dims=1); dims=1))
 
 """
     argmax(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
