@@ -200,6 +200,16 @@ end
     store(arr, (index,), tile; kwargs...)
 end
 
+# Scalar value → wrap in 1-element tile and store
+@inline function store(arr::TileArray{T}, index, val::T; kwargs...) where {T}
+    shape = ntuple(_ -> 1, Val(ndims(arr)))
+    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
+    store(arr, index, tile; kwargs...)
+end
+@inline function store(arr::TileArray{T}, index::Integer, val::T; kwargs...) where {T}
+    store(arr, (index,), val; kwargs...)
+end
+
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
                                  order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
     tv = Intrinsics.make_tensor_view(arr)
@@ -221,7 +231,7 @@ end
 # would DCE the entire call as a pure function with unused result.
 Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(arr::TileArray{T, N}, val::T, indices::Vararg{Integer, N}) where {T, N}
     shape = ntuple(_ -> 1, Val(N))
-    tile = reshape(Intrinsics.from_scalar(val, Val(Tuple{})), shape)
+    tile = reshape(Intrinsics.from_scalar(val, Tuple{}), shape)
     store(arr, indices, tile)
     return
 end
@@ -535,8 +545,7 @@ permuted = permutedims(tile, (3, 1, 2))    # Shape (4, 2, 3)
 
 Permute a 2D tile, swapping its dimensions. Defaults to permutation `(2, 1)`.
 
-Differs from `transpose` in that the operation is not recursive. For tiles
-of numeric element types, the two operations are equivalent.
+Equivalent to `transpose`.
 
 ---
 
@@ -544,7 +553,7 @@ of numeric element types, the two operations are equivalent.
 
 Reshape a 1D tile into a `1 × N` row tile.
 
-Differs from `transpose` in that the operation is not recursive.
+Equivalent to `transpose`.
 """
 @generated function Base.permutedims(tile::T) where {T <: Tile}
     n = ndims(T)
@@ -563,10 +572,27 @@ end
     transpose(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
 
 Transpose a 2D tile, swapping its dimensions.
-Equivalent to `permute(tile, (2, 1))`.
+
+---
+
+    transpose(tile::Tile{T, (N,)}) -> Tile{T, (1, N)}
+
+Reshape a 1D tile into a `1 × N` row tile.
+
+Equivalent to single-arg `permutedims`.
 """
-@inline Base.transpose(tile::Tile{T}) where {T} =
-    Intrinsics.transpose(tile)
+@generated function Base.transpose(tile::T) where {T <: Tile}
+    n = ndims(T)
+    first_dim = n >= 1 ? size(T, 1) : nothing
+
+    if n == 2
+        return :(Intrinsics.permute(tile, (1, 0)))
+    elseif n == 1
+        return :(Intrinsics.reshape(tile, (1, $first_dim)))
+    else
+        return :(throw(ArgumentError("transpose(tile) only works for 1D or 2D tiles")))
+    end
+end
 
 @inline Base.convert(::Type{Tile{T2}}, tile::Tile{T1, Shape}) where {T1, T2, Shape} =
     map(T2, tile)
@@ -697,6 +723,16 @@ Reduced dimensions become size 1.
 @inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
     reduce(min, tile; dims, init=typemax(T))
 
+# sum/prod/max/min without dims — reduce all dimensions, return scalar T
+# Recursive: reduce dim 1, dropdims, recurse. Base case: 0D tile → scalar.
+for f in (:sum, :prod, :maximum, :minimum)
+    @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:Number} =
+        Intrinsics.to_scalar(tile)
+
+    @eval @inline Base.$f(tile::Tile{T,S}) where {T<:Number, S<:Tuple{Any,Vararg}} =
+        $f(dropdims($f(tile; dims=1); dims=1))
+end
+
 """
     any(tile::Tile{Bool,S}; dims) -> Tile{Bool, reduced_shape}
 
@@ -729,6 +765,22 @@ n_positive = count(tile .> 0.0f0; dims=1)
 @inline function Base.count(tile::Tile{Bool,S}; dims::Integer) where {S}
     sum(convert(Tile{Int32}, tile); dims)
 end
+
+# any/all without dims — return scalar Bool
+for f in (:any, :all)
+    @eval @inline Base.$f(tile::Tile{Bool,Tuple{}}) =
+        Intrinsics.to_scalar(tile)
+
+    @eval @inline Base.$f(tile::Tile{Bool,S}) where {S<:Tuple{Any,Vararg}} =
+        $f(dropdims($f(tile; dims=1); dims=1))
+end
+
+# count without dims — return scalar Int32
+# count reduces to Int32 (not Bool), so after first dim use sum for remaining.
+@inline Base.count(tile::Tile{Bool,Tuple{}}) =
+    Intrinsics.to_scalar(tile)
+@inline Base.count(tile::Tile{Bool,S}) where {S<:Tuple{Any,Vararg}} =
+    sum(dropdims(count(tile; dims=1); dims=1))
 
 """
     argmax(tile::Tile{T,S}; dims) -> Tile{Int32, reduced_shape}
@@ -952,4 +1004,67 @@ macro assert(cond)
 end
 macro assert(cond, msg)
     :($(Intrinsics.assert)($(esc(cond)), $(esc(msg))))
+end
+
+#=============================================================================
+ @compiler_options macro
+=============================================================================#
+
+const _COMPILER_OPTION_NAMES = Set([:num_ctas, :occupancy, :opt_level])
+
+"""
+    @compiler_options key=val...
+
+Specify per-architecture optimization hints inside a kernel function body.
+Hints are embedded as `:meta` nodes and resolved at compile time based on
+the target `sm_arch`.
+
+Supported options: `num_ctas`, `occupancy`, `opt_level`.
+
+Values can be plain scalars or `ByTarget(...)` for per-architecture dispatch.
+
+# Examples
+```julia
+function my_kernel(A, B)
+    ct.@compiler_options num_ctas=2
+    ...
+end
+
+function my_kernel(A, B)
+    ct.@compiler_options num_ctas=ByTarget(v"10.0" => 2, v"12.0" => 4) occupancy=8
+    ...
+end
+```
+"""
+macro compiler_options(args...)
+    isempty(args) && error("@compiler_options requires at least one key=val pair")
+
+    # Validate and collect hints
+    hints = Pair{Symbol, Any}[]
+    for h in args
+        h isa Expr && h.head === :(=) || error("@compiler_options: expected key=val, got $h")
+        key = h.args[1]::Symbol
+        key in _COMPILER_OPTION_NAMES || error("@compiler_options: unknown option '$key'; expected one of $(_COMPILER_OPTION_NAMES)")
+        push!(hints, key => h.args[2])
+    end
+
+    # Evaluate hint values at macro expansion time and embed directly in :meta nodes.
+    # Core.eval is needed because :meta nodes are not processed by lowering — they
+    # pass through as-is, so their arguments must be concrete values in the AST.
+    metas = Expr[]
+    for (key, val) in hints
+        evaluated = Core.eval(__module__, val)
+        # Validate concrete values (including inside ByTarget)
+        if evaluated isa ByTarget
+            for v in values(evaluated.targets)
+                validate_hint(key, v)
+            end
+            evaluated.default !== nothing && validate_hint(key, something(evaluated.default))
+        else
+            validate_hint(key, evaluated)
+        end
+        push!(metas, Expr(:meta, :cuTile, key, evaluated))
+    end
+
+    return Expr(:block, metas...)
 end

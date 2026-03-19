@@ -16,9 +16,10 @@ julia> using Pkg
 julia> Pkg.add("cuTile")
 ```
 
-Execution of cuTile kernels requires CUDA.jl to be installed and imported. Furthermore,
-only Blackwell GPUs (compute capability 10+) are supported at this time, and the CUDA driver
-needs to be version 13 or higher.
+Execution of cuTile kernels requires CUDA.jl to be installed and imported.
+cuTile generates kernels based on [Tile IR](https://docs.nvidia.com/cuda/tile-ir/), which requires an NVIDIA Driver that supports CUDA 13 (580 or later).
+CUDA.jl automatically downloads the appropriate CUDA toolkit artifacts, so no manual CUDA installation is needed.
+Only Ampere, Ada, and Blackwell GPUs are supported at this time, with Hopper support coming in a later release of CUDA 13.
 
 ## Quick Start
 
@@ -40,10 +41,14 @@ end
 # Launch
 vector_size = 2^20
 tile_size = 16
+
+blocks = cld(vector_size, tile_size)
+grid = (blocks, 1, 1)       
+
 a, b = CUDA.rand(Float32, vector_size), CUDA.rand(Float32, vector_size)
 c = CUDA.zeros(Float32, vector_size)
 
-ct.launch(vadd, (cld(vector_size, tile_size), 1, 1), a, b, c, ct.Constant(tile_size))
+ct.launch(vadd, grid, a, b, c, ct.Constant(tile_size))
 
 @assert c == a .+ b
 ```
@@ -256,6 +261,44 @@ function vadd(a, b, c)
     return
 end
 ```
+
+### Optimization hints
+
+Python passes optimization hints as `@ct.kernel` decorator arguments. Julia uses
+`ct.@compiler_options` inside the function body (like `@inline`):
+
+```python
+# Python
+@ct.kernel(num_ctas=ct.ByTarget(sm_100=2), occupancy=8)
+def matmul(A, B, C, ...):
+    ...
+```
+
+```julia
+# Julia
+function matmul(A, B, C, ...)
+    ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 2) occupancy=8
+    ...
+end
+```
+
+Supported options:
+
+| Option | Description | Valid values |
+|--------|-------------|--------------|
+| `num_ctas` | Number of CTAs in a CGA (cooperative group array) | Powers of 2 |
+| `occupancy` | Target occupancy (number of concurrent CTAs per SM) | 1–32 |
+| `opt_level` | Optimization level | 0–3 |
+
+Values can be plain scalars or `ct.ByTarget(...)` for per-architecture dispatch.
+`ByTarget` maps compute capabilities to values, with an optional default:
+
+```julia
+ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 4, v"12.0" => 2; default=1)
+```
+
+Hints can also be passed as keyword arguments to `ct.launch` or `ct.code_tiled`,
+which take precedence over `@compiler_options`.
 
 ### Launch Syntax
 

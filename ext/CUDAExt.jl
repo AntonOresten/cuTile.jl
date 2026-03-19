@@ -1,8 +1,9 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, CGOpts, CuTileResults, DEFAULT_BYTECODE_VERSION,
-              emit_code, sanitize_name, constant_eltype, constant_value, is_ghost_type
+using cuTile: TileArray, Constant, ByTarget, CGOpts, CuTileResults, DEFAULT_BYTECODE_VERSION,
+              emit_code, sanitize_name, constant_eltype, constant_value, is_ghost_type,
+              resolve_hint, format_sm_arch, validate_hint
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -35,18 +36,18 @@ function check_tile_ir_support()
 
     cuda_ver = CUDA_Compiler_jll.cuda_version
     cap = capability(device())
-    sm_arch = "sm_$(cap.major)$(cap.minor)"
+    sm_str = format_sm_arch(cap)
 
     if cap >= v"10.0"       # Blackwell
         cuda_ver >= v"13.1" ||
-            error("Tile IR on Blackwell ($sm_arch) requires CUDA ≥ 13.1, got $cuda_ver")
+            error("Tile IR on Blackwell ($sm_str) requires CUDA ≥ 13.1, got $cuda_ver")
     elseif cap >= v"9.0"    # Hopper — not supported
-        error("Tile IR is not supported on Hopper ($sm_arch)")
+        error("Tile IR is not supported on Hopper ($sm_str)")
     elseif cap >= v"8.0"    # Ampere / Ada
         cuda_ver >= v"13.2" ||
-            error("Tile IR on Ampere/Ada ($sm_arch) requires CUDA ≥ 13.2, got $cuda_ver")
+            error("Tile IR on Ampere/Ada ($sm_str) requires CUDA ≥ 13.2, got $cuda_ver")
     else
-        error("Tile IR is not supported on compute capability $cap ($sm_arch)")
+        error("Tile IR is not supported on compute capability $cap ($sm_str)")
     end
 
     # Return bytecode version matching the toolkit
@@ -72,13 +73,18 @@ function emit_binary(cache::CacheView, mi::Core.MethodInstance;
 
     opts = cache.owner[2]
 
+    # Resolve opt_level here (not in emit_code) because it's a tileiras flag, not bytecode.
+    # num_ctas/occupancy are resolved in emit_code because they're encoded in bytecode.
+    _, _, kernel_meta = res.julia_ir
+    opt_level = something(resolve_hint(opts.opt_level, kernel_meta, :opt_level, opts.sm_arch), 3)
+
     # Run tileiras to produce CUBIN
     input_path = tempname() * ".tile"
     output_path = tempname() * ".cubin"
     compiled = false
     try
         write(input_path, bytecode)
-        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(opts.sm_arch) -O$(opts.opt_level)`,
+        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(opts.sm_arch)) -O$(opt_level)`,
                      "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
         proc, log = run_and_collect(cmd)
         if !success(proc)
@@ -165,11 +171,14 @@ cuTile.launch(vadd_kernel, 64, a, b, c)
 """
 function cuTile.launch(@nospecialize(f), grid, args...;
                        name::Union{String, Nothing}=nothing,
-                       sm_arch::String=default_sm_arch(),
-                       opt_level::Int=3,
+                       sm_arch::Union{VersionNumber, Nothing}=nothing,
+                       opt_level::Union{Int, Nothing}=nothing,
                        num_ctas::Union{Int, Nothing}=nothing,
                        occupancy::Union{Int, Nothing}=nothing)
     bytecode_version = check_tile_ir_support()
+
+    # Resolve sm_arch: nothing → device capability
+    resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
 
     # Convert CuArray -> TileArray (and other conversions)
     tile_args = map(to_tile_arg, args)
@@ -200,7 +209,8 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     end
 
     # Create cache view with compilation options as sharding keys
-    opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
+    opts = (sm_arch=resolved_sm_arch, opt_level=opt_level,
+            num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
 
@@ -232,15 +242,12 @@ function cuTile.launch(@nospecialize(f), grid, args...;
 end
 
 """
-    default_sm_arch() -> String
+    default_sm_arch() -> VersionNumber
 
-Get the SM architecture string for the current CUDA device.
-Returns e.g. "sm_120" for compute capability 12.0.
+Get the compute capability of the current CUDA device as a VersionNumber.
+Returns e.g. `v"12.0"` for compute capability 12.0.
 """
-function default_sm_arch()
-    cap = capability(device())
-    "sm_$(cap.major)$(cap.minor)"
-end
+default_sm_arch() = capability(device())
 
 """
     flatten(x)

@@ -3,7 +3,7 @@ module cuTile
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, BlockArg,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
-                      IfOp, ForOp, WhileOp, LoopOp
+                      IfOp, ForOp, WhileOp, LoopOp, Undef
 
 using Base: compilerbarrier, donotdelete
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
@@ -38,7 +38,7 @@ include("language/math.jl")
 include("language/operations.jl")
 include("language/atomics.jl")
 
-public launch
+public launch, ByTarget, @compiler_options
 launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
 
 include("Experimental.jl")

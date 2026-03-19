@@ -408,3 +408,83 @@ struct One end
 @inline Base.:-(::One, x::T) where {T<:Integer} = one(T) - x
 @inline Base.:+(::One, x::T) where {T<:Integer} = one(T) + x
 @inline Base.Broadcast.broadcastable(o::One) = Ref(o)
+
+
+#=============================================================================
+ ByTarget: Per-architecture optimization hints
+=============================================================================#
+
+"""
+    ByTarget{T}
+
+Per-architecture value that resolves to a concrete `T` based on the target
+GPU's compute capability. Use with `@compiler_options` to specify
+architecture-specific optimization hints.
+
+# Example
+```julia
+function my_kernel(...)
+    ct.@compiler_options num_ctas=ByTarget(v"10.0" => 2, v"12.0" => 4)
+    ...
+end
+```
+"""
+struct ByTarget{T}
+    default::Union{Some{T}, Nothing}
+    targets::Dict{VersionNumber, T}
+end
+
+function ByTarget(pairs::Pair{VersionNumber, T}...; default=nothing) where T
+    d = isnothing(default) ? nothing : Some{T}(default)
+    ByTarget{T}(d, Dict{VersionNumber, T}(pairs...))
+end
+
+function ByTarget(pairs::Pair{VersionNumber}...; default=nothing)
+    T = promote_type(typeof(default === nothing ? first(pairs).second : default),
+                     map(p -> typeof(p.second), pairs)...)
+    d = isnothing(default) ? nothing : Some{T}(T(default))
+    ByTarget{T}(d, Dict{VersionNumber, T}(pairs...))
+end
+
+"""
+    resolve(bt::ByTarget{T}, cap::VersionNumber) -> Union{T, Nothing}
+
+Resolve a `ByTarget` value for a specific compute capability.
+Returns the architecture-specific value, the default, or `nothing`.
+"""
+function resolve(bt::ByTarget{T}, cap::VersionNumber) where T
+    val = get(bt.targets, cap, nothing)
+    val !== nothing && return val
+    bt.default !== nothing && return something(bt.default)
+    return nothing
+end
+
+# Pass-through: plain values resolve to themselves
+resolve(val, ::VersionNumber) = val
+resolve(::Nothing, ::VersionNumber) = nothing
+
+"""
+    validate_hint(key::Symbol, val)
+
+Validate a kernel optimization hint value. Throws `ArgumentError` for invalid values.
+
+- `num_ctas`: power of 2 in [1, 16]
+- `occupancy`: integer in [1, 32]
+- `opt_level`: integer in [0, 3]
+"""
+function validate_hint(key::Symbol, val)
+    val === nothing && return
+    if key === :num_ctas
+        val isa Integer || throw(ArgumentError("num_ctas must be an integer, got $(typeof(val))"))
+        1 <= val <= 16 || throw(ArgumentError("num_ctas must be between 1 and 16, got $val"))
+        ispow2(val) || throw(ArgumentError("num_ctas must be a power of 2, got $val"))
+    elseif key === :occupancy
+        val isa Integer || throw(ArgumentError("occupancy must be an integer, got $(typeof(val))"))
+        1 <= val <= 32 || throw(ArgumentError("occupancy must be between 1 and 32, got $val"))
+    elseif key === :opt_level
+        val isa Integer || throw(ArgumentError("opt_level must be an integer, got $(typeof(val))"))
+        0 <= val <= 3 || throw(ArgumentError("opt_level must be between 0 and 3, got $val"))
+    else
+        throw(ArgumentError("unknown hint key: $key"))
+    end
+end

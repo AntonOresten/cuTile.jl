@@ -8,7 +8,7 @@
 export code_tiled, @device_code_tiled
 
 import CompilerCaching
-using CompilerCaching: CacheView, @setup_caching, method_instance, typeinf!, results, get_source
+using CompilerCaching: CacheView, @setup_caching, method_instance, match_method_instance, typeinf!, results, get_source
 
 # Compilation hook for @device_code_* macros - intercepts compilations for reflection
 const compile_hook = Ref{Union{Nothing,Function}}(nothing)
@@ -292,10 +292,12 @@ end
  Compilation phases
 =============================================================================#
 
-# Compilation options for cache sharding
+# Compilation options for cache sharding.
+# Hint fields (opt_level, num_ctas, occupancy) represent explicit overrides only;
+# `nothing` means "consult @compiler_options meta nodes in the IR during compilation."
 const CGOpts = @NamedTuple{
-    sm_arch::Union{String, Nothing},
-    opt_level::Int,
+    sm_arch::Union{VersionNumber, Nothing},
+    opt_level::Union{Int, Nothing},
     num_ctas::Union{Int, Nothing},
     occupancy::Union{Int, Nothing},
     bytecode_version::VersionNumber
@@ -311,9 +313,67 @@ mutable struct CuTileResults
 end
 
 """
-    emit_ir(cache, mi; const_argtypes=nothing) -> (StructuredIRCode, rettype)
+    process_meta!(ir::CC.IRCode) -> ir
 
-IR phase: run inference if needed and return structured IR.
+Move `:meta` expression nodes from `ir.stmts` into `ir.meta`, mirroring
+Julia's `process_meta!` in `Compiler/src/optimize.jl`. This normalizes IR
+from `inflate_ir` (which leaves meta as stmts) to match the `typeinf_ircode`
+path (which already extracts meta via `convert_to_ircode`).
+"""
+function process_meta!(ir::CC.IRCode)
+    for i in 1:length(ir.stmts)
+        stmt = ir.stmts[i][:stmt]
+        if stmt isa Expr && stmt.head === :meta
+            push!(ir.meta, stmt)
+            @static if VERSION >= v"1.12-"
+                ir.stmts[i][:stmt] = nothing
+            else
+                CC.setindex!(ir.stmts[i], nothing, :stmt)
+            end
+        end
+    end
+    return ir
+end
+
+"""
+    extract_meta(ir::CC.IRCode) -> Dict{Symbol, Any}
+
+Extract cuTile meta nodes from IRCode. Meta nodes are inserted by `@compiler_options`
+and survive through lowering/optimization. After `process_meta!` normalization,
+all meta nodes reside in `ir.meta`.
+"""
+function extract_meta(ir::CC.IRCode)
+    meta = Dict{Symbol, Any}()
+    for expr in ir.meta
+        if expr isa Expr && expr.head === :meta && length(expr.args) >= 3 && expr.args[1] === :cuTile
+            meta[expr.args[2]::Symbol] = expr.args[3]
+        end
+    end
+    return meta
+end
+
+"""
+    resolve_hint(explicit, kernel_meta, key, sm_arch)
+
+Resolve a hint value with precedence: explicit kwarg > @compiler_options meta > nothing.
+"""
+function resolve_hint(explicit, kernel_meta::Dict{Symbol, Any}, key::Symbol,
+                      sm_arch::Union{VersionNumber, Nothing})
+    val = if explicit !== nothing
+        explicit
+    elseif haskey(kernel_meta, key) && sm_arch !== nothing
+        resolve(kernel_meta[key], sm_arch)
+    else
+        nothing
+    end
+    validate_hint(key, val)
+    return val
+end
+
+"""
+    emit_ir(cache, mi; const_argtypes=nothing) -> (StructuredIRCode, rettype, kernel_meta)
+
+IR phase: run inference if needed and return structured IR plus extracted kernel meta.
 
 When `const_argtypes` is provided (a `Vector{Any}` with `CC.Const` entries for
 compile-time constants), const-seeded inference is used, producing specialized
@@ -346,18 +406,22 @@ function emit_ir(cache::CacheView, mi::Core.MethodInstance;
         res.julia_ir !== nothing && return res.julia_ir
         src = @something get_source(ci, const_argtypes)
         ir = CC.inflate_ir(src, mi)
+        process_meta!(ir)
+        kernel_meta = extract_meta(ir)
         sci = StructuredIRCode(ir)
         rettype = _specialized_rettype(cache, ci, const_argtypes)
-        res.julia_ir = (sci, rettype)
+        res.julia_ir = (sci, rettype, kernel_meta)
         return res.julia_ir
     else
-        # Generic path (unchanged)
+        # Generic path
         res = results(cache, ci)
         res.julia_ir !== nothing && return res.julia_ir
         src = @something get_source(ci)
         ir = CC.inflate_ir(src, mi)
+        process_meta!(ir)
+        kernel_meta = extract_meta(ir)
         sci = StructuredIRCode(ir)
-        res.julia_ir = (sci, ci.rettype)
+        res.julia_ir = (sci, ci.rettype, kernel_meta)
         return res.julia_ir
     end
 end
@@ -390,7 +454,7 @@ Code phase: generate Tile IR bytecode from StructuredIRCode.
 function emit_code(cache::CacheView, mi::Core.MethodInstance;
                    const_argtypes::Union{Vector{Any}, Nothing}=nothing)
     # Delegate to previous phase (handles CI + IR)
-    sci, rettype = emit_ir(cache, mi; const_argtypes)
+    sci, rettype, kernel_meta = emit_ir(cache, mi; const_argtypes)
 
     # Check code cache
     ci = get(cache, mi)
@@ -400,13 +464,17 @@ function emit_code(cache::CacheView, mi::Core.MethodInstance;
     # Compute bytecode
     opts = cache.owner[2]
 
+    # Resolve hints: launch()/code_tiled() kwargs > @compiler_options meta > defaults
+    resolved_num_ctas = resolve_hint(opts.num_ctas, kernel_meta, :num_ctas, opts.sm_arch)
+    resolved_occupancy = resolve_hint(opts.occupancy, kernel_meta, :occupancy, opts.sm_arch)
+
     # Generate Tile IR bytecode
     bytecode = write_bytecode!(1; version=opts.bytecode_version) do writer, func_buf
         emit_kernel!(writer, func_buf, sci, rettype;
             name = sanitize_name(string(mi.def.name)),
             sm_arch = opts.sm_arch,
-            num_ctas = opts.num_ctas,
-            occupancy = opts.occupancy,
+            num_ctas = resolved_num_ctas,
+            occupancy = resolved_occupancy,
             cache = cache,
             const_argtypes = const_argtypes
         )
@@ -511,8 +579,8 @@ Analogous to `code_llvm`/`code_native`. Uses the compilation cache for
 consistency with `launch`.
 """
 function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
-                    sm_arch::Union{String, Nothing}=nothing,
-                    opt_level::Int=3,
+                    sm_arch::Union{VersionNumber, Nothing}=nothing,
+                    opt_level::Union{Int, Nothing}=nothing,
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
                     bytecode_version::VersionNumber=DEFAULT_BYTECODE_VERSION,
@@ -523,9 +591,10 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
     if !Base.isdispatchtuple(tt)
         throw(ArgumentError("code_tiled requires a dispatch tuple, got non-concrete signature"))
     end
-    mi = @something(method_instance(f, stripped; world, method_table=cuTileMethodTable),
-                    method_instance(f, stripped; world),
+    mi = @something(match_method_instance(f, stripped; world, method_table=cuTileMethodTable),
+                    match_method_instance(f, stripped; world),
                     throw(MethodError(f, stripped)))
+
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)

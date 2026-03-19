@@ -73,7 +73,6 @@ end
 
 end
 
-
 @testset "Load / Store Optimization Hints" begin
 
 @testset "load with latency hint" begin
