@@ -38,7 +38,10 @@ include("language/math.jl")
 include("language/operations.jl")
 include("language/atomics.jl")
 
-public launch, ByTarget, @compiler_options
+public launch, Tiled, ByTarget, @compiler_options
 launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
+
+# Tiled(arr) is defined in CUDAExt; provide a function stub for the public API
+function Tiled end
 
 end # module cuTile

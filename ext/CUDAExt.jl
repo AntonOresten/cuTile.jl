@@ -9,8 +9,11 @@ using CompilerCaching: CacheView, method_instance, results
 
 import Core.Compiler as CC
 
-using CUDA: CuModule, CuFunction, cudacall, device, capability
+using CUDA: CuArray, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
+
+import Base.Broadcast: BroadcastStyle, Broadcasted, DefaultArrayStyle
+import CUDA: CuArrayStyle
 
 public launch
 
@@ -254,5 +257,121 @@ Other values pass through unchanged.
 """
 to_tile_arg(x) = x
 to_tile_arg(arr::AbstractArray) = TileArray(arr)
+
+#=============================================================================
+ Tiled Broadcast via Base.Broadcast
+=============================================================================#
+
+"""
+    Tiled{A <: AbstractArray}
+
+Wrapper that routes broadcast expressions through cuTile kernels.
+
+    Tiled(B) .= A .+ A
+
+Uses Julia's `Base.Broadcast` fusion machinery to build a `Broadcasted` tree,
+then dispatches to a generic cuTile kernel that evaluates the tree on tiles.
+"""
+struct _Tiled{A <: AbstractArray}
+    parent::A
+end
+Base.parent(t::_Tiled) = t.parent
+Base.size(t::_Tiled) = size(parent(t))
+Base.size(t::_Tiled, d) = size(parent(t), d)
+Base.axes(t::_Tiled) = axes(parent(t))
+Base.axes(t::_Tiled, d) = axes(parent(t), d)
+Base.ndims(::_Tiled{A}) where A = ndims(A)
+Base.eltype(::_Tiled{A}) where A = eltype(A)
+Base.length(t::_Tiled) = length(parent(t))
+Base.similar(t::_Tiled, args...) = _Tiled(similar(parent(t), args...))
+Base.setindex!(t::_Tiled, v, i...) = setindex!(parent(t), v, i...)
+
+cuTile.Tiled(arr::AbstractArray) = _Tiled(arr)
+
+struct TiledCuArrayStyle{N} <: BroadcastStyle end
+TiledCuArrayStyle{M}(::Val{N}) where {N,M} = TiledCuArrayStyle{N}()
+
+BroadcastStyle(::Type{<:_Tiled{<:CuArray{T,N}}}) where {T,N} = TiledCuArrayStyle{N}()
+
+# TiledCuArrayStyle wins over CuArrayStyle and DefaultArrayStyle
+BroadcastStyle(::TiledCuArrayStyle{N}, ::CuArrayStyle{M}) where {N,M} = TiledCuArrayStyle{max(N,M)}()
+BroadcastStyle(::TiledCuArrayStyle{N}, ::DefaultArrayStyle{M}) where {N,M} = TiledCuArrayStyle{max(N,M)}()
+BroadcastStyle(::TiledCuArrayStyle{N}, ::TiledCuArrayStyle{M}) where {N,M} = TiledCuArrayStyle{max(N,M)}()
+
+# materialize! dispatch: Tiled(B) .= expr
+function Base.Broadcast.materialize!(dest::_Tiled, bc::Broadcasted)
+    _tiled_broadcast!(parent(dest), bc)
+    return dest
+end
+
+"""
+    _to_tiled_bc(bc)
+
+Walk a Broadcasted tree, converting leaf CuArrays to TileArrays and stripping
+style/axes (replacing with nothing). Scalars and other leaves pass through.
+"""
+_to_tiled_bc(arr::CuArray) = TileArray(arr)
+_to_tiled_bc(t::_Tiled) = TileArray(parent(t))
+_to_tiled_bc(x::Number) = x
+_to_tiled_bc(x) = x  # fallback for other types
+function _to_tiled_bc(bc::Broadcasted)
+    new_args = map(_to_tiled_bc, bc.args)
+    Broadcasted{Nothing}(bc.f, new_args, nothing)
+end
+
+# The generic broadcast kernel: evaluates the Broadcasted tree on tiles
+function _tiled_bc_kernel_1d(dest::TileArray{T, 1}, bc, tile_size) where T
+    bid = cuTile.bid(1)
+    result = _eval_bc(bc, bid, tile_size)
+    result_converted = convert(cuTile.Tile{T}, result)
+    cuTile.store(dest, bid, result_converted)
+    return
+end
+
+function _tiled_bc_kernel_2d(dest::TileArray{T, 2}, bc, tile_size) where T
+    bid_x = cuTile.bid(1)
+    bid_y = cuTile.bid(2)
+    result = _eval_bc(bc, (bid_x, bid_y), tile_size)
+    result_converted = convert(cuTile.Tile{T}, result)
+    cuTile.store(dest, (bid_x, bid_y), result_converted)
+    return
+end
+
+# Recursive tree evaluation inside kernel
+@inline _eval_bc(arr::TileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
+@inline _eval_bc(x::Number, bid, tile_size) = x
+
+@inline function _eval_bc(bc::Broadcasted, bid, tile_size)
+    args = _eval_bc_args(bc.args, bid, tile_size)
+    # Use broadcast to get element-wise semantics (not direct call, which
+    # would dispatch to e.g. matmul for * on tiles)
+    broadcast(bc.f, args...)
+end
+
+@inline _eval_bc_args(::Tuple{}, bid, tile_size) = ()
+@inline _eval_bc_args(args::Tuple, bid, tile_size) =
+    (_eval_bc(args[1], bid, tile_size), _eval_bc_args(Base.tail(args), bid, tile_size)...)
+
+"""
+    _tiled_broadcast!(dest, bc; tile_size=64)
+
+Launch a tiled broadcast kernel for the fused expression `bc` writing to `dest`.
+"""
+function _tiled_broadcast!(dest::CuArray{T,N}, bc::Broadcasted; tile_size::Int=64) where {T, N}
+    dest_ta = TileArray(dest)
+    tiled_bc = _to_tiled_bc(bc)
+
+    if N == 1
+        ts = (tile_size,)
+        grid = (cld(size(dest, 1), tile_size),)
+        cuTile.launch(_tiled_bc_kernel_1d, grid, dest_ta, tiled_bc, Constant(ts))
+    elseif N == 2
+        ts = (tile_size, tile_size)
+        grid = (cld(size(dest, 1), tile_size), cld(size(dest, 2), tile_size))
+        cuTile.launch(_tiled_bc_kernel_2d, grid, dest_ta, tiled_bc, Constant(ts))
+    else
+        error("Tiled broadcast not yet supported for $N dimensions")
+    end
+end
 
 end
