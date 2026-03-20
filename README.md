@@ -43,7 +43,7 @@ vector_size = 2^20
 tile_size = 16
 
 blocks = cld(vector_size, tile_size)
-grid = (blocks, 1, 1)       
+grid = (blocks, 1, 1)
 
 a, b = CUDA.rand(Float32, vector_size), CUDA.rand(Float32, vector_size)
 c = CUDA.zeros(Float32, vector_size)
@@ -231,7 +231,6 @@ uses standard Julia syntax and is overlaid on `Base`.
 ## Differences from cuTile Python
 
 cuTile.jl follows Julia conventions, which differ from the Python API in several ways:
-
 
 ### Kernel definition syntax
 
@@ -509,6 +508,36 @@ ct.store(arr, index=(i, j), tile=t)
 ct.load(arr, (i, j), (m, n))
 ct.store(arr, (i, j), t)
 ```
+
+
+## Host-level operations
+
+cuTile.jl also provides a limited set of host-level APIs to use cuTile without
+writing custom kernels. For example, for element-wise operations on `CuArray`s,
+cuTile can automatically generate and launch a fused kernel using Julia's
+broadcast machinery:
+
+```julia
+using CUDA
+import cuTile as ct
+
+A = CUDA.rand(Float32, 1024)
+B = CUDA.rand(Float32, 1024)
+C = CUDA.zeros(Float32, 1024)
+
+# Wrap arrays in Tiled() to route through cuTile
+ct.Tiled(C) .= ct.Tiled(A) .+ ct.Tiled(B)
+
+# Or use the @. macro for convenience
+ct.@. C = A + sin(B)
+
+# Allocating form (returns a new CuArray)
+D = ct.@. A + B
+```
+
+The entire broadcast expression is fused into a single cuTile kernel. Tile sizes
+are automatically chosen based on array dimensions (power-of-2, budget-based).
+Works with 1D through N-dimensional arrays.
 
 
 ## Acknowledgments

@@ -1,7 +1,7 @@
 module CUDAExt
 
 using cuTile
-using cuTile: Tiled, TileArray, Constant, CuTileResults,
+using cuTile: TileArray, Constant, CuTileResults,
               emit_code, sanitize_name, constant_eltype, flatten,
               resolve_hint, format_sm_arch
 
@@ -12,8 +12,7 @@ import Core.Compiler as CC
 using CUDA: CuArray, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
 
-import Base.Broadcast
-import Base.Broadcast: BroadcastStyle, Broadcasted, DefaultArrayStyle
+import Base.Broadcast: BroadcastStyle
 import CUDA: CuArrayStyle
 
 public launch
@@ -259,132 +258,7 @@ Other values pass through unchanged.
 to_tile_arg(x) = x
 to_tile_arg(arr::AbstractArray) = TileArray(arr)
 
-#=============================================================================
- Tiled Broadcast via Base.Broadcast
-=============================================================================#
-
-struct TiledCuArrayStyle{N} <: BroadcastStyle end
-TiledCuArrayStyle{M}(::Val{N}) where {N,M} = TiledCuArrayStyle{N}()
-
-BroadcastStyle(::Type{<:Tiled{<:CuArray{T,N}}}) where {T,N} = TiledCuArrayStyle{N}()
-
-# TiledCuArrayStyle wins over CuArrayStyle and DefaultArrayStyle
-BroadcastStyle(::TiledCuArrayStyle{N}, ::CuArrayStyle{M}) where {N,M} = TiledCuArrayStyle{max(N,M)}()
-BroadcastStyle(::TiledCuArrayStyle{N}, ::DefaultArrayStyle{M}) where {N,M} = TiledCuArrayStyle{max(N,M)}()
-BroadcastStyle(::TiledCuArrayStyle{N}, ::TiledCuArrayStyle{M}) where {N,M} = TiledCuArrayStyle{max(N,M)}()
-
-# materialize! dispatch: Tiled(B) .= expr
-function Base.Broadcast.materialize!(dest::Tiled, bc::Broadcasted)
-    _tiled_broadcast!(parent(dest), bc)
-    return dest
-end
-
-# copy dispatch: C = Tiled(A) .+ B (allocating form)
-function Base.copy(bc::Broadcasted{TiledCuArrayStyle{N}}) where N
-    ElType = Broadcast.combine_eltypes(bc.f, bc.args)
-    dest = similar(CuArray{ElType}, axes(bc))
-    _tiled_broadcast!(dest, bc)
-    return dest
-end
-
-"""
-    _to_tiled_bc(bc)
-
-Walk a Broadcasted tree, converting leaf CuArrays to TileArrays and stripping
-style/axes (replacing with nothing). Scalars and other leaves pass through.
-"""
-_to_tiled_bc(arr::CuArray) = TileArray(arr)
-_to_tiled_bc(t::Tiled) = TileArray(parent(t))
-_to_tiled_bc(x::Number) = x
-_to_tiled_bc(x) = x  # fallback for other types
-function _to_tiled_bc(bc::Broadcasted)
-    new_args = map(_to_tiled_bc, bc.args)
-    Broadcasted{Nothing}(bc.f, new_args, nothing)
-end
-
-# The generic broadcast kernel: evaluates the Broadcasted tree on tiles
-@generated function _tiled_bc_kernel(dest::TileArray{T, N}, bc, tile_size, overflow_grids) where {T, N}
-    body = Expr[]
-    bid_vars = [Symbol("bid_$d") for d in 1:N]
-
-    if N <= 3
-        for d in 1:N
-            push!(body, :($(bid_vars[d]) = cuTile.bid($d)))
-        end
-    else
-        push!(body, :($(bid_vars[1]) = cuTile.bid(1)))
-        push!(body, :($(bid_vars[2]) = cuTile.bid(2)))
-        push!(body, :(_rem = cuTile.bid(3) - Int32(1)))
-        for d in 3:N
-            if d < N
-                push!(body, :($(bid_vars[d]) = rem(_rem, Int32(overflow_grids[$(d-2)])) + Int32(1)))
-                push!(body, :(_rem = fld(_rem, Int32(overflow_grids[$(d-2)]))))
-            else
-                push!(body, :($(bid_vars[d]) = _rem + Int32(1)))
-            end
-        end
-    end
-
-    idx = N == 1 ? bid_vars[1] : Expr(:tuple, bid_vars...)
-    push!(body, :(result = _eval_bc(bc, $idx, tile_size)))
-    push!(body, :(result_converted = convert(cuTile.Tile{$T}, result)))
-    push!(body, :(cuTile.store(dest, $idx, result_converted)))
-    push!(body, :(return))
-    Expr(:block, body...)
-end
-
-# Recursive tree evaluation inside kernel
-@inline _eval_bc(arr::TileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
-@inline _eval_bc(x::Number, bid, tile_size) = x
-
-@inline function _eval_bc(bc::Broadcasted, bid, tile_size)
-    args = _eval_bc_args(bc.args, bid, tile_size)
-    # Use broadcast to get element-wise semantics (not direct call, which
-    # would dispatch to e.g. matmul for * on tiles)
-    broadcast(bc.f, args...)
-end
-
-@inline _eval_bc_args(::Tuple{}, bid, tile_size) = ()
-@inline _eval_bc_args(args::Tuple, bid, tile_size) =
-    (_eval_bc(args[1], bid, tile_size), _eval_bc_args(Base.tail(args), bid, tile_size)...)
-
-"""
-    _compute_tile_sizes(dest_size; budget=4096)
-
-Distribute a total element budget greedily across dimensions, skipping singletons.
-Each tile dimension is a power of 2, capped by the array size in that dimension.
-"""
-function _compute_tile_sizes(dest_size::NTuple{N,Int}; budget::Int=4096) where N
-    ts = ones(Int, N)
-    remaining = budget
-    for i in 1:N
-        s = dest_size[i]
-        s == 1 && continue
-        t = prevpow(2, min(remaining, s))
-        ts[i] = t
-        remaining = remaining ÷ t
-        remaining < 2 && break
-    end
-    return NTuple{N,Int}(ts)
-end
-
-"""
-    _tiled_broadcast!(dest, bc)
-
-Launch a tiled broadcast kernel for the fused expression `bc` writing to `dest`.
-"""
-function _tiled_broadcast!(dest::CuArray{T,N}, bc::Broadcasted) where {T, N}
-    dest_ta = TileArray(dest)
-    tiled_bc = _to_tiled_bc(bc)
-
-    ts = _compute_tile_sizes(size(dest))
-    grid = ntuple(i -> cld(size(dest, i), ts[i]), N)
-
-    launch_grid = N <= 3 ? grid : (grid[1], grid[2], prod(grid[i] for i in 3:N))
-    overflow = N > 3 ? grid[3:end] : ()
-
-    cuTile.launch(_tiled_bc_kernel, launch_grid, dest_ta, tiled_bc,
-                  Constant(ts), Constant(overflow))
-end
+# Tiled Broadcast — TiledStyle wins over CuArrayStyle
+BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.TiledStyle{max(N,M)}()
 
 end
