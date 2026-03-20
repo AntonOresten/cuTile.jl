@@ -1,9 +1,9 @@
 module CUDAExt
 
 using cuTile
-using cuTile: TileArray, Constant, ByTarget, CGOpts, CuTileResults, DEFAULT_BYTECODE_VERSION,
-              emit_code, sanitize_name, constant_eltype, constant_value, is_ghost_type,
-              resolve_hint, format_sm_arch, validate_hint
+using cuTile: TileArray, Constant, CuTileResults,
+              emit_code, sanitize_name, constant_eltype, flatten,
+              resolve_hint, format_sm_arch
 
 using CompilerCaching: CacheView, method_instance, results
 
@@ -248,18 +248,6 @@ Get the compute capability of the current CUDA device as a VersionNumber.
 Returns e.g. `v"12.0"` for compute capability 12.0.
 """
 default_sm_arch() = capability(device())
-
-"""
-    flatten(x)
-
-Flatten a value into a tuple of its leaf fields for kernel launch.
-Scalars return themselves wrapped in a tuple. Structs like TileArray
-return their fields in order.
-
-This is used by the launch helper to splat arguments to cudacall.
-"""
-flatten(x) = is_ghost_type(typeof(x)) ? () : (x,)
-flatten(arr::TileArray{T, N}) where {T, N} = (arr.ptr, arr.sizes..., arr.strides...)
 
 """
     to_tile_arg(x)

@@ -177,9 +177,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
 
     # Extract shape
     shape = get_constant(ctx, args[1])
-    shape isa Tuple || throw(IRError("full() shape must be a compile-time constant tuple"))
+    shape isa Tuple || throw(IRError("fill() shape must be a compile-time constant tuple"))
     tile_shape = collect(Int, shape)
-    validate_tile_shape(tile_shape, "full")
+    validate_tile_shape(tile_shape, "fill")
 
     # Extract dtype from Type{T} argument
     elem_type = @something get_constant(ctx, args[3]) throw(IRError("constant() requires a compile-time element type"))
@@ -188,7 +188,7 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.constant), args)
     tile_type = tile_type!(tt, dtype, tile_shape)
 
     tv = emit_value!(ctx, args[2])
-    tv === nothing && throw(IRError("full() value must be a constant or a runtime scalar"))
+    tv === nothing && throw(IRError("fill() value must be a constant or a runtime scalar"))
     if tv.constant !== nothing
         # Compile-time constant: use ConstantOp directly
         value_bytes = constant_to_bytes(something(tv.constant), elem_type)

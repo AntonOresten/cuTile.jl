@@ -419,48 +419,30 @@ end
  Factory
 =============================================================================#
 
-public arange, full, zeros
+public arange
 
 """
     arange(shape::NTuple{1, Int}, dtype::Type{T}) -> Tile{T, shape}
+    arange(n::Int, dtype::Type{T}) -> Tile{T, (n,)}
 
-Create a 1D tile with values [1, 2, 3, ..., shape[1]] (1-indexed).
+Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 
 # Example
 ```julia
 indices = ct.arange((16,), Int32)  # Creates Tile with [1, 2, 3, ..., 16]
+indices = ct.arange(16, Int32)     # Same thing, scalar form
 ```
 """
 @inline arange(shape::NTuple{1, Int}, ::Type{T}) where {T} =
     Intrinsics.iota(shape, T) .+ one(T)
+@inline arange(n::Int, ::Type{T}) where {T} = arange((n,), T)
 
-"""
-    full(shape::NTuple{N, Int}, value, dtype::Type{T}) -> Tile{T, shape}
-
-Create a tile filled with a constant value.
-
-# Example
-```julia
-ones_tile = ct.full((32, 32), 1.0f0, Float32)
-```
-"""
-@inline full(shape::NTuple{N, Int}, value::Tile, ::Type{T}) where {N, T} =
-    Intrinsics.constant(shape, convert(Tile{T}, value), T)
-@inline full(shape::NTuple{N, Int}, value, ::Type{T}) where {N, T} =
+# Internal: create a tile filled with a constant value.
+# Used by Base.fill/zeros/ones overlays (see overlays.jl).
+@inline _full(value, ::Type{T}, shape::NTuple{N, Int}) where {N, T} =
     Intrinsics.constant(shape, Tile(T(value)), T)
-
-"""
-    zeros(shape::NTuple{N, Int}, dtype::Type{T}) -> Tile{T, shape}
-
-Create a tile filled with zeros.
-
-# Example
-```julia
-zeros_tile = ct.zeros((32, 32), Float32)
-```
-"""
-@inline zeros(shape::NTuple{N, Int}, ::Type{T}) where {N, T} =
-    full(shape, zero(T), T)
+@inline _full(value::Tile, ::Type, shape::NTuple{N, Int}) where {N} =
+    Intrinsics.constant(shape, value, eltype(value))
 
 #=============================================================================
  Shape & DType
@@ -522,6 +504,7 @@ reshaped = reshape(tile, (2, 16))  # Shape (2, 16), still 32 elements
     size(tile) === shape && return tile
     Intrinsics.reshape(tile, shape)
 end
+@inline Base.reshape(tile::Tile{T}, dims::Int...) where {T} = reshape(tile, dims)
 
 """
     permutedims(tile::Tile{T, S}, perm) -> Tile{T, permuted_shape}
@@ -917,7 +900,7 @@ end
 @inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}) where {T1}
     M = size(a, 1)
     N = size(b, 2)
-    acc = zeros((M, N), T1)
+    acc = zeros(T1, (M, N))
     muladd(a, b, acc)
 end
 
@@ -926,7 +909,7 @@ end
     B = max(size(a, 1), size(b, 1))  # Broadcast batch dimension
     M = size(a, 2)
     N = size(b, 3)
-    acc = zeros((B, M, N), T1)
+    acc = zeros(T1, (B, M, N))
     muladd(a, b, acc)
 end
 

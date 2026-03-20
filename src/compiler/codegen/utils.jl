@@ -70,9 +70,9 @@ struct CGVal
     type_id::Union{TypeId, Nothing}  # Tile IR type (nothing for lazy refs or multi-value)
     jltype::Any               # Original Julia type
     shape::Vector{Int}        # Tile shape (empty for scalars)
-    # Lazy argument reference: (arg_idx, [:field, index, ...])
-    # e.g., (1, [:sizes, 2]) means "argument 1, field :sizes, index 2"
-    arg_ref::Union{Tuple{Int, Vector{Union{Symbol, Int}}}, Nothing}
+    # Lazy argument reference: (arg_idx, [field_indices...])
+    # e.g., (1, [2, 1]) means "argument 1, field 2, sub-field 1"
+    arg_ref::Union{Tuple{Int, Vector{Int}}, Nothing}
     constant::Union{Some, Nothing}  # Nothing = no constant, Some(x) = constant value x
     tuple::Union{Vector{Any}, Nothing}  # For tuples: component refs (SSAValue, etc.)
 end
@@ -89,7 +89,7 @@ CGVal(v::Vector{Value}, @nospecialize(jltype)) =
     CGVal(v, nothing, jltype, Int[], nothing, nothing, nothing)
 
 # Constructor for lazy argument references
-function arg_ref_value(arg_idx::Int, chain::Vector{Union{Symbol, Int}}, @nospecialize(jltype))
+function arg_ref_value(arg_idx::Int, chain::Vector{Int}, @nospecialize(jltype))
     CGVal(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing, nothing)
 end
 
@@ -151,12 +151,14 @@ mutable struct CGCtx
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
     block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
 
-    # Destructured argument handling (for TileArray fields)
-    arg_flat_values::Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}
+    # Destructured argument handling: path-keyed flat values
+    # Key: (arg_idx, path) where path is e.g. [1] or [1, 2] (field indices)
+    arg_flat_values::Dict{Tuple{Int, Vector{Int}}, Vector{Value}}
     arg_types::Dict{Int, Type}
 
-    # Cached TensorViews for TileArray arguments (arg_idx -> (Value, TypeId))
-    tensor_views::Dict{Int, Tuple{Value, TypeId}}
+    # Cached TensorViews for TileArray arguments
+    # Key: arg_idx::Int for top-level, or (arg_idx, path) for nested
+    tensor_views::Dict{Any, Tuple{Value, TypeId}}
 
     # Bytecode infrastructure
     cb::CodeBuilder
@@ -188,9 +190,9 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
-        Dict{Tuple{Int, Union{Nothing, Symbol}}, Vector{Value}}(),
+        Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Int, Tuple{Value, TypeId}}(),
+        Dict{Any, Tuple{Value, TypeId}}(),
         cb, tt, sci, token, token_type, type_cache, sm_arch, cache,
     )
 end
@@ -238,13 +240,57 @@ end
 =============================================================================#
 
 """
-    get_arg_flat_values(ctx, arg_idx, field=nothing) -> Union{Vector{Value}, Nothing}
+    get_arg_flat_values(ctx, arg_idx, path) -> Union{Vector{Value}, Nothing}
 
-Get the flat Tile IR values for an argument or its field.
+Get the flat Tile IR values for a destructured argument at the given path.
 """
-function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, field::Union{Nothing, Symbol}=nothing)
-    get(ctx.arg_flat_values, (arg_idx, field), nothing)
+function get_arg_flat_values(ctx::CGCtx, arg_idx::Int, path::Vector{Int})
+    get(ctx.arg_flat_values, (arg_idx, path), nothing)
 end
+
+"""
+    collect_child_values(ctx, arg_idx, path, n) -> Union{Vector{Value}, Nothing}
+
+Collect values at `[path..., 1]` through `[path..., n]`, each expected to have
+exactly one flat value. Returns `nothing` if any child is missing.
+"""
+function collect_child_values(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, n::Int)
+    result = Value[]
+    for i in 1:n
+        child = get_arg_flat_values(ctx, arg_idx, [path..., i])
+        child === nothing && return nothing
+        append!(result, child)
+    end
+    isempty(result) ? nothing : result
+end
+
+"""
+    try_materialize_scalar(ctx, arg_idx, path, rt) -> Union{CGVal, Nothing}
+
+If `path` maps to exactly one flat value, return a concrete CGVal for it.
+"""
+function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, @nospecialize(rt))
+    values = get_arg_flat_values(ctx, arg_idx, path)
+    if values !== nothing && length(values) == 1
+        type_id = tile_type_for_julia!(ctx, rt)
+        return CGVal(values[1], type_id, rt)
+    end
+    nothing
+end
+
+"""
+    resolve_arg_ref(ctx, arg_idx, chain, idx, rt) -> CGVal
+
+Extend an arg_ref chain by `idx`, materializing to a concrete value if the path
+maps to a leaf scalar, otherwise returning a new lazy arg_ref.
+"""
+function resolve_arg_ref(ctx::CGCtx, arg_idx::Int, chain::Vector{Int}, idx::Int, @nospecialize(rt))
+    new_chain = [chain..., idx]
+    cv = try_materialize_scalar(ctx, arg_idx, new_chain, rt)
+    cv !== nothing && return cv
+    return arg_ref_value(arg_idx, new_chain, rt)
+end
+
 
 """
     is_destructured_arg(ctx, arg_idx) -> Bool
@@ -381,27 +427,44 @@ function is_ghost_type(@nospecialize(T))
     end
 end
 
-"""
-    should_destructure(T) -> Bool
-
-Check if a type should be destructured into flat parameters.
-"""
-function should_destructure(@nospecialize(T))
-    T = CC.widenconst(T)
-    isstructtype(T) || return false
-    is_ghost_type(T) && return false
-    isprimitivetype(T) && return false
-    T <: TileArray && return true
-    return false
-end
 
 """
     flat_field_count(T) -> Int
 
-Count flat parameters a type expands to.
+Count flat parameters a type expands to (recursive).
 """
-flat_field_count(::Type{<:NTuple{N, T}}) where {N, T} = N
-flat_field_count(::Type) = 1
+function flat_field_count(@nospecialize(T))
+    if is_ghost_type(T)
+        return 0
+    elseif isprimitivetype(T)
+        return 1
+    else
+        count = 0
+        for fi in 1:fieldcount(T)
+            count += flat_field_count(fieldtype(T, fi))
+        end
+        return count
+    end
+end
+
+"""
+    flatten(x) -> Tuple
+
+Flatten a value into a tuple of its kernel parameter leaf fields.
+Ghost types return `()`, scalars return `(x,)`, structs/tuples recurse.
+"""
+flatten(x::TileArray) = (x.ptr, x.sizes..., x.strides...)
+function flatten(x)
+    T = typeof(x)
+    is_ghost_type(T) && return ()
+    isprimitivetype(T) && return (x,)
+    result = Any[]
+    for fi in 1:fieldcount(T)
+        fval = getfield(x, fi)
+        append!(result, flatten(fval))
+    end
+    return Tuple(result)
+end
 
 #-----------------------------------------------------------------------------
 # Argument helpers
