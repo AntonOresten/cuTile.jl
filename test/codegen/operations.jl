@@ -2,6 +2,7 @@
 spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
 spec3d = ct.ArraySpec{3}(16, true)
+spec4d = ct.ArraySpec{4}(16, true)
 
 #=========================================================================
  8.3 Core
@@ -492,18 +493,81 @@ spec3d = ct.ArraySpec{3}(16, true)
         end
     end
 
-    @testset "matmul" begin
+    @testset "vec-mat outer product" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b, c
                 bidx = ct.bid(1)
-                bidy = ct.bid(2)
-                tile_a = ct.load(a, bidx, (32, 16))
-                tile_b = ct.load(b, bidy, (16, 32))
-                # matmul via * operator = mma with zero accumulator
+                tile_a = ct.load(a, bidx, (16,))
+                tile_b = ct.load(b, bidx, (1, 16))
+                # vec-mat: reshape + mma
+                @check "reshape"
                 @check "mma"
                 result = tile_a * tile_b
-                ct.store(c, (bidx, bidy), result)
+                ct.store(c, bidx, result)
+                return
+            end
+        end
+    end
+
+    @testset "mat-vec" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b, c
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (32, 16))
+                tile_b = ct.load(b, bidx, (16,))
+                # mat-vec: reshape + mma + reshape
+                @check "reshape"
+                @check "mma"
+                result = tile_a * tile_b
+                ct.store(c, bidx, result)
+                return
+            end
+        end
+    end
+
+    @testset "batched matmul with trailing batch dims" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b, c
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (32, 16, 1))
+                tile_b = ct.load(b, bidx, (16, 32, 4))
+                # batched: broadcast + permute + mma + permute
+                @check "broadcast"
+                @check "permute"
+                @check "mma"
+                result = tile_a * tile_b
+                ct.store(c, bidx, result)
+                return
+            end
+        end
+    end
+
+    @testset "vec-vec throws error" begin
+        @test_throws cuTile.IRError begin
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (16,))
+                tile_b = ct.load(b, bidx, (16,))
+                tile_a * tile_b
+                return
+            end
+        end
+    end
+
+    @testset "4D batched matmul (2 batch dims)" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,4,spec4d}, ct.TileArray{Float32,4,spec4d}, ct.TileArray{Float32,4,spec4d}}) do a, b, c
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (16, 8, 2, 4))
+                tile_b = ct.load(b, bidx, (8, 16, 2, 4))
+                @check "permute"
+                @check "mma"
+                result = tile_a * tile_b
+                ct.store(c, bidx, result)
                 return
             end
         end
