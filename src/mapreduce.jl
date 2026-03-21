@@ -1,32 +1,6 @@
-#=============================================================================
- Host-side mapreduce for Tiled arrays
-
- Follows GPUArrays.mapreducedim! semantics: pre-allocated output with singleton
- dims where reduction happened.
-
- The kernel is a single @generated function using Base.Cartesian macros to
- handle arbitrary dimensionality. All compile-time values use Constant, which
- the cuTile compiler const-folds through the const_argtypes mechanism.
-=============================================================================#
-
 using GPUArrays: neutral_element
 
-#=============================================================================
- Padding mode selection
-=============================================================================#
-
-function _padding_for_neutral(neutral)
-    iszero(neutral)  && return PaddingMode.Zero
-    neutral == -Inf  && return PaddingMode.NegInf
-    neutral == Inf   && return PaddingMode.PosInf
-    return nothing  # no native padding; needs aligned sizes
-end
-
-#=============================================================================
- Reduction kernel — single @generated method for all dimensionalities
-=============================================================================#
-
-@generated function _tiled_reduce_kernel(
+@generated function mapreduce_kernel(
     dest::TileArray{TD, N}, src::TileArray{TS, N},
     f, op, tile_size, reduce_dims, overflow_grids, init_val, pad_mode,
     reduce_stride
@@ -64,9 +38,12 @@ end
     end
 end
 
-#=============================================================================
- Host-side launcher
-=============================================================================#
+function _padding_for_neutral(neutral)
+    iszero(neutral)  && return PaddingMode.Zero
+    neutral == -Inf  && return PaddingMode.NegInf
+    neutral == Inf   && return PaddingMode.PosInf
+    return nothing  # no native padding; needs aligned sizes
+end
 
 function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::Tuple; init)
     N = ndims(A)
@@ -121,7 +98,7 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
             d == par_dim ? Int32(par_blocks) : Int32(1)
         end
         launch_grid, overflow = _flatten_grid(grid)
-        launch(_tiled_reduce_kernel, launch_grid, TileArray(tmp), src_ta,
+        launch(mapreduce_kernel, launch_grid, TileArray(tmp), src_ta,
                f, op, Constant(ts), Constant(reduce_dims), Constant(overflow),
                Constant(init), Constant(pad_mode), Constant(reduce_stride))
 
@@ -134,15 +111,11 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
         end
         reduce_stride = ntuple(d -> Int32(1), N)
         launch_grid, overflow = _flatten_grid(grid)
-        launch(_tiled_reduce_kernel, launch_grid, TileArray(R), src_ta,
+        launch(mapreduce_kernel, launch_grid, TileArray(R), src_ta,
                f, op, Constant(ts), Constant(reduce_dims), Constant(overflow),
                Constant(init), Constant(pad_mode), Constant(reduce_stride))
     end
 end
-
-#=============================================================================
- Wrapper: allocate output, call kernel, return result
-=============================================================================#
 
 function _mapreduce(f, op, A::AbstractArray; dims, init)
     T = eltype(A)
@@ -170,10 +143,8 @@ function _mapreduce(f, op, A::AbstractArray; dims, init)
     end
 end
 
-#=============================================================================
- User-facing API
- Base.sum/prod/maximum/minimum route through mapreduce automatically.
-=============================================================================#
+
+## user API
 
 Base.mapreduce(f, op, A::Tiled; dims=:, init=nothing) =
     _mapreduce(f, op, parent(A); dims, init)
@@ -181,7 +152,7 @@ Base.mapreduce(f, op, A::Tiled; dims=:, init=nothing) =
 Base.reduce(op, A::Tiled; dims=:, init=nothing) =
     _mapreduce(identity, op, parent(A); dims, init)
 
-# any/all use short-circuiting iteration in Base, not mapreduce — must override
+# any/all use short-circuiting iteration in Base, not mapreduce
 Base.any(A::Tiled{<:AbstractArray{Bool}}; dims=:) =
     _mapreduce(identity, |, parent(A); dims, init=nothing)
 Base.all(A::Tiled{<:AbstractArray{Bool}}; dims=:) =
@@ -191,7 +162,7 @@ Base.any(f::Function, A::Tiled; dims=:) =
 Base.all(f::Function, A::Tiled; dims=:) =
     _mapreduce(f, &, parent(A); dims, init=nothing)
 
-# In-place variants (Tiled isn't <: AbstractArray, so Base doesn't dispatch these)
+# In-place variants
 function _mapreducedim_inplace!(f, op, R::AbstractArray, A::AbstractArray)
     T = eltype(R)
     N = ndims(A)

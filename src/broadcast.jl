@@ -1,29 +1,95 @@
 import Base.Broadcast: BroadcastStyle, Broadcasted
 
-#=============================================================================
- Tiled wrapper — routes broadcast expressions through cuTile kernels
-=============================================================================#
+## broadcast style
 
-"""
-    Tiled(x)
+struct TiledStyle{N} <: BroadcastStyle end
+TiledStyle{M}(::Val{N}) where {N,M} = TiledStyle{N}()
 
-Wrapper that routes broadcast expressions through cuTile kernels.
+BroadcastStyle(::Type{<:Tiled{A}}) where A = TiledStyle{ndims(A)}()
 
-    Tiled(B) .= A .+ A
+# TiledStyle wins over DefaultArrayStyle
+BroadcastStyle(::TiledStyle{N}, ::Base.Broadcast.DefaultArrayStyle{M}) where {N,M} = TiledStyle{max(N,M)}()
+BroadcastStyle(::TiledStyle{N}, ::TiledStyle{M}) where {N,M} = TiledStyle{max(N,M)}()
 
-Uses Julia's `Base.Broadcast` fusion machinery to build a `Broadcasted` tree,
-then dispatches to a generic cuTile kernel that evaluates the tree on tiles.
-"""
-struct Tiled{A <: AbstractArray}
-    parent::A
+
+## broadcast interface
+
+function Base.Broadcast.materialize!(dest::Tiled, bc::Broadcasted)
+    _tiled_broadcast!(parent(dest), bc)
+    return dest
 end
-Tiled(x) = x  # passthrough for non-arrays (Numbers, etc.)
-Base.parent(t::Tiled) = t.parent
-Base.axes(t::Tiled) = axes(parent(t))
-Base.size(t::Tiled) = size(parent(t))
-Base.ndims(::Tiled{A}) where A = ndims(A)
-Base.eltype(::Tiled{A}) where A = eltype(A)
-Base.Broadcast.broadcastable(t::Tiled) = t
+
+function Base.copy(bc::Broadcasted{TiledStyle{N}}) where N
+    arr = @something _find_tiled_array(bc) error("tiled broadcast requires at least one Tiled() argument")
+    ElType = Base.Broadcast.combine_eltypes(bc.f, bc.args)
+    dest = similar(arr, ElType, axes(bc))
+    _tiled_broadcast!(dest, bc)
+    return dest
+end
+
+"""Find the first underlying array from a Tiled leaf in a Broadcasted tree."""
+_find_tiled_array(t::Tiled) = parent(t)
+_find_tiled_array(x) = nothing
+function _find_tiled_array(bc::Broadcasted)
+    for arg in bc.args
+        arr = _find_tiled_array(arg)
+        arr !== nothing && return arr
+    end
+    return nothing
+end
+
+
+## kernel wrapper
+
+_to_tiled_bc(t::Tiled) = TileArray(parent(t))
+_to_tiled_bc(arr::AbstractArray) = TileArray(arr)
+_to_tiled_bc(x::Number) = x
+_to_tiled_bc(x) = x  # fallback for other types
+function _to_tiled_bc(bc::Broadcasted)
+    new_args = map(_to_tiled_bc, bc.args)
+    Broadcasted{Nothing}(bc.f, new_args, nothing)
+end
+
+function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, N}
+    dest_ta = TileArray(dest)
+    tiled_bc = _to_tiled_bc(bc)
+
+    ts = _compute_tile_sizes(size(dest))
+    grid = ntuple(i -> cld(size(dest, i), ts[i]), N)
+    launch_grid, overflow = _flatten_grid(grid)
+
+    launch(broadcast_kernel, launch_grid, dest_ta, tiled_bc,
+           Constant(ts), Constant(overflow))
+end
+
+
+## kernel
+
+@inline _eval_bc(arr::TileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
+@inline _eval_bc(x::Number, bid, tile_size) = x
+
+@inline function _eval_bc(bc::Broadcasted, bid, tile_size)
+    args = _eval_bc_args(bc.args, bid, tile_size)
+    # Use broadcast to get element-wise semantics (not direct call, which
+    # would dispatch to e.g. matmul for * on tiles)
+    broadcast(bc.f, args...)
+end
+
+@inline _eval_bc_args(::Tuple{}, bid, tile_size) = ()
+@inline _eval_bc_args(args::Tuple, bid, tile_size) =
+    (_eval_bc(args[1], bid, tile_size), _eval_bc_args(Base.tail(args), bid, tile_size)...)
+
+@generated function broadcast_kernel(dest::TileArray{T, N}, bc, tile_size, overflow_grids) where {T, N}
+    quote
+        bids = _unflatten_bids(Val{$N}(), overflow_grids)
+        result = _eval_bc(bc, bids, tile_size)
+        store(dest, bids, convert(Tile{$T}, result))
+        return
+    end
+end
+
+
+## broadcasting macro
 
 # Walk dotted AST, wrap value-position leaves in Tiled()
 _wrap_tiled(x) = x  # literals pass through
@@ -54,105 +120,3 @@ the broadcast through cuTile kernels.
 macro __dot__(ex)
     esc(_wrap_tiled(Base.Broadcast.__dot__(ex)))
 end
-
-#=============================================================================
- TiledStyle — routes broadcast through cuTile kernels
-=============================================================================#
-
-struct TiledStyle{N} <: BroadcastStyle end
-TiledStyle{M}(::Val{N}) where {N,M} = TiledStyle{N}()
-
-BroadcastStyle(::Type{<:Tiled{A}}) where A = TiledStyle{ndims(A)}()
-
-# TiledStyle wins over DefaultArrayStyle
-BroadcastStyle(::TiledStyle{N}, ::Base.Broadcast.DefaultArrayStyle{M}) where {N,M} = TiledStyle{max(N,M)}()
-BroadcastStyle(::TiledStyle{N}, ::TiledStyle{M}) where {N,M} = TiledStyle{max(N,M)}()
-
-#=============================================================================
- materialize! and copy — dispatch to _tiled_broadcast!
-=============================================================================#
-
-function Base.Broadcast.materialize!(dest::Tiled, bc::Broadcasted)
-    _tiled_broadcast!(parent(dest), bc)
-    return dest
-end
-
-function Base.copy(bc::Broadcasted{TiledStyle{N}}) where N
-    arr = @something _find_tiled_array(bc) error("tiled broadcast requires at least one Tiled() argument")
-    ElType = Base.Broadcast.combine_eltypes(bc.f, bc.args)
-    dest = similar(arr, ElType, axes(bc))
-    _tiled_broadcast!(dest, bc)
-    return dest
-end
-
-"""Find the first underlying array from a Tiled leaf in a Broadcasted tree."""
-_find_tiled_array(t::Tiled) = parent(t)
-_find_tiled_array(x) = nothing
-function _find_tiled_array(bc::Broadcasted)
-    for arg in bc.args
-        arr = _find_tiled_array(arg)
-        arr !== nothing && return arr
-    end
-    return nothing
-end
-
-#=============================================================================
- _tiled_broadcast! — generic AbstractArray implementation
-=============================================================================#
-
-function _tiled_broadcast!(dest::AbstractArray{T,N}, bc::Broadcasted) where {T, N}
-    dest_ta = TileArray(dest)
-    tiled_bc = _to_tiled_bc(bc)
-
-    ts = _compute_tile_sizes(size(dest))
-    grid = ntuple(i -> cld(size(dest, i), ts[i]), N)
-    launch_grid, overflow = _flatten_grid(grid)
-
-    launch(_tiled_bc_kernel, launch_grid, dest_ta, tiled_bc,
-           Constant(ts), Constant(overflow))
-end
-
-#=============================================================================
- Generic tree walk — convert leaves to TileArrays
-=============================================================================#
-
-_to_tiled_bc(t::Tiled) = TileArray(parent(t))
-_to_tiled_bc(arr::AbstractArray) = TileArray(arr)
-_to_tiled_bc(x::Number) = x
-_to_tiled_bc(x) = x  # fallback for other types
-function _to_tiled_bc(bc::Broadcasted)
-    new_args = map(_to_tiled_bc, bc.args)
-    Broadcasted{Nothing}(bc.f, new_args, nothing)
-end
-
-#=============================================================================
- Broadcast kernel — single @generated method for all dimensionalities
-=============================================================================#
-
-@generated function _tiled_bc_kernel(dest::TileArray{T, N}, bc, tile_size, overflow_grids) where {T, N}
-    quote
-        bids = _unflatten_bids(Val{$N}(), overflow_grids)
-        result = _eval_bc(bc, bids, tile_size)
-        store(dest, bids, convert(Tile{$T}, result))
-        return
-    end
-end
-
-#=============================================================================
- Recursive tree evaluation inside kernel
-=============================================================================#
-
-@inline _eval_bc(arr::TileArray, bid, tile_size) = cuTile.load(arr, bid, tile_size)
-@inline _eval_bc(x::Number, bid, tile_size) = x
-
-@inline function _eval_bc(bc::Broadcasted, bid, tile_size)
-    args = _eval_bc_args(bc.args, bid, tile_size)
-    # Use broadcast to get element-wise semantics (not direct call, which
-    # would dispatch to e.g. matmul for * on tiles)
-    broadcast(bc.f, args...)
-end
-
-@inline _eval_bc_args(::Tuple{}, bid, tile_size) = ()
-@inline _eval_bc_args(args::Tuple, bid, tile_size) =
-    (_eval_bc(args[1], bid, tile_size), _eval_bc_args(Base.tail(args), bid, tile_size)...)
-

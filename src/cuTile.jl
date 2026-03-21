@@ -40,6 +40,7 @@ include("language/atomics.jl")
 
 # Host-level abstractions
 include("utils.jl")
+include("tiled.jl")
 include("broadcast.jl")
 include("mapreduce.jl")
 
