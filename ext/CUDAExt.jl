@@ -9,8 +9,11 @@ using CompilerCaching: CacheView, method_instance, results
 
 import Core.Compiler as CC
 
-using CUDA: CUDA, CuModule, CuFunction, cudacall, device, capability
+using CUDA: CuArray, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
+
+import Base.Broadcast: BroadcastStyle
+import CUDA: CuArrayStyle
 
 public launch
 
@@ -258,6 +261,9 @@ Other values pass through unchanged.
 """
 to_tile_arg(x) = x
 to_tile_arg(arr::AbstractArray) = TileArray(arr)
+
+# Tiled Broadcast — TiledStyle wins over CuArrayStyle
+BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.TiledStyle{max(N,M)}()
 
 include("autotune/autotune.jl")
 

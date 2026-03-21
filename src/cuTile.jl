@@ -38,7 +38,10 @@ include("language/math.jl")
 include("language/operations.jl")
 include("language/atomics.jl")
 
-public launch, ByTarget, @compiler_options
+# Host-level abstractions
+include("broadcast.jl")
+
+public launch, Tiled, ByTarget, @compiler_options, @.
 launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
 
 include("Experimental.jl")
