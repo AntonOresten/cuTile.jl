@@ -1,6 +1,8 @@
 import cuTile.Experimental: autotune_launch, clear_autotune_cache
 using cuTile.Experimental: AbstractSearchSpace, CartesianSpace, FixedSpace
 
+using CUDA: CUDA
+
 using Random
 
 const AUTOTUNE_LOCK = ReentrantLock()
@@ -64,7 +66,7 @@ function time_ms(run_once::Function, get_args::Function;
 end
 
 function eval_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Function;
-                  sm_arch::String, opt_level::Int, warmup::Int, reps::Int,
+                  sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
                   verify::Union{Nothing, Function}=nothing,
                   reset::Union{Nothing, Function}=nothing)
     run_once = args -> cuTile.launch(f, grid_fn(cfg), args...;
@@ -73,7 +75,7 @@ function eval_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Function;
 end
 
 function precompile_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Function;
-                        sm_arch::String, opt_level::Int)
+                        sm_arch::VersionNumber, opt_level::Int)
     grid_fn(cfg)
     args = args_fn(cfg)
     tile_args = map(to_tile_arg, args)
@@ -109,7 +111,7 @@ end
 
 function precompile_candidates(@nospecialize(f), configs::Vector{Any},
                                grid_fn::Function, args_fn::Function;
-                               sm_arch::String, opt_level::Int, workers::Int)
+                               sm_arch::VersionNumber, opt_level::Int, workers::Int)
     isempty(configs) && return configs, nothing
     iszero(workers) && return configs, nothing
 
@@ -156,7 +158,7 @@ end
 
 function measure_candidates(@nospecialize(f), configs::Vector{Any},
                             grid_fn::Function, args_fn::Function;
-                            sm_arch::String, opt_level::Int, warmup::Int, reps::Int,
+                            sm_arch::VersionNumber, opt_level::Int, warmup::Int, reps::Int,
                             verify::Union{Nothing, Function}=nothing,
                             reset::Union{Nothing, Function}=nothing)
     record = Tuple{Any, Float32}[]
@@ -180,7 +182,7 @@ end
 
 function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::AbstractRNG,
                       grid_fn::Function, args_fn::Function, tuning;
-                      sm_arch::String, opt_level::Int, kernel_key, arg_key,
+                      sm_arch::VersionNumber, opt_level::Int, kernel_key, arg_key,
                       verify::Union{Nothing, Function}=nothing,
                       setup::Union{Nothing, Function}=nothing)
     if !tuning.force
@@ -251,7 +253,7 @@ function autotune_launch(@nospecialize(f), space::AbstractSearchSpace,
                          verify::Union{Nothing, Function}=nothing,
                          setup::Union{Nothing, Function}=nothing,
                          tuning::NamedTuple=NamedTuple(),
-                         sm_arch::String=default_sm_arch(),
+                         sm_arch::VersionNumber=default_sm_arch(),
                          opt_level::Int=3)
     tuning = normalize_tuning(tuning)
     rng = tuning.seed !== nothing ? MersenneTwister(tuning.seed) : Random.default_rng()
