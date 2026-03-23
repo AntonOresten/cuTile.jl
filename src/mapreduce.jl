@@ -49,11 +49,9 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
     N = ndims(A)
     src_ta = TileArray(A)
 
-    # Reduced dims first (larger tiles enable better hardware reduction),
-    # then non-reduced dims (parallelized across blocks anyway)
-    red = [d for d in 1:N if d in reduce_dims]
-    non_red = [d for d in 1:N if !(d in reduce_dims)]
-    ts = _compute_tile_sizes(size(A), Iterators.flatten((red, non_red)))
+    # Reduced dims first (larger tiles => better hardware reduction)
+    dim_order = (filter(d -> d in reduce_dims, 1:N)..., filter(d -> !(d in reduce_dims), 1:N)...)
+    ts = _compute_tile_sizes(size(A), dim_order)
 
     pad_mode = _padding_for_neutral(init)
     if pad_mode === nothing
@@ -72,50 +70,31 @@ function _mapreducedim!(f, op, R::AbstractArray, A::AbstractArray, reduce_dims::
     target = max(1, 128 ÷ non_reduce_blocks)
     par_blocks = min(max_tiles, target)
 
+    _dim_size(d) = d == par_dim ? par_blocks : d in reduce_dims ? 1 : size(A, d)
+
     if par_blocks > 1
-        # Two-pass reduction: split work across par_blocks, then reduce partials
-        tmp_size = ntuple(N) do d
-            if d == par_dim
-                par_blocks
-            elseif d in reduce_dims
-                1
-            else
-                size(A, d)
-            end
-        end
-        tmp = similar(A, eltype(R), tmp_size)
-
-        # Pass 1: grid-stride reduction into tmp
+        # Two-pass: parallelize along par_dim, then reduce partials
+        tmp = similar(A, eltype(R), ntuple(_dim_size, N))
         grid = ntuple(N) do d
-            if d == par_dim
-                par_blocks
-            elseif d in reduce_dims
-                1
-            else
-                cld(size(A, d), ts[d])
-            end
+            d == par_dim ? par_blocks : d in reduce_dims ? 1 : cld(size(A, d), ts[d])
         end
-        reduce_stride = ntuple(N) do d
-            d == par_dim ? Int32(par_blocks) : Int32(1)
-        end
-        launch_grid, overflow = _flatten_grid(grid)
-        launch(mapreduce_kernel, launch_grid, TileArray(tmp), src_ta,
-               f, op, Constant(ts), Constant(reduce_dims), Constant(overflow),
-               Constant(init), Constant(pad_mode), Constant(reduce_stride))
-
-        # Pass 2: reduce partials (identity because f was already applied)
+        reduce_stride = ntuple(d -> d == par_dim ? Int32(par_blocks) : Int32(1), N)
+        _launch_mapreduce!(grid, TileArray(tmp), src_ta, f, op, ts, reduce_dims,
+                           init, pad_mode, reduce_stride)
         _mapreducedim!(identity, op, R, tmp, (par_dim,); init)
     else
-        # Single-pass: all reduce dims handled by one block each
-        grid = ntuple(N) do d
-            d in reduce_dims ? 1 : cld(size(A, d), ts[d])
-        end
+        grid = ntuple(d -> d in reduce_dims ? 1 : cld(size(A, d), ts[d]), N)
         reduce_stride = ntuple(d -> Int32(1), N)
-        launch_grid, overflow = _flatten_grid(grid)
-        launch(mapreduce_kernel, launch_grid, TileArray(R), src_ta,
-               f, op, Constant(ts), Constant(reduce_dims), Constant(overflow),
-               Constant(init), Constant(pad_mode), Constant(reduce_stride))
+        _launch_mapreduce!(grid, TileArray(R), src_ta, f, op, ts, reduce_dims,
+                           init, pad_mode, reduce_stride)
     end
+end
+
+function _launch_mapreduce!(grid, dest_ta, src_ta, f, op, ts, reduce_dims, init, pad_mode, reduce_stride)
+    launch_grid, overflow = _flatten_grid(grid)
+    launch(mapreduce_kernel, launch_grid, dest_ta, src_ta,
+           f, op, Constant(ts), Constant(reduce_dims), Constant(overflow),
+           Constant(init), Constant(pad_mode), Constant(reduce_stride))
 end
 
 function _mapreduce(f, op, A::AbstractArray; dims, init)
