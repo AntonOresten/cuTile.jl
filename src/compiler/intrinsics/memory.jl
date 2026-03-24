@@ -33,18 +33,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     token_type = Token(tt)
 
     # Extract latency hint (args[2])
-    latency = get_constant(ctx, args[2])
+    latency = @something get_constant(ctx, args[2]) throw(IRError("latency must be a compile-time constant"))
 
-    # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency)
 
-    # Check if mask is provided (arg 3 is not nothing)
-    has_mask = length(args) >= 3 && get_constant(ctx, args[3]) !== nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 3)
 
     if has_mask
-        # Get mask tile (arg 3)
-        mask_tv = emit_value!(ctx, args[3])
-        mask_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
 
         # Get padding tile (arg 4)
@@ -96,19 +91,13 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
 
     token_type = Token(tt)
 
-    # Extract latency hint (args[3])
-    latency = get_constant(ctx, args[3])
+    latency = @something get_constant(ctx, args[3]) throw(IRError("latency must be a compile-time constant"))
 
-    # Create optimization hints if provided
     optimization_hints = create_optimization_hints(ctx, latency)
 
-    # Check if mask is provided (arg 4 is not nothing)
-    has_mask = length(args) >= 4 && get_constant(ctx, args[4]) !== nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 4)
 
     if has_mask
-        # Get mask tile (arg 4)
-        mask_tv = emit_value!(ctx, args[4])
-        mask_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
 
         # Store with mask

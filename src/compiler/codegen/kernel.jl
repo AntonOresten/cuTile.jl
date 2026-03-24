@@ -206,10 +206,8 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
     obj_arg = args[1]
     field_arg = args[2]
 
-    # Extract field name or index
-    field = get_constant(ctx, field_arg)
+    field = @something get_constant(ctx, field_arg) return nothing
 
-    # Try to get the object as a CGVal
     obj_tv = emit_value!(ctx, obj_arg)
 
     # Tuple indexing: extract component by integer index
@@ -245,8 +243,7 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
     obj_arg = args[1]
     index_arg = args[2]
 
-    # Extract constant index
-    index = get_constant(ctx, index_arg)
+    index = @something get_constant(ctx, index_arg) return nothing
     index isa Integer || return nothing
 
     # Try to get the object as a CGVal
@@ -285,6 +282,12 @@ A `YieldOp` is emitted with the return value(s).
 """
 function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
                           block_args::Vector{Value}, block_type_ids::Vector{TypeId})
+    F = typeof(func)
+    if !is_ghost_type(F)
+        throw(IRError("emit_subprogram!: function argument $(F) (sizeof=$(sizeof(F))) is not " *
+                      "a zero-size type. All non-tile arguments must be zero-size."))
+    end
+
     # 1. Resolve method instance
     argtuple = Tuple{arg_types...}
     world = ctx.cache.world
