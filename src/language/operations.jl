@@ -922,30 +922,143 @@ end
 =============================================================================#
 
 # Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
-@inline Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
-    Intrinsics.mma(a, b, acc)
+# Handles 1D promotion, type promotion, and batched dims (≥3D).
+# Note: SA, SB, SC type parameters required to avoid ambiguity with scalar methods during codegen
+@inline function Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC}
+    _muladd(a, b, acc, Val(ndims(a)), Val(ndims(b)))
+end
 
-# Matrix multiplication (A * B like Julia arrays)
+# 2D × 2D: direct MmaFOp with type promotion
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{2})
+    Intrinsics.mma(a, b, acc)
+end
+
+# Vec-mat (1D × 2D): reshape (M,) → (M, 1), MmaFOp, acc is already (M, N)
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{1}, ::Val{2})
+    a2d = reshape(a, (size(a, 1), 1))
+    _muladd(a2d, b, acc, Val(2), Val(2))
+end
+
+# Mat-vec (2D × 1D): reshape b (K,) → (K, 1), acc (M,) → (M, 1), MmaFOp, squeeze back
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{1})
+    M, K = size(a, 1), size(b, 1)
+    b2d = reshape(b, (K, 1))
+    acc2d = reshape(acc, (M, 1))
+    result = _muladd(a, b2d, acc2d, Val(2), Val(2))
+    reshape(result, (M,))
+end
+
+# Vec-vec (1D × 1D): not supported
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{1})
+    return :(throw(ArgumentError("Vector-vector multiply-accumulate is not supported.")))
+end
+
+# Batched mat-vec / vec-mat (≥3D × 1D or 1D × ≥3D): not supported, unsqueeze manually
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{NB}) where {NB}
+    NB >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched vec-mat is not supported. Reshape the 1D operand to 2D first.")))
+end
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{NA}, ::Val{1}) where {NA}
+    NA >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched mat-vec is not supported. Reshape the 1D operand to 2D first.")))
+end
+
+# Batched matmul (≥3D × ≥3D): trailing batch dims with broadcast
+# Julia convention: first two dims are matrix (M,K)/(K,N), trailing dims are batch.
+# MmaFOp expects exactly 3D tiles (B, M, K), so we:
+#   1. Broadcast batch dims to a common shape
+#   2. Permute trailing batch → leading
+#   3. Flatten multiple batch dims into one for MmaFOp
+#   4. Unflatten + permute back after
+@generated function _muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC},
+                            ::Val{NA}, ::Val{NB}) where {T1, T2, T3, SA, SB, SC, NA, NB}
+    sa = Tuple(SA.parameters)
+    sb = Tuple(SB.parameters)
+
+    # Matrix dims are first two; batch dims are trailing
+    M = sa[1]; K = sa[2]; N = sb[2]
+    a_batch = sa[3:end]
+    b_batch = sb[3:end]
+
+    # Broadcast batch dims (pad shorter with trailing 1s, then broadcast)
+    n_batch = max(length(a_batch), length(b_batch))
+    a_batch_padded = (a_batch..., ntuple(Returns(1), n_batch - length(a_batch))...)
+    b_batch_padded = (b_batch..., ntuple(Returns(1), n_batch - length(b_batch))...)
+    batch_shape = map(max, a_batch_padded, b_batch_padded)
+    B_flat = prod(batch_shape)
+
+    quote
+        # Reshape + broadcast to align batch dims (still trailing)
+        a_bc = broadcast_to(reshape(a, $((M, K, a_batch_padded...))), $((M, K, batch_shape...)))
+        b_bc = broadcast_to(reshape(b, $((K, N, b_batch_padded...))), $((K, N, batch_shape...)))
+        acc_bc = broadcast_to(acc, $((M, N, batch_shape...)))
+        # Flatten batch dims to one (still trailing), then permute to leading
+        a_3d = permutedims(reshape(a_bc, $((M, K, B_flat))), (3, 1, 2))
+        b_3d = permutedims(reshape(b_bc, $((K, N, B_flat))), (3, 1, 2))
+        acc_3d = permutedims(reshape(acc_bc, $((M, N, B_flat))), (3, 1, 2))
+        # MmaFOp
+        result_3d = Intrinsics.mma(a_3d, b_3d, acc_3d)
+        # Permute back to trailing, unflatten batch dims
+        reshape(permutedims(result_3d, (2, 3, 1)), $((M, N, batch_shape...)))
+    end
+end
+
+# Matrix multiplication: A * B = muladd(A, B, zeros)
 # Note: SA, SB type parameters required to avoid ambiguity with scalar*tile methods during codegen
 @inline function Base.:(*)(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
-    _matmul(a, b, Val(ndims(a)))
+    _matmul(a, b, Val(ndims(a)), Val(ndims(b)))
 end
 
-# 2D matmul: (M, K) × (K, N) → (M, N)
-@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}) where {T1}
-    M = size(a, 1)
-    N = size(b, 2)
-    acc = zeros(T1, (M, N))
+# 2D × 2D → (M, N)
+@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}, ::Val{2}) where {T1}
+    acc = zeros(T1, (size(a, 1), size(b, 2)))
     muladd(a, b, acc)
 end
 
-# 3D batched matmul: (B, M, K) × (B, K, N) → (B, M, N)
-@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{3}) where {T1}
-    B = max(size(a, 1), size(b, 1))  # Broadcast batch dimension
-    M = size(a, 2)
-    N = size(b, 3)
-    acc = zeros(T1, (B, M, N))
+# Vec-mat (1D × 2D) → (M, N)
+@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{1}, ::Val{2}) where {T1}
+    acc = zeros(T1, (size(a, 1), size(b, 2)))
     muladd(a, b, acc)
+end
+
+# Mat-vec (2D × 1D) → (M,)
+@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}, ::Val{1}) where {T1}
+    acc = zeros(T1, (size(a, 1),))
+    muladd(a, b, acc)
+end
+
+# Vec-vec (1D × 1D): not supported
+@generated function _matmul(::Tile, ::Tile, ::Val{1}, ::Val{1})
+    return :(throw(ArgumentError("Vector-vector multiplication is not supported. Use dot(a, b) for inner products, or reshape explicitly.")))
+end
+
+# Batched (≥3D × ≥3D) → (M, N, batch...)
+@generated function _matmul(a::Tile{T1, SA}, b::Tile{T2, SB},
+                            ::Val{NA}, ::Val{NB}) where {T1, T2, SA, SB, NA, NB}
+    sa = Tuple(SA.parameters)
+    sb = Tuple(SB.parameters)
+    a_batch = sa[3:end]
+    b_batch = sb[3:end]
+    n_batch = max(length(a_batch), length(b_batch))
+    a_batch_padded = (a_batch..., ntuple(_ -> 1, n_batch - length(a_batch))...)
+    b_batch_padded = (b_batch..., ntuple(_ -> 1, n_batch - length(b_batch))...)
+    batch_shape = map(max, a_batch_padded, b_batch_padded)
+    M = sa[1]; N = sb[2]
+    out_shape = (M, N, batch_shape...)
+    quote
+        acc = zeros(T1, $out_shape)
+        muladd(a, b, acc)
+    end
+end
+
+# Batched × 1D: not supported — unsqueeze the 1D operand manually
+@generated function _matmul(::Tile, ::Tile, ::Val{NA}, ::Val{1}) where {NA}
+    NA >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched mat-vec is not supported. Reshape the 1D operand to 2D first.")))
+end
+@generated function _matmul(::Tile, ::Tile, ::Val{1}, ::Val{NB}) where {NB}
+    NB >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched vec-mat is not supported. Reshape the 1D operand to 2D first.")))
 end
 
 #=============================================================================
