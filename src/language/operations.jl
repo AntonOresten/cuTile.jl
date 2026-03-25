@@ -1040,8 +1040,8 @@ end
     a_batch = sa[3:end]
     b_batch = sb[3:end]
     n_batch = max(length(a_batch), length(b_batch))
-    a_batch_padded = (ntuple(_ -> 1, n_batch - length(a_batch))..., a_batch...)
-    b_batch_padded = (ntuple(_ -> 1, n_batch - length(b_batch))..., b_batch...)
+    a_batch_padded = (a_batch..., ntuple(_ -> 1, n_batch - length(a_batch))...)
+    b_batch_padded = (b_batch..., ntuple(_ -> 1, n_batch - length(b_batch))...)
     batch_shape = map(max, a_batch_padded, b_batch_padded)
     M = sa[1]; N = sb[2]
     out_shape = (M, N, batch_shape...)
