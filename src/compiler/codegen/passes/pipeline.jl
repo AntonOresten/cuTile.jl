@@ -112,6 +112,20 @@ const FMA_RULES = RewriteRule[
 fma_fusion_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, FMA_RULES)
 
 #=============================================================================
+ Algebraic Simplification (rewrite)
+=============================================================================#
+
+# Cancel inverse addi/subi pairs: x+c-c → x, x-c+c → x.
+# Repeated ~c binds enforce that both operands are the same value.
+
+const ALGEBRA_RULES = RewriteRule[
+    @rewrite Intrinsics.subi(Intrinsics.addi(~x, ~c), ~c) => ~x
+    @rewrite Intrinsics.addi(Intrinsics.subi(~x, ~c), ~c) => ~x
+]
+
+algebra_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, ALGEBRA_RULES)
+
+#=============================================================================
  Pass Pipeline
 =============================================================================#
 
@@ -124,6 +138,7 @@ and subprogram compilation.
 function run_passes!(sci::StructuredIRCode)
     # Rewrite passes (order matters: normalize before optimize, SVE before FMA)
     normalize_pass!(sci)
+    algebra_pass!(sci)
     scalar_view_elim_pass!(sci)
     fma_fusion_pass!(sci)
 

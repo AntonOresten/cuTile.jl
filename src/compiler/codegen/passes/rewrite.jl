@@ -122,7 +122,14 @@ struct DefEntry
     block::Block
     inst::Instruction
     func::Any
-    operands::Vector{Any}
+end
+
+"""Operands of a DefEntry, read from the live instruction."""
+function _def_operands(entry::DefEntry)
+    call = resolve_call(entry.inst)
+    call === nothing && return Any[]
+    _, ops = call
+    return ops
 end
 
 struct MatchContext
@@ -137,8 +144,8 @@ function MatchContext(sci::StructuredIRCode)
         for inst in instructions(block)
             call = resolve_call(inst)
             call === nothing && continue
-            func, operands = call
-            defs[inst.ssa_idx] = DefEntry(block, inst, func, collect(Any, operands))
+            func, _ = call
+            defs[inst.ssa_idx] = DefEntry(block, inst, func)
         end
     end
     MatchContext(sci.entry, defs, uses(sci.entry))
@@ -170,22 +177,27 @@ function pattern_match(ctx::MatchContext, @nospecialize(val), pat::PCall,
     entry = get(ctx.defs, val.id, nothing)
     entry === nothing && return nothing
 
-    if entry.func === pat.func && length(entry.operands) == length(pat.operands)
-        result = MatchResult(Dict{Symbol,Any}(), Int[val.id])
-        for (op, sub) in zip(entry.operands, pat.operands)
-            m = pattern_match(ctx, op, sub, entry.block)
-            m === nothing && return nothing
-            _merge_bindings!(result.bindings, m.bindings) || return nothing
-            append!(result.matched_ssas, m.matched_ssas)
+    if entry.func === pat.func
+        ops = _def_operands(entry)
+        if length(ops) == length(pat.operands)
+            result = MatchResult(Dict{Symbol,Any}(), Int[val.id])
+            for (op, sub) in zip(ops, pat.operands)
+                m = pattern_match(ctx, op, sub, entry.block)
+                m === nothing && return nothing
+                _merge_bindings!(result.bindings, m.bindings) || return nothing
+                append!(result.matched_ssas, m.matched_ssas)
+            end
+            return result
         end
-        return result
     end
 
     # Trace through single-use transparent ops to find the underlying operation
-    if _is_transparent(entry.func) && !isempty(entry.operands)
+    if _is_transparent(entry.func)
         _use_count(ctx, val) == 1 || return nothing
+        ops = _def_operands(entry)
+        isempty(ops) && return nothing
         if entry.func === Intrinsics.broadcast
-            inner = entry.operands[1]
+            inner = ops[1]
             if inner isa SSAValue
                 inner_entry = get(ctx.defs, inner.id, nothing)
                 if inner_entry !== nothing
@@ -195,7 +207,7 @@ function pattern_match(ctx::MatchContext, @nospecialize(val), pat::PCall,
                 end
             end
         end
-        result = pattern_match(ctx, entry.operands[1], pat, entry.block)
+        result = pattern_match(ctx, ops[1], pat, entry.block)
         result === nothing && return nothing
         push!(result.matched_ssas, val.id)
         return result
@@ -243,7 +255,6 @@ function _apply_rewrite!(sci, block, inst, rule, match, ctx, consumed)
         _cleanup_dead_operands!(sci, inst.ssa_idx, ctx, consumed)
     else
         # Substitution: delete matched intermediates, replace root statement in-place.
-        # No operand cleanup here — the new replacement may reference these operands.
         for dead_ssa in match.matched_ssas
             dead_ssa == inst.ssa_idx && continue
             entry = ctx.defs[dead_ssa]
@@ -261,7 +272,7 @@ end
 function _cleanup_dead_operands!(sci, ssa_idx, ctx, consumed)
     entry = get(ctx.defs, ssa_idx, nothing)
     entry === nothing && return
-    for op in entry.operands
+    for op in _def_operands(entry)
         op isa SSAValue || continue
         op_entry = get(ctx.defs, op.id, nothing)
         op_entry === nothing && continue
@@ -306,7 +317,14 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule})
                 rule.guard !== nothing && !rule.guard(m, ctx) && continue
                 result = _apply_rewrite!(sci, block, inst, rule, m, ctx, consumed)
                 result === false && continue  # RFunc declined, try next rule
-                union!(consumed, m.matched_ssas)
+                # RBind only deletes the root; intermediates stay live and
+                # must remain matchable. Substitution deletes intermediates
+                # so they must be consumed to prevent the driver revisiting.
+                if rule.rhs isa RBind
+                    push!(consumed, inst.ssa_idx)
+                else
+                    union!(consumed, m.matched_ssas)
+                end
                 break
             end
         end
