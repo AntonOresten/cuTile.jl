@@ -2,6 +2,7 @@
 spec1d = ct.ArraySpec{1}(16, true)
 spec2d = ct.ArraySpec{2}(16, true)
 spec3d = ct.ArraySpec{3}(16, true)
+spec4d = ct.ArraySpec{4}(16, true)
 
 #=========================================================================
  8.3 Core
@@ -87,13 +88,13 @@ spec3d = ct.ArraySpec{3}(16, true)
     # TODO: unpack - unpack tiles
 
     @testset "reshape" begin
-        # 2D -> 1D reshape (emits pre-permute for column-major conversion)
+        # 2D -> 1D reshape (direct, no permutes with row-major Tile IR)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
-                @check "permute"   # pre-permute for 2D source
                 @check "reshape"
                 reshaped = reshape(tile, (32,))
                 ct.store(b, pid, reshaped)
@@ -101,29 +102,28 @@ spec3d = ct.ArraySpec{3}(16, true)
             end
         end
 
-        # 1D -> 2D reshape (emits post-permute for column-major conversion)
+        # 1D -> 2D reshape (direct, no permutes)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (64,))
                 @check "reshape"
-                @check "permute"   # post-permute for 2D result
                 reshaped = reshape(tile, (8, 8))
                 ct.store(b, pid, reshaped)
                 return
             end
         end
 
-        # 3D -> 2D reshape (emits pre-permute and post-permute)
+        # 3D -> 2D reshape (direct, no permutes)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,2,spec2d}}) do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (2, 4, 8))
-                @check "permute"   # pre-permute for 3D source
                 @check "reshape"
-                @check "permute"   # post-permute for 2D result
                 reshaped = reshape(tile, (2, 32))
                 ct.store(b, pid, reshaped)
                 return
@@ -144,15 +144,14 @@ spec3d = ct.ArraySpec{3}(16, true)
             end
         end
 
-        # 2D -> 2D reshape (different shape, emits both permutes)
+        # 2D -> 2D reshape (different shape, direct, no permutes)
         @test @filecheck begin
             @check_label "entry"
+            @check_not "permute"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (4, 8))
-                @check "permute"   # pre-permute
                 @check "reshape"
-                @check "permute"   # post-permute
                 reshaped = reshape(tile, (8, 4))
                 ct.store(a, pid, reshaped)
                 return
@@ -394,8 +393,8 @@ spec3d = ct.ArraySpec{3}(16, true)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int64,1,spec1d}}) do out
-                a = ct.arange(16, Int64)
-                b = ct.arange(16, Int32)
+                a = ct.arange(16; dtype=Int64)
+                b = ct.arange(16)
                 # Should promote Int32 to Int64 and compare
                 @check "exti"
                 @check "cmpi"
@@ -468,7 +467,7 @@ spec3d = ct.ArraySpec{3}(16, true)
             code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
                 pid = ct.bid(1)
                 @check "iota"
-                tile = ct.arange(16, Int32)
+                tile = ct.arange(16)
                 ct.store(a, pid, tile)
                 return
             end
@@ -492,18 +491,79 @@ spec3d = ct.ArraySpec{3}(16, true)
         end
     end
 
-    @testset "matmul" begin
+    @testset "vec-mat outer product" begin
         @test @filecheck begin
             @check_label "entry"
-            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b, c
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,2,spec2d}}) do a, b, c
                 bidx = ct.bid(1)
-                bidy = ct.bid(2)
-                tile_a = ct.load(a, bidx, (32, 16))
-                tile_b = ct.load(b, bidy, (16, 32))
-                # matmul via * operator = mma with zero accumulator
+                tile_a = ct.load(a, bidx, (16,))
+                tile_b = ct.load(b, bidx, (1, 16))
+                # vec-mat: reshape + mma
+                @check "reshape"
                 @check "mma"
                 result = tile_a * tile_b
-                ct.store(c, (bidx, bidy), result)
+                ct.store(c, bidx, result)
+                return
+            end
+        end
+    end
+
+    @testset "mat-vec" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b, c
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (32, 16))
+                tile_b = ct.load(b, bidx, (16,))
+                # mat-vec: reshape + mma + reshape
+                @check "reshape"
+                @check "mma"
+                result = tile_a * tile_b
+                ct.store(c, bidx, result)
+                return
+            end
+        end
+    end
+
+    @testset "batched matmul with trailing batch dims" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}, ct.TileArray{Float32,3,spec3d}}) do a, b, c
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (32, 16, 1))
+                tile_b = ct.load(b, bidx, (16, 32, 4))
+                # batched: broadcast + reshape + mma (no permutes with row-major Tile IR)
+                @check "broadcast"
+                @check "mma"
+                result = tile_a * tile_b
+                ct.store(c, bidx, result)
+                return
+            end
+        end
+    end
+
+    @testset "vec-vec throws error" begin
+        @test_throws cuTile.IRError begin
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (16,))
+                tile_b = ct.load(b, bidx, (16,))
+                tile_a * tile_b
+                return
+            end
+        end
+    end
+
+    @testset "4D batched matmul (2 batch dims)" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,4,spec4d}, ct.TileArray{Float32,4,spec4d}, ct.TileArray{Float32,4,spec4d}}) do a, b, c
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (16, 8, 2, 4))
+                tile_b = ct.load(b, bidx, (8, 16, 2, 4))
+                @check "mma"
+                result = tile_a * tile_b
+                ct.store(c, bidx, result)
                 return
             end
         end
@@ -1044,7 +1104,8 @@ end
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
-                @check "make_token"
+                # DCE removes unused make_token in empty kernels
+                @check_not "make_token"
                 return
             end
         end
@@ -1173,7 +1234,7 @@ end
     end
 
     @testset "nested broadcast" begin
-        # a .+ b .* c → mulf then addf (no explicit broadcasted needed)
+        # a .+ b .* c → fma (fused by fma_fusion_pass!)
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
@@ -1181,8 +1242,7 @@ end
                 ta = ct.load(a, pid, (16,))
                 tb = ct.load(a, pid, (16,))
                 tc = ct.load(a, pid, (16,))
-                @check "mulf"
-                @check "addf"
+                @check "fma"
                 result = ta .+ tb .* tc
                 ct.store(a, pid, result)
                 return
@@ -1477,6 +1537,66 @@ end
                 return
             end
         end
+
+        # max
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_max(arr, bid, Int32(0))
+                return
+            end
+        end
+
+        # min
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_min(arr, bid, Int32(0))
+                return
+            end
+        end
+
+        # or
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_or(arr, bid, Int32(1))
+                return
+            end
+        end
+
+        # and
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_and(arr, bid, Int32(-1))
+                return
+            end
+        end
+
+        # xor
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
+                bid = ct.bid(1)
+                @check "offset"
+                @check "atomic_rmw_tko"
+                ct.atomic_xor(arr, bid, Int32(1))
+                return
+            end
+        end
     end
 
     @testset "tile-indexed atomic_cas_tko" begin
@@ -1485,7 +1605,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
                 @check "iota"
-                indices = ct.arange(16, Int)
+                indices = ct.arange(16; dtype=Int)
                 @check "offset"
                 @check "atomic_cas_tko"
                 ct.atomic_cas(arr, indices, Int32(0), Int32(1))
@@ -1500,9 +1620,9 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,3,spec3d}}) do arr
                 @check "iota"
-                i = ct.arange(4, Int)
-                j = ct.arange(4, Int)
-                k = ct.arange(4, Int)
+                i = ct.arange(4; dtype=Int)
+                j = ct.arange(4; dtype=Int)
+                k = ct.arange(4; dtype=Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_add(arr, (i, j, k), Int32(1))
@@ -1518,7 +1638,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
                 @check "iota"
-                indices = ct.arange(16, Int)
+                indices = ct.arange(16; dtype=Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_xchg(arr, indices, Int32(42))
@@ -1531,7 +1651,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Int32,1,spec}}) do arr
                 @check "iota"
-                indices = ct.arange(16, Int)
+                indices = ct.arange(16; dtype=Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_add(arr, indices, Int32(1))
@@ -1545,7 +1665,7 @@ end
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec_f32}}) do arr
                 @check "iota"
-                indices = ct.arange(16, Int)
+                indices = ct.arange(16; dtype=Int)
                 @check "offset"
                 @check "atomic_rmw_tko"
                 ct.atomic_add(arr, indices, 1.5f0)

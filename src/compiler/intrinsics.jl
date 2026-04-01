@@ -6,8 +6,7 @@ module Intrinsics
 
 using Base: compilerbarrier, inferencebarrier
 using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView
-using ..cuTile: Signedness, SignednessSigned, SignednessUnsigned
-using ..cuTile: ComparisonPredicate, CmpLessThan, CmpLessThanOrEqual, CmpGreaterThan, CmpGreaterThanOrEqual, CmpEqual, CmpNotEqual
+using ..cuTile: Signedness, ComparisonPredicate
 using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end
@@ -50,6 +49,15 @@ function create_optimization_hints(ctx::CGCtx, latency::Union{Int, Nothing}, all
     isnothing(latency) || 1 <= latency <= 10 || throw(ArgumentError("latency must be between 1 and 10, got $latency"))
     hints = LoadStoreHints(; latency, allow_tma)
     return make_load_store_hints(ctx.sm_arch, hints)
+end
+
+# Check if an intrinsic argument is a mask (Tile{Bool}) or nothing.
+# Returns (CGVal, true) for a real mask, (nothing, false) for nothing.
+function emit_optional_mask(ctx::CGCtx, args, idx::Int)
+    idx > length(args) && return (nothing, false)
+    tv = emit_value!(ctx, args[idx])
+    has_mask = tv !== nothing && CC.widenconst(tv.jltype) !== Nothing
+    return (has_mask ? tv : nothing, has_mask)
 end
 
 emit_intrinsic!(ctx::CGCtx, @nospecialize(func), args) = missing

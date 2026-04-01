@@ -67,9 +67,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.floor), args)
 end
 
 # cuda_tile.fma
-@intrinsic fma(x::T, y::T, z::T) where {T<:AbstractFloat}
-@intrinsic fma(x::Tile{T}, y::Tile{T}, z::Tile{T}) where {T<:AbstractFloat}
-tfunc(𝕃, ::typeof(Intrinsics.fma), @nospecialize(x), @nospecialize(y), @nospecialize(z)) = CC.widenconst(x)
+@intrinsic fma(x::T, y::T, z::T, rounding_mode=nothing, flush_to_zero=false) where {T<:AbstractFloat}
+@intrinsic fma(x::Tile{T}, y::Tile{T}, z::Tile{T}, rounding_mode=nothing, flush_to_zero=false) where {T<:AbstractFloat}
+tfunc(𝕃, ::typeof(Intrinsics.fma), @nospecialize args...) = CC.widenconst(args[1])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
     cb = ctx.cb
 
@@ -79,7 +79,8 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.fma), args)
 
     (a === nothing || b === nothing || c === nothing) && throw(IRError("Cannot resolve operands for fma"))
 
-    result_v = encode_FmaOp!(cb, a.type_id, a.v, b.v, c.v)
+    # RM/FTZ are at positions 4 and 5 (not 3 and 4 like binary ops)
+    result_v = encode_FmaOp!(cb, a.type_id, a.v, b.v, c.v; _extract_rounding_kwargs(ctx, args[2:end])...)
 
     CGVal(result_v, a.type_id, a.jltype, a.shape)
 end
@@ -115,19 +116,21 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.log), args)
 end
 
 # cuda_tile.maxf
-@intrinsic maxf(x::T, y::T) where {T<:AbstractFloat}
-@intrinsic maxf(x::Tile{T}, y::Tile{T}) where {T<:AbstractFloat}
-tfunc(𝕃, ::typeof(Intrinsics.maxf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
+@intrinsic maxf(x::T, y::T, flush_to_zero=false) where {T<:AbstractFloat}
+@intrinsic maxf(x::Tile{T}, y::Tile{T}, flush_to_zero=false) where {T<:AbstractFloat}
+tfunc(𝕃, ::typeof(Intrinsics.maxf), @nospecialize args...) = CC.widenconst(args[1])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.maxf), args)
-    emit_binop!(ctx, args, encode_MaxFOp!)
+    ftz = length(args) >= 3 && (@something get_constant(ctx, args[3]) false) === true
+    emit_binop!(ctx, args[1:2], encode_MaxFOp!; flush_to_zero=ftz)
 end
 
 # cuda_tile.minf
-@intrinsic minf(x::T, y::T) where {T<:AbstractFloat}
-@intrinsic minf(x::Tile{T}, y::Tile{T}) where {T<:AbstractFloat}
-tfunc(𝕃, ::typeof(Intrinsics.minf), @nospecialize(x), @nospecialize(y)) = CC.widenconst(x)
+@intrinsic minf(x::T, y::T, flush_to_zero=false) where {T<:AbstractFloat}
+@intrinsic minf(x::Tile{T}, y::Tile{T}, flush_to_zero=false) where {T<:AbstractFloat}
+tfunc(𝕃, ::typeof(Intrinsics.minf), @nospecialize args...) = CC.widenconst(args[1])
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.minf), args)
-    emit_binop!(ctx, args, encode_MinFOp!)
+    ftz = length(args) >= 3 && (@something get_constant(ctx, args[3]) false) === true
+    emit_binop!(ctx, args[1:2], encode_MinFOp!; flush_to_zero=ftz)
 end
 
 # cuda_tile.pow

@@ -11,19 +11,31 @@
  Load/Store
 =============================================================================#
 
-public bid, num_blocks, num_tiles, load, store, gather, scatter
+public bid, num_blocks, num_tiles, load, store, gather, scatter, Rounding
 
 """
 Padding mode for load operations.
 Use these constants with ct.load to specify out-of-bounds behavior.
 """
-module PaddingMode
-    const Undetermined = 0
-    const Zero = 1
-    const NegZero = 2
-    const Nan = 3
-    const PosInf = 4
-    const NegInf = 5
+@enumx PaddingMode begin
+    Undetermined = 0
+    Zero = 1
+    NegZero = 2
+    Nan = 3
+    PosInf = 4
+    NegInf = 5
+end
+
+"""
+Rounding mode for floating-point operations.
+Use with reduction and scan kwargs (e.g., `sum(tile; dims, rounding_mode=ct.Rounding.Zero)`).
+"""
+@enumx Rounding begin
+    NearestEven = 0
+    Zero = 1
+    NegInf = 2
+    PosInf = 3
+    Approx = 4
 end
 
 """
@@ -83,7 +95,7 @@ end
 
 
 """
-    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=true) -> Tile
+    load(arr::TileArray, index, shape; order=nothing, padding_mode=PaddingMode.Undetermined, latency=nothing, allow_tma=nothing) -> Tile
 
 Load a tile from a TileArray at the given index with the specified shape.
 Index is 1-indexed. Shape must be compile-time constant.
@@ -104,7 +116,7 @@ Index is 1-indexed. Shape must be compile-time constant.
 
 # Optimization Hints
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
-- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 
 # Example
 ```julia
@@ -116,9 +128,9 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
 """
 @inline function load(arr::TileArray, index, shape::NTuple{<:Any, Int};
                       order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
-                      padding_mode::Int=PaddingMode.Undetermined,
+                      padding_mode::PaddingMode.T=PaddingMode.Undetermined,
                       latency::Union{Int, Nothing}=nothing,
-                      allow_tma::Bool=true)
+                      allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
     tv = Intrinsics.make_tensor_view(arr)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
@@ -136,7 +148,7 @@ end
     tv = Intrinsics.make_tensor_view(arr)
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
-    tile = Intrinsics.load_partition_view(pv, nothing, true, promote(indices...) .- One())
+    tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...) .- One())
     Intrinsics.to_scalar(reshape(tile, ()))
 end
 
@@ -172,7 +184,7 @@ end
 end
 
 """
-    store(arr::TileArray, index, tile::Tile; order=nothing, latency=nothing, allow_tma=true) -> Tile
+    store(arr::TileArray, index, tile::Tile; order=nothing, latency=nothing, allow_tma=nothing) -> Tile
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
@@ -184,12 +196,12 @@ Returns the stored tile (enables chaining and helps constant folding).
 
 # Optimization Hints
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
-- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: true)
+- `allow_tma`: Whether TMA (Tensor Memory Accelerator) is allowed (default: nothing, compiler decides)
 """
 @inline function store(arr::TileArray{T}, index, tile::Tile{T};
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T}
+                       allow_tma::Union{Bool, Nothing}=nothing) where {T}
     reshaped = _reshape_to_rank(tile, Val(ndims(arr)))
     _store_reshaped(arr, reshaped, order, latency, allow_tma, promote(index...) .- One())
     return tile  # XXX: enables constant folding; remove when possible (see "constant folding" test)
@@ -221,7 +233,7 @@ end
 @inline function store(arr::TileArray{T}; index, tile::Tile{T},
                        order::Union{NTuple{<:Any, Int}, Nothing}=nothing,
                        latency::Union{Int, Nothing}=nothing,
-                       allow_tma::Bool=true) where {T}
+                       allow_tma::Union{Bool, Nothing}=nothing) where {T}
     store(arr, index, tile; order, latency, allow_tma)
 end
 
@@ -236,145 +248,171 @@ Base.Experimental.@consistent_overlay cuTileMethodTable function Base.setindex!(
     return
 end
 
+# Combine two masks with AND (dispatch-based to avoid Union types).
+@inline _combine_masks(a::Tile, b::Tile) = a .& b
+@inline _combine_masks(a::Tile, ::Nothing) = a
+@inline _combine_masks(::Nothing, b::Tile) = b
+@inline _combine_masks(::Nothing, ::Nothing) = nothing
+
+# 1D bounds mask: 0 <= index < size
+@inline function _bounds_mask_1d(indices_i32, array)
+    (indices_i32 .>= Tile(Int32(0))) .& (indices_i32 .< Tile(size(array, 1)))
+end
+
+# 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
+@inline function _bounds_mask_2d(idx0_i32, idx1_i32, array, S)
+    zero_0d = Tile(Int32(0))
+    zero_bc = broadcast_to(zero_0d, S)
+    size0_bc = broadcast_to(Tile(size(array, 1)), S)
+    size1_bc = broadcast_to(Tile(size(array, 2)), S)
+    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
+    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
+    mask0 .& mask1
+end
+
+# Padding tile for gather: zero(T) when no custom padding requested.
+@inline _pad_value(::Nothing, ::Type{T}, S) where {T} = broadcast_to(Tile(zero(T)), S)
+@inline _pad_value(val, ::Type{T}, S) where {T} = broadcast_to(Tile(T(val)), S)
+
+# Gather load: dispatch on mask type. No mask → maskless load (fast path).
+@inline function _gather_load(ptr_tile, latency, final_mask::Tile, padding_value, ::Type{T}, S) where {T}
+    padding = _pad_value(padding_value, T, S)
+    Intrinsics.load_ptr_tko(ptr_tile, latency, final_mask, padding)
+end
+@inline function _gather_load(ptr_tile, latency, ::Nothing, padding_value, ::Type{T}, S) where {T}
+    Intrinsics.load_ptr_tko(ptr_tile, latency)
+end
+
+# Scatter store: dispatch on mask type. No mask → maskless store (fast path).
+@inline function _scatter_store(ptr_tile, tile, latency, final_mask::Tile)
+    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, final_mask)
+end
+@inline function _scatter_store(ptr_tile, tile, latency, ::Nothing)
+    Intrinsics.store_ptr_tko(ptr_tile, tile, latency)
+end
+
 """
-    gather(array::TileArray{T, 1}, indices::Tile{I, S}; latency=nothing) -> Tile{T, S}
+    gather(array::TileArray{T, 1}, indices::Tile{I, S}; kwargs...) -> Tile{T, S}
 
 Gather elements from a 1D array using index tile.
-Indices are 1-indexed. Out-of-bounds indices return zero.
+Indices are 1-indexed. Out-of-bounds indices return `padding_value` (default: zero).
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `padding_value`: Value for masked-out elements (default: `zero(T)`)
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
-indices = base .+ ct.arange((TILE,), Int32)
-tile = ct.gather(arr, indices; latency=3)
+indices = base .+ ct.arange(TILE)
+tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
 ```
 """
 @inline function gather(array::TileArray{T, 1}, indices::Tile{I};
+                        mask=nothing,
+                        padding_value=nothing,
+                        check_bounds::Bool=true,
                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer}
-    # Convert to 0-indexed
     indices_0 = indices .- one(I)
-
-    # Convert to Int32 for consistency with array.sizes
     indices_i32 = convert(Tile{Int32}, indices_0)
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
 
-    # Bounds mask: 0 <= indices_i32 < size
-    zero_0d = Tile(Int32(0))
-    size_0d = Tile(size(array, 1))  # Already Int32
-    ge_zero = indices_i32 .>= zero_0d
-    lt_size = indices_i32 .< size_0d
-    mask = ge_zero .& lt_size
-
-    # Padding for OOB (zero)
-    padding = broadcast_to(Tile(zero(T)), size(indices))
-
-    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
+    bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
+    final_mask = _combine_masks(bounds_mask, mask)
+    _gather_load(ptr_tile, latency, final_mask, padding_value, T, size(indices))
 end
 
 """
-    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}; latency=nothing) -> Tile{T, S}
+    gather(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}; kwargs...) -> Tile{T, S}
 
 Gather elements from a 2D array using a tuple of index tiles.
 Indices are 1-indexed. Index tiles are broadcast to a common shape.
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `padding_value`: Value for masked-out elements (default: `zero(T)`)
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
 @inline function gather(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}};
+                        mask=nothing,
+                        padding_value=nothing,
+                        check_bounds::Bool=true,
                         latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
-    # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
     idx1_0 = indices[2] .- one(I1)
 
-    # Broadcast indices to common shape
     S = broadcast_shape(size(indices[1]), size(indices[2]))
     idx0_bc = broadcast_to(idx0_0, S)
     idx1_bc = broadcast_to(idx1_0, S)
 
-    # Convert to Int32 for linear index computation
     idx0_i32 = convert(Tile{Int32}, idx0_bc)
     idx1_i32 = convert(Tile{Int32}, idx1_bc)
 
-    # Get strides and broadcast to tile shape
     stride0_0d = Tile(array.strides[1])
     stride1_0d = Tile(array.strides[2])
     stride0 = broadcast_to(stride0_0d, S)
     stride1 = broadcast_to(stride1_0d, S)
 
-    # Compute linear index = idx0 * stride0 + idx1 * stride1
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
 
-    # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
-    zero_0d = Tile(Int32(0))
-    zero_bc = broadcast_to(zero_0d, S)
-    size0_bc = broadcast_to(Tile(size(array, 1)), S)
-    size1_bc = broadcast_to(Tile(size(array, 2)), S)
-
-    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
-    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
-    mask = mask0 .& mask1
-
-    # Padding for OOB (zero)
-    padding = broadcast_to(Tile(zero(T)), S)
-
-    Intrinsics.load_ptr_tko(ptr_tile, latency, mask, padding)
+    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
+    final_mask = _combine_masks(bounds_mask, mask)
+    _gather_load(ptr_tile, latency, final_mask, padding_value, T, S)
 end
 
 """
-    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}; latency=nothing) -> Nothing
+    scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S}; kwargs...) -> Nothing
 
 Scatter elements to a 1D array at index tile positions.
 Indices are 1-indexed. Out-of-bounds indices are ignored.
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 
 # Example
 ```julia
 base = (bid - 1) * TILE
-indices = base .+ ct.arange((TILE,), Int32)
-ct.scatter(arr, indices, result_tile; latency=3)
+indices = base .+ ct.arange(TILE)
+ct.scatter(arr, indices, result_tile; mask=valid_mask)
 ```
 """
 @inline function scatter(array::TileArray{T, 1}, indices::Tile{I, S}, tile::Tile{T, S};
+                         mask=nothing,
+                         check_bounds::Bool=true,
                          latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
-    # Convert to 0-indexed
     indices_0 = indices .- one(I)
-
-    # Convert to Int32 for consistency with array.sizes
     indices_i32 = convert(Tile{Int32}, indices_0)
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
 
-    # Bounds mask: 0 <= indices_i32 < size
-    zero_0d = Tile(Int32(0))
-    size_0d = Tile(size(array, 1))  # Already Int32
-    ge_zero = indices_i32 .>= zero_0d
-    lt_size = indices_i32 .< size_0d
-    mask = ge_zero .& lt_size
-
-    Intrinsics.store_ptr_tko(ptr_tile, tile, latency, mask)
+    bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
+    final_mask = _combine_masks(bounds_mask, mask)
+    _scatter_store(ptr_tile, tile, latency, final_mask)
 end
 
 """
-    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile; latency=nothing) -> Nothing
+    scatter(array::TileArray{T, 2}, indices::Tuple{Tile, Tile}, tile::Tile; kwargs...) -> Nothing
 
 Scatter elements to a 2D array at index tile positions.
 Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 
-# Optimization Hints
+# Keyword Arguments
+- `mask`: Optional `Tile{Bool}` — additional mask AND'd with automatic bounds check
+- `check_bounds::Bool`: Compute automatic bounds mask (default: `true`). Set to `false`
+  when indices are known to be in-bounds to skip the comparisons.
 - `latency`: Optional latency hint (1-10), or nothing for compiler default
 """
 @inline function scatter(array::TileArray{T, 2}, indices::Tuple{Tile{I0}, Tile{I1}}, tile::Tile{T};
+                         mask=nothing,
+                         check_bounds::Bool=true,
                          latency::Union{Int, Nothing}=nothing) where {T, I0 <: Integer, I1 <: Integer}
     # Convert to 0-indexed
     idx0_0 = indices[1] .- one(I0)
@@ -398,21 +436,11 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-
-    # Compute pointer tile
     ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
 
-    # 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
-    zero_0d = Tile(Int32(0))
-    zero_bc = broadcast_to(zero_0d, S)
-    size0_bc = broadcast_to(Tile(size(array, 1)), S)
-    size1_bc = broadcast_to(Tile(size(array, 2)), S)
-
-    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
-    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
-    mask = mask0 .& mask1
-
-    Intrinsics.store_ptr_tko(ptr_tile, tile_bc, latency, mask)
+    bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
+    final_mask = _combine_masks(bounds_mask, mask)
+    _scatter_store(ptr_tile, tile_bc, latency, final_mask)
 end
 
 #=============================================================================
@@ -422,20 +450,20 @@ end
 public arange
 
 """
-    arange(shape::NTuple{1, Int}, dtype::Type{T}) -> Tile{T, shape}
-    arange(n::Int, dtype::Type{T}) -> Tile{T, (n,)}
+    arange(shape; dtype=Int32) -> Tile{dtype, shape}
+    arange(n; dtype=Int32) -> Tile{dtype, (n,)}
 
 Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 
 # Example
 ```julia
-indices = ct.arange((16,), Int32)  # Creates Tile with [1, 2, 3, ..., 16]
-indices = ct.arange(16, Int32)     # Same thing, scalar form
+indices = ct.arange(16)              # Int32 [1, 2, ..., 16]
+indices = ct.arange(16; dtype=Int64) # Int64 [1, 2, ..., 16]
 ```
 """
-@inline arange(shape::NTuple{1, Int}, ::Type{T}) where {T} =
+@inline arange(shape::NTuple{1, Int}; dtype::Type{T}=Int32) where {T} =
     Intrinsics.iota(shape, T) .+ one(T)
-@inline arange(n::Int, ::Type{T}) where {T} = arange((n,), T)
+@inline arange(n::Int; dtype::Type{T}=Int32) where {T} = arange((n,); dtype)
 
 # Internal: create a tile filled with a constant value.
 # Used by Base.fill/zeros/ones overlays (see overlays.jl).
@@ -577,6 +605,7 @@ Equivalent to single-arg `permutedims`.
     end
 end
 
+@inline Base.convert(::Type{Tile{T}}, tile::Tile{T}) where {T} = tile
 @inline Base.convert(::Type{Tile{T2}}, tile::Tile{T1, Shape}) where {T1, T2, Shape} =
     map(T2, tile)
 
@@ -670,50 +699,55 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
     mapreduce(identity, f, tile; dims, init)
 end
 
-"""
-    sum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
+# Callable operators with rounding/ftz encoded in type parameters,
+# because emit_subprogram! does not support closures with captures.
+struct AddF{RM, FTZ} end
+struct MulF{RM, FTZ} end
+struct MaxF{FTZ} end
+struct MinF{FTZ} end
+(::AddF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.addf(a, b, RM, FTZ)
+(::MulF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.mulf(a, b, RM, FTZ)
+(::MaxF{FTZ})(a, b) where {FTZ} = Intrinsics.maxf(a, b, FTZ)
+(::MinF{FTZ})(a, b) where {FTZ} = Intrinsics.minf(a, b, FTZ)
 
-Sum reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.sum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(+, tile; dims, init=zero(T))
+for (f, op, custom_op, init_expr, has_rounding) in [
+    (:sum,     :(+),   :AddF,  :(zero(T)),    true),
+    (:prod,    :(*),   :MulF,  :(one(T)),     true),
+    (:maximum, :(max), :MaxF,  :(typemin(T)), false),
+    (:minimum, :(min), :MinF,  :(typemax(T)), false),
+]
+    # Integer: no rounding/ftz kwargs
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims) where {T<:Integer, S}
+        reduce($op, tile; dims, init=$init_expr)
+    end
 
-"""
-    prod(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
-
-Product reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.prod(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(*, tile; dims, init=one(T))
-
-"""
-    maximum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
-
-Maximum reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.maximum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(max, tile; dims, init=typemin(T))
-
-"""
-    minimum(tile::Tile{T,S}; dims) -> Tile{T, reduced_shape}
-
-Minimum reduction along the specified axis/axes (1-indexed).
-Reduced dimensions become size 1.
-"""
-@inline Base.minimum(tile::Tile{T,S}; dims) where {T<:Number, S} =
-    reduce(min, tile; dims, init=typemax(T))
+    # Float: with rounding/ftz kwargs (sum/prod get rounding_mode; max/min don't)
+    if has_rounding
+        @eval @inline function Base.$f(tile::Tile{T,S}; dims,
+                                        rounding_mode=nothing, flush_to_zero=false) where {T<:AbstractFloat, S}
+            op = rounding_mode === nothing && !flush_to_zero ? $op : $custom_op{rounding_mode, flush_to_zero}()
+            reduce(op, tile; dims, init=$init_expr)
+        end
+    else
+        @eval @inline function Base.$f(tile::Tile{T,S}; dims,
+                                        flush_to_zero=false) where {T<:AbstractFloat, S}
+            op = !flush_to_zero ? $op : $custom_op{flush_to_zero}()
+            reduce(op, tile; dims, init=$init_expr)
+        end
+    end
+end
 
 # sum/prod/max/min without dims — reduce all dimensions, return scalar T
 # Recursive: reduce dim 1, dropdims, recurse. Base case: 0D tile → scalar.
 for f in (:sum, :prod, :maximum, :minimum)
-    @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:Number} =
-        Intrinsics.to_scalar(tile)
+    # Multiple definitions for specificity reasons
+    for T in (:Integer, :AbstractFloat)
+        @eval @inline Base.$f(tile::Tile{T,Tuple{}}) where {T<:$T} =
+            Intrinsics.to_scalar(tile)
 
-    @eval @inline Base.$f(tile::Tile{T,S}) where {T<:Number, S<:Tuple{Any,Vararg}} =
-        $f(dropdims($f(tile; dims=1); dims=1))
+        @eval @inline Base.$f(tile::Tile{T,S}) where {T<:$T, S<:Tuple{Any,Vararg}} =
+            $f(dropdims($f(tile; dims=1); dims=1))
+    end
 end
 
 """
@@ -864,53 +898,169 @@ Supported functions: `+`, `*`, `max`, `min`.
     Intrinsics.scan((tile,), dims - 1, f, (T(init),), rev)[1]
 end
 
-"""
-    cumsum(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
+for (f, op, custom_op, init_expr) in [
+    (:cumsum,  :(+), :AddF, :(zero(T))),
+    (:cumprod, :(*), :MulF, :(one(T))),
+]
+    # Integer: no rounding/ftz kwargs
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims::Integer,
+                                    rev::Bool=false) where {T<:Integer, S}
+        accumulate($op, tile; dims, init=$init_expr, rev)
+    end
 
-Cumulative sum along the specified axis (1-indexed).
-"""
-@inline Base.cumsum(tile::Tile{T,S}; dims::Integer,
-                    rev::Bool=false) where {T<:Number, S} =
-    accumulate(+, tile; dims, init=zero(T), rev)
-
-"""
-    cumprod(tile::Tile{T,S}; dims::Integer, rev::Bool=false) -> Tile{T, S}
-
-Cumulative product along the specified axis (1-indexed).
-"""
-@inline Base.cumprod(tile::Tile{T,S}; dims::Integer,
-                     rev::Bool=false) where {T<:Number, S} =
-    accumulate(*, tile; dims, init=one(T), rev)
+    # Float: with rounding/ftz kwargs
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims::Integer,
+                                    rev::Bool=false, rounding_mode=nothing,
+                                    flush_to_zero=false) where {T<:AbstractFloat, S}
+        op = rounding_mode === nothing && !flush_to_zero ? $op : $custom_op{rounding_mode, flush_to_zero}()
+        accumulate(op, tile; dims, init=$init_expr, rev)
+    end
+end
 
 #=============================================================================
  Matrix multiplication
 =============================================================================#
 
 # Matrix multiply-accumulate: muladd(a, b, acc) = a * b + acc
-@inline Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC} =
-    Intrinsics.mma(a, b, acc)
+# Handles 1D promotion, type promotion, and batched dims (≥3D).
+# Note: SA, SB, SC type parameters required to avoid ambiguity with scalar methods during codegen
+@inline function Base.muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC}) where {T1, T2, T3, SA, SB, SC}
+    _muladd(a, b, acc, Val(ndims(a)), Val(ndims(b)))
+end
 
-# Matrix multiplication (A * B like Julia arrays)
+# 2D × 2D: MmaFOp with swapped operands for row-major Tile IR
+# Julia (M,K)*(K,N) → TileIR (K,M)*(N,K) → mmaf(b,a,acc) → TileIR (N,M) → Julia (M,N)
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{2})
+    Intrinsics.mma(b, a, acc)
+end
+
+# Vec-mat (1D × 2D): reshape (M,) → (M, 1), MmaFOp, acc is already (M, N)
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{1}, ::Val{2})
+    a2d = reshape(a, (size(a, 1), 1))
+    _muladd(a2d, b, acc, Val(2), Val(2))
+end
+
+# Mat-vec (2D × 1D): reshape b (K,) → (K, 1), acc (M,) → (M, 1), MmaFOp, squeeze back
+@inline function _muladd(a::Tile, b::Tile, acc::Tile, ::Val{2}, ::Val{1})
+    M, K = size(a, 1), size(b, 1)
+    b2d = reshape(b, (K, 1))
+    acc2d = reshape(acc, (M, 1))
+    result = _muladd(a, b2d, acc2d, Val(2), Val(2))
+    reshape(result, (M,))
+end
+
+# Vec-vec (1D × 1D): not supported
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{1})
+    return :(throw(ArgumentError("Vector-vector multiply-accumulate is not supported.")))
+end
+
+# Batched mat-vec / vec-mat (≥3D × 1D or 1D × ≥3D): not supported, unsqueeze manually
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{1}, ::Val{NB}) where {NB}
+    NB >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched vec-mat is not supported. Reshape the 1D operand to 2D first.")))
+end
+@generated function _muladd(::Tile, ::Tile, ::Tile, ::Val{NA}, ::Val{1}) where {NA}
+    NA >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched mat-vec is not supported. Reshape the 1D operand to 2D first.")))
+end
+
+# Batched matmul (≥3D × ≥3D): trailing batch dims with broadcast
+# Julia convention: first two dims are matrix (M,K)/(K,N), trailing dims are batch.
+# With row-major Tile IR shapes, Julia (M,K,B) → TileIR (B,K,M), so:
+#   1. Broadcast batch dims to a common shape
+#   2. Flatten batch dims into one via reshape (no permute needed!)
+#   3. MmaFOp with swapped operands: mmaf(b, a, acc)
+#   4. Unflatten batch dims via reshape
+@generated function _muladd(a::Tile{T1, SA}, b::Tile{T2, SB}, acc::Tile{T3, SC},
+                            ::Val{NA}, ::Val{NB}) where {T1, T2, T3, SA, SB, SC, NA, NB}
+    sa = Tuple(SA.parameters)
+    sb = Tuple(SB.parameters)
+
+    # Matrix dims are first two; batch dims are trailing
+    M = sa[1]; K = sa[2]; N = sb[2]
+    a_batch = sa[3:end]
+    b_batch = sb[3:end]
+
+    # Broadcast batch dims (pad shorter with trailing 1s, then broadcast)
+    n_batch = max(length(a_batch), length(b_batch))
+    a_batch_padded = (a_batch..., ntuple(Returns(1), n_batch - length(a_batch))...)
+    b_batch_padded = (b_batch..., ntuple(Returns(1), n_batch - length(b_batch))...)
+    batch_shape = map(max, a_batch_padded, b_batch_padded)
+    B_flat = prod(batch_shape)
+
+    quote
+        # Reshape + broadcast to align batch dims (still trailing)
+        a_bc = broadcast_to(reshape(a, $((M, K, a_batch_padded...))), $((M, K, batch_shape...)))
+        b_bc = broadcast_to(reshape(b, $((K, N, b_batch_padded...))), $((K, N, batch_shape...)))
+        acc_bc = broadcast_to(acc, $((M, N, batch_shape...)))
+        # Flatten batch dims to one — no permute needed since row-major Tile IR
+        # already has batch as the leading (slowest) dimension
+        a_3d = reshape(a_bc, $((M, K, B_flat)))
+        b_3d = reshape(b_bc, $((K, N, B_flat)))
+        acc_3d = reshape(acc_bc, $((M, N, B_flat)))
+        # MmaFOp with swapped operands for row-major convention
+        result_3d = Intrinsics.mma(b_3d, a_3d, acc_3d)
+        # Unflatten batch dims
+        reshape(result_3d, $((M, N, batch_shape...)))
+    end
+end
+
+# Matrix multiplication: A * B = muladd(A, B, zeros)
 # Note: SA, SB type parameters required to avoid ambiguity with scalar*tile methods during codegen
 @inline function Base.:(*)(a::Tile{T1, SA}, b::Tile{T2, SB}) where {T1, T2, SA, SB}
-    _matmul(a, b, Val(ndims(a)))
+    _matmul(a, b, Val(ndims(a)), Val(ndims(b)))
 end
 
-# 2D matmul: (M, K) × (K, N) → (M, N)
-@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}) where {T1}
-    M = size(a, 1)
-    N = size(b, 2)
-    acc = zeros(T1, (M, N))
+# 2D × 2D → (M, N)
+@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}, ::Val{2}) where {T1}
+    acc = zeros(T1, (size(a, 1), size(b, 2)))
     muladd(a, b, acc)
 end
 
-# 3D batched matmul: (B, M, K) × (B, K, N) → (B, M, N)
-@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{3}) where {T1}
-    B = max(size(a, 1), size(b, 1))  # Broadcast batch dimension
-    M = size(a, 2)
-    N = size(b, 3)
-    acc = zeros(T1, (B, M, N))
+# Vec-mat (1D × 2D) → (M, N)
+@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{1}, ::Val{2}) where {T1}
+    acc = zeros(T1, (size(a, 1), size(b, 2)))
     muladd(a, b, acc)
+end
+
+# Mat-vec (2D × 1D) → (M,)
+@inline function _matmul(a::Tile{T1}, b::Tile, ::Val{2}, ::Val{1}) where {T1}
+    acc = zeros(T1, (size(a, 1),))
+    muladd(a, b, acc)
+end
+
+# Vec-vec (1D × 1D): not supported
+@generated function _matmul(::Tile, ::Tile, ::Val{1}, ::Val{1})
+    return :(throw(ArgumentError("Vector-vector multiplication is not supported. Use dot(a, b) for inner products, or reshape explicitly.")))
+end
+
+# Batched (≥3D × ≥3D) → (M, N, batch...)
+@generated function _matmul(a::Tile{T1, SA}, b::Tile{T2, SB},
+                            ::Val{NA}, ::Val{NB}) where {T1, T2, SA, SB, NA, NB}
+    sa = Tuple(SA.parameters)
+    sb = Tuple(SB.parameters)
+    a_batch = sa[3:end]
+    b_batch = sb[3:end]
+    n_batch = max(length(a_batch), length(b_batch))
+    a_batch_padded = (a_batch..., ntuple(_ -> 1, n_batch - length(a_batch))...)
+    b_batch_padded = (b_batch..., ntuple(_ -> 1, n_batch - length(b_batch))...)
+    batch_shape = map(max, a_batch_padded, b_batch_padded)
+    M = sa[1]; N = sb[2]
+    out_shape = (M, N, batch_shape...)
+    quote
+        acc = zeros(T1, $out_shape)
+        muladd(a, b, acc)
+    end
+end
+
+# Batched × 1D: not supported — unsqueeze the 1D operand manually
+@generated function _matmul(::Tile, ::Tile, ::Val{NA}, ::Val{1}) where {NA}
+    NA >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched mat-vec is not supported. Reshape the 1D operand to 2D first.")))
+end
+@generated function _matmul(::Tile, ::Tile, ::Val{1}, ::Val{NB}) where {NB}
+    NB >= 3 || return :(throw(ArgumentError("unreachable")))
+    return :(throw(ArgumentError("Batched vec-mat is not supported. Reshape the 1D operand to 2D first.")))
 end
 
 #=============================================================================

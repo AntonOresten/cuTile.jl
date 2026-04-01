@@ -2,7 +2,7 @@ module CUDAExt
 
 using cuTile
 using cuTile: TileArray, Constant, CuTileResults,
-              emit_code, sanitize_name, constant_eltype, flatten,
+              emit_tile!, sanitize_name, constant_eltype, flatten,
               resolve_hint, format_sm_arch
 
 using CompilerCaching: CacheView, method_instance, results
@@ -60,14 +60,14 @@ end
 const EMIT_CODE_LOCK = ReentrantLock()
 
 """
-    emit_binary(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
+    emit_binary!(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
 
-Binary phase: compile Tile IR bytecode to CUBIN using tileiras.
+Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 """
-function emit_binary(cache::CacheView, mi::Core.MethodInstance;
-                     const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+function emit_binary!(cache::CacheView, mi::Core.MethodInstance;
+                      const_argtypes::Union{Vector{Any}, Nothing}=nothing)
     bytecode = lock(EMIT_CODE_LOCK) do
-        emit_code(cache, mi; const_argtypes)
+        emit_tile!(cache, mi; const_argtypes)
     end
 
     ci = get(cache, mi)
@@ -76,8 +76,8 @@ function emit_binary(cache::CacheView, mi::Core.MethodInstance;
 
     opts = cache.owner[2]
 
-    # Resolve opt_level here (not in emit_code) because it's a tileiras flag, not bytecode.
-    # num_ctas/occupancy are resolved in emit_code because they're encoded in bytecode.
+    # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
+    # num_ctas/occupancy are resolved in emit_tile because they're encoded in bytecode.
     _, _, kernel_meta = res.julia_ir
     opt_level = something(resolve_hint(opts.opt_level, kernel_meta, :opt_level, opts.sm_arch), 3)
 
@@ -114,13 +114,13 @@ function emit_binary(cache::CacheView, mi::Core.MethodInstance;
 end
 
 """
-    emit_function(cache, mi; const_argtypes=nothing) -> CuFunction
+    emit_function!(cache, mi; const_argtypes=nothing) -> CuFunction
 
-Function phase: load CUBIN into GPU memory as a CuFunction.
+Cached function phase: load CUBIN into GPU memory as a CuFunction.
 """
-function emit_function(cache::CacheView, mi::Core.MethodInstance;
-                       const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    cubin = emit_binary(cache, mi; const_argtypes)
+function emit_function!(cache::CacheView, mi::Core.MethodInstance;
+                        const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+    cubin = emit_binary!(cache, mi; const_argtypes)
 
     ci = get(cache, mi)
     res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
@@ -218,7 +218,7 @@ function cuTile.launch(@nospecialize(f), grid, args...;
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
 
     # Run cached compilation
-    cufunc = emit_function(cache, mi; const_argtypes)
+    cufunc = emit_function!(cache, mi; const_argtypes)
 
     # Flatten arguments for cudacall - Constant returns () so ghost types disappear
     flat_args = Tuple(Iterators.flatten(map(flatten, tile_args)))

@@ -1,7 +1,5 @@
 # Memory
 
-# TODO: cuda_tile.join_tokens
-
 # cuda_tile.load_ptr_tko
 @intrinsic load_ptr_tko(ptrs, latency=nothing, mask=nothing, padding=nothing)
 function tfunc(𝕃, ::typeof(Intrinsics.load_ptr_tko), @nospecialize(ptrs), @nospecialize args...)
@@ -17,60 +15,50 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     cb = ctx.cb
     tt = ctx.tt
 
+    # Extract input token from last arg (added by token_order_pass!)
+    input_token = extract_token_arg!(ctx, args)
+
     # args: (ptrs, latency, mask?, padding?)
-    # Get pointer tile (arg 1)
     ptrs_tv = emit_value!(ctx, args[1])
     ptrs_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve pointer tile"))
     pointers = ptrs_tv.v
     tile_shape = ptrs_tv.shape
 
-    # Get element type from pointer tile type (Tile{Ptr{T}, S})
     ptrs_type = CC.widenconst(ptrs_tv.jltype)
-    ptr_type = eltype(ptrs_type)  # Ptr{T} from Tile{Ptr{T}, S}
-    elem_type = eltype(ptr_type)  # T from Ptr{T}
+    ptr_type = eltype(ptrs_type)
+    elem_type = eltype(ptr_type)
     dtype = julia_to_tile_dtype!(tt, elem_type)
     result_tile_type = tile_type!(tt, dtype, tile_shape)
     token_type = Token(tt)
 
-    # Extract latency hint (args[2])
-    latency = get_constant(ctx, args[2])
-
-    # Create optimization hints if provided
+    latency = @something get_constant(ctx, args[2]) throw(IRError("latency must be a compile-time constant"))
     optimization_hints = create_optimization_hints(ctx, latency)
-
-    # Check if mask is provided (arg 3 is not nothing)
-    has_mask = length(args) >= 3 && get_constant(ctx, args[3]) !== nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 3)
 
     if has_mask
-        # Get mask tile (arg 3)
-        mask_tv = emit_value!(ctx, args[3])
-        mask_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
-
-        # Get padding tile (arg 4)
         padding_tv = emit_value!(ctx, args[4])
         padding_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve padding tile"))
         padding = padding_tv.v
 
-        # Load with mask and padding
-        tile_val, new_token = encode_LoadPtrTkoOp!(cb, result_tile_type, token_type, pointers;
-                                                    mask=mask,
-                                                    padding_value=padding,
-                                                    token=ctx.token,
-                                                    optimization_hints)
+        tile_val, new_token = encode_LoadPtrTkoOp!(
+            cb, result_tile_type, token_type, pointers;
+            mask, padding_value = padding, token = input_token, optimization_hints
+        )
     else
-        # Load without mask
-        tile_val, new_token = encode_LoadPtrTkoOp!(cb, result_tile_type, token_type, pointers;
-                                                    token=ctx.token,
-                                                    optimization_hints)
+        tile_val, new_token = encode_LoadPtrTkoOp!(
+            cb, result_tile_type, token_type, pointers;
+            token = input_token, optimization_hints
+        )
     end
-    ctx.token = new_token
 
-    result_jltype = Tile{elem_type, Tuple{tile_shape...}}
-    CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
+    # Store result token for TokenResultNode
+    ctx.result_tokens[ctx.current_ssa_idx] = new_token
+
+    julia_shape = ColMajorShape(tile_shape)
+    result_jltype = Tile{elem_type, TupleType(julia_shape)}
+    return CGVal(tile_val, result_tile_type, result_jltype, tile_shape)
 end
-
-# TODO: cuda_tile.make_token
 
 # cuda_tile.store_ptr_tko
 @intrinsic store_ptr_tko(ptrs::Tile{Ptr{T}, S}, values::Tile{T, S},
@@ -83,46 +71,55 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
     cb = ctx.cb
     tt = ctx.tt
 
-    # args: (ptrs, values, latency, mask?)
-    # Get pointer tile (arg 1)
+    # Extract input token from last arg (added by token_order_pass!)
+    input_token = extract_token_arg!(ctx, args)
+
     ptrs_tv = emit_value!(ctx, args[1])
     ptrs_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve pointer tile"))
     pointers = ptrs_tv.v
 
-    # Get value tile (arg 2)
     values_tv = emit_value!(ctx, args[2])
     values_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve values tile"))
     values = values_tv.v
 
     token_type = Token(tt)
 
-    # Extract latency hint (args[3])
-    latency = get_constant(ctx, args[3])
-
-    # Create optimization hints if provided
+    latency = @something get_constant(ctx, args[3]) throw(IRError("latency must be a compile-time constant"))
     optimization_hints = create_optimization_hints(ctx, latency)
-
-    # Check if mask is provided (arg 4 is not nothing)
-    has_mask = length(args) >= 4 && get_constant(ctx, args[4]) !== nothing
+    mask_tv, has_mask = emit_optional_mask(ctx, args, 4)
 
     if has_mask
-        # Get mask tile (arg 4)
-        mask_tv = emit_value!(ctx, args[4])
-        mask_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve mask tile"))
         mask = mask_tv.v
-
-        # Store with mask
-        new_token = encode_StorePtrTkoOp!(cb, token_type, pointers, values;
-                                           mask=mask,
-                                           token=ctx.token,
-                                           optimization_hints)
+        new_token = encode_StorePtrTkoOp!(
+            cb, token_type, pointers, values;
+            mask, token = input_token, optimization_hints
+        )
     else
-        # Store without mask
-        new_token = encode_StorePtrTkoOp!(cb, token_type, pointers, values;
-                                           token=ctx.token,
-                                           optimization_hints)
+        new_token = encode_StorePtrTkoOp!(
+            cb, token_type, pointers, values;
+            token = input_token, optimization_hints
+        )
     end
-    ctx.token = new_token
+
+    # Store result token for TokenResultNode
+    ctx.result_tokens[ctx.current_ssa_idx] = new_token
 
     nothing
+end
+
+"""
+    extract_token_arg!(ctx, args) -> Value
+
+Extract the token argument (last arg, added by token_order_pass!) from a memory op call.
+Pops the token from args and returns the resolved bytecode Value.
+"""
+function extract_token_arg!(ctx::CGCtx, args)
+    isempty(args) && throw(IRError("Memory op has no arguments"))
+    last_arg = args[end]
+    tv = emit_value!(ctx, last_arg)
+    if tv !== nothing && tv.jltype === TokenType
+        pop!(args)
+        return tv.v
+    end
+    throw(IRError("Memory op missing token argument (token_order_pass! not run?)"))
 end

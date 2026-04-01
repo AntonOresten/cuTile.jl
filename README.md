@@ -32,9 +32,9 @@ import cuTile as ct
 # Define kernel
 function vadd(a, b, c, tile_size::Int)
     pid = ct.bid(1)
-    tile_a = ct.load(a, pid, (tile_size,))
-    tile_b = ct.load(b, pid, (tile_size,))
-    ct.store(c, pid, tile_a + tile_b)
+    tile_a = ct.load(a; index=pid, shape=(tile_size,))
+    tile_b = ct.load(b; index=pid, shape=(tile_size,))
+    ct.store(c; index=pid, tile=tile_a + tile_b)
     return
 end
 
@@ -88,24 +88,21 @@ while the latter needs valid `CuArray`s to be passed to the kernel.
 Run benchmarks with:
 
 ```bash
-julia --project examples/benchmarks.jl  # Julia
-uv run python examples/benchmarks.py    # Python (for comparison)
+julia --project=examples examples/benchmarks.jl  # Julia
+uv run python examples/benchmarks.py             # Python (for comparison)
 ```
 
-Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080:
+Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 13.2.51,
+20 runs, 5 warmup, min time reported):
 
-| Kernel | Julia | Python | Status |
-|--------|-------|--------|--------|
-| Vector Addition | 813 GB/s | 834 GB/s | OK (-3%) |
-| Matrix Transpose | 769 GB/s | 795 GB/s | OK (-3%) |
-| Matrix Multiplication | 48.3 TFLOPS | 48.6 TFLOPS | OK (=) |
-| Layer Normalization | 254 GB/s | 683 GB/s | https://github.com/JuliaGPU/cuTile.jl/issues/1 (-63%) |
-| Batch Matrix Multiply | 31.7 TFLOPS | 31.6 TFLOPS | OK (=) |
-| FFT (3-stage Cooley-Tukey) | 508 μs | 230 μs | (-55%) |
-
-Compute-intensive kernels (matmul, batch matmul) perform identically to Python. Memory-bound
-kernels (vadd, transpose) are within ~3% of Python. The layernorm kernel is slower due to
-conservative token threading in the compiler (see https://github.com/JuliaGPU/cuTile.jl/issues/1).
+| Kernel | Size | Julia | Python | Status |
+|--------|------|-------|--------|--------|
+| Vector Addition | 2^27 f32 | 841 GB/s | 845 GB/s | OK (=) |
+| Matrix Transpose | 8192² f32 | 805 GB/s | 811 GB/s | OK (-1%) |
+| Layer Normalization | 4096² f32 fwd | 652 GB/s | 720 GB/s | -9% |
+| Matrix Multiplication | 4096³ f32 | 43.4 TFLOPS | 43.5 TFLOPS | OK (=) |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 30.5 TFLOPS | 30.9 TFLOPS | OK (-1%) |
+| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3280 μs | 3131 μs | -5% |
 
 
 ## Supported Operations
@@ -118,10 +115,22 @@ uses standard Julia syntax and is overlaid on `Base`.
 ### Memory
 | Operation | Description |
 |-----------|-------------|
-| `ct.load(arr, index, shape)` | Load a tile from array |
-| `ct.store(arr, index, tile)` | Store a tile to array |
-| `ct.gather(arr, indices)` | Gather elements by index tile |
-| `ct.scatter(arr, indices, tile)` | Scatter elements by index tile |
+| `ct.load(arr; index, shape, ...)` | Load a tile from array |
+| `ct.store(arr; index, tile, ...)` | Store a tile to array |
+| `ct.gather(arr, indices; ...)` | Gather elements by index tile |
+| `ct.scatter(arr, indices, tile; ...)` | Scatter elements by index tile |
+
+`load` and `store` accept keyword arguments `order`, `padding_mode`, `latency`, and `allow_tma`.
+`gather` accepts `mask`, `padding_value`, `check_bounds`, and `latency`.
+`scatter` accepts `mask`, `check_bounds`, and `latency`.
+
+```julia
+# Gather with user mask and custom padding for masked-out elements
+tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
+
+# Scatter with mask (only write where mask is true)
+ct.scatter(arr, indices, tile; mask=active_mask)
+```
 
 ### Grid
 | Operation | Description |
@@ -223,9 +232,17 @@ uses standard Julia syntax and is overlaid on `Base`.
 ### Atomics
 | Operation | Description |
 |-----------|-------------|
-| `ct.atomic_cas(arr, idx, expected, desired)` | Compare-and-swap |
-| `ct.atomic_xchg(arr, idx, val)` | Exchange |
-| `ct.atomic_add(arr, idx, val)` | Atomic add |
+| `ct.atomic_cas(arr, idx, expected, desired; ...)` | Compare-and-swap |
+| `ct.atomic_xchg(arr, idx, val; ...)` | Exchange |
+| `ct.atomic_add(arr, idx, val; ...)` | Atomic add |
+| `ct.atomic_max(arr, idx, val; ...)` | Atomic max |
+| `ct.atomic_min(arr, idx, val; ...)` | Atomic min |
+| `ct.atomic_or(arr, idx, val; ...)` | Atomic bitwise OR |
+| `ct.atomic_and(arr, idx, val; ...)` | Atomic bitwise AND |
+| `ct.atomic_xor(arr, idx, val; ...)` | Atomic bitwise XOR |
+
+All atomics accept `memory_order` (default: `ct.MemoryOrder.AcqRel`) and
+`memory_scope` (default: `ct.MemScope.Device`) keyword arguments.
 
 
 ## Differences from cuTile Python
@@ -253,10 +270,10 @@ def vadd(a, b, c):
 function vadd(a, b, c)
     pid = ct.bid(1)
 
-    a_tile = ct.load(a, pid, (16,))
-    b_tile = ct.load(b, pid, (16,))
+    a_tile = ct.load(a; index=pid, shape=(16,))
+    b_tile = ct.load(b; index=pid, shape=(16,))
     result = a_tile + b_tile
-    ct.store(c, pid, result)
+    ct.store(c; index=pid, tile=result)
 
     return
 end
@@ -352,7 +369,7 @@ ct.launch(stream, grid, kernel, (a, b, 16))
 ```julia
 # Julia
 function kernel(a, b, tile_size::Int)
-    tile = ct.load(a, 1, (tile_size,))
+    tile = ct.load(a; index=1, shape=(tile_size,))
 end
 
 ct.launch(kernel, grid, a, b, ct.Constant(16))
@@ -452,7 +469,7 @@ b = ct.load(B, (expert_id, k, bid_n), shape=(1, TILE_K, TILE_N))
 ```julia
 # Julia
 expert_id = ids[bid_m]
-b = ct.load(B, (expert_id, k, bid_n), (1, TILE_K, TILE_N))
+b = ct.load(B; index=(expert_id, k, bid_n), shape=(1, TILE_K, TILE_N))
 ```
 
 
@@ -493,21 +510,6 @@ end
 
 Also make sure `i`, `n`, and the increment all have the same type.
 
-### Keyword arguments
-
-`load` and `store` use positional arguments instead of keyword arguments:
-
-```python
-# Python
-ct.load(arr, index=(i, j), shape=(m, n))
-ct.store(arr, index=(i, j), tile=t)
-```
-
-```julia
-# Julia
-ct.load(arr, (i, j), (m, n))
-ct.store(arr, (i, j), t)
-```
 
 
 ## Host-level operations

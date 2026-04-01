@@ -45,7 +45,7 @@ def batchmatmul_cutile_kernel(A, B, C, tm: ct.Constant[int], tn: ct.Constant[int
 # Example harness
 #=============================================================================
 
-def prepare(*, benchmark: bool = False, Batch: int = None, M: int = None, K: int = None, N: int = None, dtype=np.float16):
+def prepare(*, benchmark: bool = False, Batch: int = None, M: int = None, K: int = None, N: int = None, dtype=np.float32):
     """Allocate and initialize data for batch matmul."""
     if Batch is None:
         Batch = 8 if benchmark else 4
@@ -91,6 +91,12 @@ def run(data, *, tm: int = 128, tn: int = 128, tk: int = 64, nruns: int = 1, war
         times.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
     return {"C": C, "times": times}
+
+
+def metric(data):
+    """Return (total_flops, unit) for throughput calculation."""
+    # 2*M*K*N*Batch FLOPs (multiply-add = 2 ops)
+    return 2 * data["M"] * data["K"] * data["N"] * data["Batch"], "TFLOPS"
 
 
 def verify(data, result):

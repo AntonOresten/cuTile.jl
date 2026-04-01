@@ -9,9 +9,9 @@ import cuTile as ct
 function vec_add_kernel_1d(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c::ct.TileArray{T,1},
                            tile::Int) where {T}
     bid = ct.bid(1)
-    a_tile = ct.load(a, bid, (tile,))
-    b_tile = ct.load(b, bid, (tile,))
-    ct.store(c, bid, a_tile + b_tile)
+    a_tile = ct.load(a; index=bid, shape=(tile,))
+    b_tile = ct.load(b; index=bid, shape=(tile,))
+    ct.store(c; index=bid, tile=a_tile + b_tile)
     return
 end
 
@@ -20,9 +20,9 @@ function vec_add_kernel_2d(a::ct.TileArray{T,2}, b::ct.TileArray{T,2}, c::ct.Til
                            tile_x::Int, tile_y::Int) where {T}
     bid_x = ct.bid(1)
     bid_y = ct.bid(2)
-    a_tile = ct.load(a, (bid_x, bid_y), (tile_x, tile_y))
-    b_tile = ct.load(b, (bid_x, bid_y), (tile_x, tile_y))
-    ct.store(c, (bid_x, bid_y), a_tile + b_tile)
+    a_tile = ct.load(a; index=(bid_x, bid_y), shape=(tile_x, tile_y))
+    b_tile = ct.load(b; index=(bid_x, bid_y), shape=(tile_x, tile_y))
+    ct.store(c; index=(bid_x, bid_y), tile=a_tile + b_tile)
     return
 end
 
@@ -31,7 +31,7 @@ function vec_add_kernel_1d_gather(a::ct.TileArray{T,1}, b::ct.TileArray{T,1}, c:
                                    tile::Int) where {T}
     bid = ct.bid(1)
     # Create index tile for this block's elements
-    offsets = ct.arange(tile, Int32)
+    offsets = ct.arange(tile)
     base = ct.Tile((bid - Int32(1)) * Int32(tile))
     indices = ct.broadcast_to(base, (tile,)) .+ offsets
 
@@ -104,6 +104,13 @@ end
 
 function verify(data, result)
     @assert Array(result.c) ≈ Array(data.a) + Array(data.b)
+end
+
+function metric(data)
+    n = prod(data.shape)
+    T = eltype(data.a)
+    # 2 reads + 1 write
+    return 3 * n * sizeof(T), "GB/s"
 end
 
 

@@ -111,18 +111,15 @@ def fft_make_twiddles(factors, precision, device):
 # Example harness
 #=============================================================================
 
-def prepare(*, benchmark: bool = False, batch: int = None, size: int = None, factors: tuple = None, atom_packing_dim: int = 2):
+def prepare(*, benchmark: bool = False, batch: int = None, factors: tuple = None, atom_packing_dim: int = None):
     """Allocate and initialize data for FFT."""
     if batch is None:
         batch = 64 if benchmark else 2
     if factors is None:
-        factors = (8, 8, 8) if benchmark else (2, 2, 2)
+        factors = (8, 8, 16) if benchmark else (2, 2, 2)
     F0, F1, F2 = factors
     N = F0 * F1 * F2
-    if size is None:
-        size = N
-    assert size == N, f"size ({size}) must equal product of factors ({N})"
-    D = atom_packing_dim
+    D = min(64, N * 2) if atom_packing_dim is None else atom_packing_dim
 
     input_data = torch.randn(batch, N, dtype=torch.complex64, device='cuda')
 
@@ -179,6 +176,11 @@ def run(data, *, nruns: int = 1, warmup: int = 0):
     return {"output": output, "times": times}
 
 
+def metric(data):
+    """Return (0, unit) for FFT - latency benchmark, report time directly."""
+    return 0, "μs"
+
+
 def verify(data, result):
     """Verify FFT results."""
     reference = torch.fft.fft(data["input"], dim=-1)
@@ -218,11 +220,12 @@ def run_others(data, *, nruns: int = 1, warmup: int = 0):
 # Main
 #=============================================================================
 
-def test_fft(batch, size, factors, name=None):
+def test_fft(batch, factors, name=None):
     """Test FFT with given parameters."""
+    size = factors[0] * factors[1] * factors[2]
     name = name or f"fft batch={batch}, size={size}, factors={factors}"
     print(f"--- {name} ---")
-    data = prepare(batch=batch, size=size, factors=factors)
+    data = prepare(batch=batch, factors=factors)
     result = run(data)
     verify(data, result)
     print("  passed")
@@ -231,8 +234,8 @@ def test_fft(batch, size, factors, name=None):
 def main():
     print("--- cuTile FFT Examples ---\n")
 
-    test_fft(64, 512, (8, 8, 8))
-    test_fft(32, 512, (8, 8, 8))
+    test_fft(64, (8, 8, 8))
+    test_fft(32, (8, 8, 8))
 
     print("\n--- All FFT examples completed ---")
 

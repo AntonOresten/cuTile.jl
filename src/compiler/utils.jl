@@ -1,6 +1,94 @@
 # Codegen types and utilities
-#
-# Core types (CGVal, CGCtx) and helper functions for Tile IR code generation.
+
+
+#=============================================================================
+ Alias Analysis Types
+=============================================================================#
+
+"""
+    AliasUniverse
+
+Singleton type representing the universal alias set (everything may alias everything).
+"""
+struct AliasUniverse end
+const ALIAS_UNIVERSE = AliasUniverse()
+
+# Universe behaves specially in set operations
+Base.union(::AliasUniverse, ::AliasUniverse) = ALIAS_UNIVERSE
+Base.union(::AliasUniverse, other) = ALIAS_UNIVERSE
+Base.union(other, ::AliasUniverse) = ALIAS_UNIVERSE
+Base.intersect(::AliasUniverse, other) = other
+Base.intersect(other, ::AliasUniverse) = other
+Base.:(==)(::AliasUniverse, ::AliasUniverse) = true
+Base.:(==)(::AliasUniverse, other) = false
+Base.:(==)(other, ::AliasUniverse) = false
+
+"""
+    AliasSet
+
+Union type representing either a concrete set of values that may alias,
+or the universal alias set (ALIAS_UNIVERSE).
+"""
+const AliasSet = Union{Set{Any}, AliasUniverse}
+
+
+#=============================================================================
+ Token IR Node Types (inserted by token_order_pass!)
+=============================================================================#
+
+"""
+    TokenType
+
+Sentinel type used in StructuredIRCode to mark SSA values and BlockArguments
+that represent memory ordering tokens. Not a runtime type.
+"""
+struct TokenType end
+const TOKEN_TYPE = TokenType()
+
+"""
+    MakeTokenNode
+
+IR statement node: creates the root memory ordering token at kernel entry.
+Inserted by `token_order_pass!`. Emitted as `encode_MakeTokenOp!` during codegen.
+"""
+struct MakeTokenNode end
+
+"""
+    JoinTokensNode
+
+IR statement node: merges multiple token values into one.
+Inserted by `token_order_pass!`. Emitted as `encode_JoinTokensOp!` during codegen.
+"""
+struct JoinTokensNode
+    tokens::Vector{Any}  # SSAValue or BlockArgument references to token values
+end
+
+"""
+    TokenResultNode
+
+IR statement node: represents the result token produced by a memory operation.
+The memory op at `mem_op_ssa` produces both a data value and a token; this node
+extracts the token. Codegen resolves this via `ctx.result_tokens[mem_op_ssa]`.
+"""
+struct TokenResultNode
+    mem_op_ssa::Int  # SSA index of the memory operation that produced this token
+end
+
+# walk_uses! extensions so that IRStructurizer's uses()/replace_uses! see
+# operands inside cuTile-specific IR nodes.
+IRStructurizer.walk_uses!(f, node::JoinTokensNode) =
+    for i in 1:length(node.tokens); f(IndexedUseRef(node.tokens, i)); end
+IRStructurizer.walk_uses!(f, ::TokenResultNode) = nothing
+IRStructurizer.walk_uses!(f, ::MakeTokenNode) = nothing
+
+
+"""
+    is_token_type(typ) -> Bool
+
+Check whether a type annotation in the structured IR represents a token.
+Handles both instances (`TOKEN_TYPE`) and the type itself (`TokenType`).
+"""
+is_token_type(@nospecialize(typ)) = typ isa TokenType || typ === TokenType
 
 #=============================================================================
  IRError: Exception type for IR compilation errors
@@ -69,7 +157,7 @@ struct CGVal
     v::Union{Value, Vector{Value}, Nothing}  # Single value, multi-value, or nothing
     type_id::Union{TypeId, Nothing}  # Tile IR type (nothing for lazy refs or multi-value)
     jltype::Any               # Original Julia type
-    shape::Vector{Int}        # Tile shape (empty for scalars)
+    shape::TileShape        # Tile shape (ScalarShape for scalars)
     # Lazy argument reference: (arg_idx, [field_indices...])
     # e.g., (1, [2, 1]) means "argument 1, field 2, sub-field 1"
     arg_ref::Union{Tuple{Int, Vector{Int}}, Nothing}
@@ -79,18 +167,18 @@ end
 
 # Convenience constructors for concrete values
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    CGVal(v, type_id, jltype, Int[], nothing, nothing, nothing)
+    CGVal(v, type_id, jltype, ScalarShape(), nothing, nothing, nothing)
 
-CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::Vector{Int}) =
+CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::TileShape) =
     CGVal(v, type_id, jltype, shape, nothing, nothing, nothing)
 
 # Constructor for multi-value results (from loops, ifs)
 CGVal(v::Vector{Value}, @nospecialize(jltype)) =
-    CGVal(v, nothing, jltype, Int[], nothing, nothing, nothing)
+    CGVal(v, nothing, jltype, ScalarShape(), nothing, nothing, nothing)
 
 # Constructor for lazy argument references
 function arg_ref_value(arg_idx::Int, chain::Vector{Int}, @nospecialize(jltype))
-    CGVal(nothing, nothing, jltype, Int[], (arg_idx, chain), nothing, nothing)
+    CGVal(nothing, nothing, jltype, ScalarShape(), (arg_idx, chain), nothing, nothing)
 end
 
 """
@@ -99,8 +187,8 @@ end
 Create a ghost value (zero-size singleton with no runtime representation).
 Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, nothing, nothing)
-ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, Int[], nothing, Some(constant), nothing)
+ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, ScalarShape(), nothing, nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, ScalarShape(), nothing, Some(constant), nothing)
 
 """
     tuple_value(jltype, component_refs, component_constants) -> CGVal
@@ -115,7 +203,7 @@ function tuple_value(@nospecialize(jltype), component_refs::Vector{Any}, compone
     else
         nothing
     end
-    CGVal(nothing, TypeId(-1), jltype, Int[], nothing, constant, component_refs)
+    CGVal(nothing, TypeId(-1), jltype, ScalarShape(), nothing, constant, component_refs)
 end
 
 """
@@ -131,6 +219,7 @@ is_ghost(tv::CGVal) = tv.v === nothing && tv.arg_ref === nothing
 Check if a CGVal is a lazy argument reference.
 """
 is_arg_ref(tv::CGVal) = tv.arg_ref !== nothing
+
 
 #=============================================================================
  CGCtx: Compilation context
@@ -149,7 +238,7 @@ mutable struct CGCtx
     values::Dict{Int, CGVal}
     args::Dict{Int, CGVal}        # Argument index -> CGVal
     slots::Dict{Int, CGVal}       # Slot number -> CGVal
-    block_args::Dict{Int, CGVal}  # BlockArg id -> CGVal (for control flow)
+    block_args::Dict{Int, CGVal}  # BlockArgument id -> CGVal (for control flow)
 
     # Destructured argument handling: path-keyed flat values
     # Key: (arg_idx, path) where path is e.g. [1] or [1, 2] (field indices)
@@ -165,9 +254,16 @@ mutable struct CGCtx
     tt::TypeTable
     sci::StructuredIRCode
 
-    # Memory ordering token
-    token::Union{Value, Nothing}
+    # Token bytecode type (cached for encoding token operations)
     token_type::Union{TypeId, Nothing}
+
+    # Result tokens from memory ops: mem_op SSA index → bytecode Value
+    # Populated during codegen when emitting memory ops with token args.
+    # Read by TokenResultNode emission.
+    result_tokens::Dict{Int, Value}
+
+    # Current SSA index being emitted (set by emit_statement!)
+    current_ssa_idx::Int
 
     # Type cache: Julia type -> TypeId
     type_cache::Dict{Type, TypeId}
@@ -180,7 +276,6 @@ mutable struct CGCtx
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
-                 token::Union{Value, Nothing} = nothing,
                  token_type::Union{TypeId, Nothing} = nothing,
                  type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
                  sm_arch::Union{VersionNumber, Nothing} = nothing,
@@ -192,8 +287,16 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Any, Tuple{Value, TypeId}}(),
-        cb, tt, sci, token, token_type, type_cache, sm_arch, cache,
+        Dict{Int, Tuple{Value, TypeId}}(),
+        cb,
+        tt,
+        sci,
+        token_type,
+        Dict{Int, Value}(),              # result_tokens
+        0,                               # current_ssa_idx
+        type_cache,
+        sm_arch,
+        cache,
     )
 end
 
@@ -227,13 +330,14 @@ function Base.setindex!(ctx::CGCtx, tv::CGVal, slot::SlotNumber)
     ctx.slots[slot.id] = tv
 end
 
-function Base.getindex(ctx::CGCtx, block_arg::BlockArg)
+function Base.getindex(ctx::CGCtx, block_arg::BlockArgument)
     get(ctx.block_args, block_arg.id, nothing)
 end
 
-function Base.setindex!(ctx::CGCtx, tv::CGVal, block_arg::BlockArg)
+function Base.setindex!(ctx::CGCtx, tv::CGVal, block_arg::BlockArgument)
     ctx.block_args[block_arg.id] = tv
 end
+
 
 #=============================================================================
  Destructured argument helpers
@@ -306,6 +410,7 @@ Get the original Julia type for a destructured argument.
 """
 get_arg_type(ctx::CGCtx, arg_idx::Int) = get(ctx.arg_types, arg_idx, nothing)
 
+
 #=============================================================================
  Type conversion utilities
 =============================================================================#
@@ -330,6 +435,7 @@ Get or create a Tile IR type for a Julia type. With `throw_error=false`, returns
 `nothing` instead of throwing if the type has no Tile IR representation.
 """
 function tile_type_for_julia!(ctx::CGCtx, @nospecialize(T); throw_error::Bool=true)
+    is_token_type(T) && return Token(ctx.tt)
     actual_type = CC.widenconst(T)
     cached = get(ctx.type_cache, actual_type, nothing)
     cached !== nothing && return cached
@@ -345,32 +451,30 @@ end
 function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
     # Scalar types -> 0-D tile
     if T === Bool
-        return tile_type!(tt, I1(tt), Int[])
+        return tile_type!(tt, I1(tt), ScalarShape())
     elseif T === Int8 || T === UInt8
-        return tile_type!(tt, I8(tt), Int[])
+        return tile_type!(tt, I8(tt), ScalarShape())
     elseif T === Int16 || T === UInt16
-        return tile_type!(tt, I16(tt), Int[])
+        return tile_type!(tt, I16(tt), ScalarShape())
     elseif T === Int32 || T === UInt32
-        return tile_type!(tt, I32(tt), Int[])
+        return tile_type!(tt, I32(tt), ScalarShape())
     elseif T === Int64 || T === UInt64
-        return tile_type!(tt, I64(tt), Int[])
+        return tile_type!(tt, I64(tt), ScalarShape())
     elseif T === Float16
-        return tile_type!(tt, F16(tt), Int[])
+        return tile_type!(tt, F16(tt), ScalarShape())
     elseif T === BFloat16
-        return tile_type!(tt, BF16(tt), Int[])
+        return tile_type!(tt, BF16(tt), ScalarShape())
     elseif T === Float32
-        return tile_type!(tt, F32(tt), Int[])
+        return tile_type!(tt, F32(tt), ScalarShape())
     elseif T === Float64
-        return tile_type!(tt, F64(tt), Int[])
-    elseif T === Nothing
-        return Token(tt)
+        return tile_type!(tt, F64(tt), ScalarShape())
     end
 
     # Pointers -> 0-D tile of pointer type
     if T <: Ptr
         elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
         ptr_type = pointer_type!(tt, elem_dtype)
-        return tile_type!(tt, ptr_type, Int[])
+        return tile_type!(tt, ptr_type, ScalarShape())
     end
 
     # Tile{T, Shape} -> tile type with shape
@@ -384,7 +488,7 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
             throw(IRError("Tile shape must be a tuple, got: $shape_param"))
         end
         elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
-        shape = collect(Int, shape_param)
+        shape = RowMajorShape(ColMajorShape(shape_param))
         return tile_type!(tt, elem_dtype, shape)
     end
 
@@ -392,22 +496,14 @@ function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
 end
 
 """
-    tile_type_and_shape_for_julia!(ctx, T) -> (TypeId, Vector{Int})
+    tile_type_and_shape_for_julia!(ctx, T) -> (TypeId, TileShape)
 
 Get the Tile IR type and shape for a Julia type.
 """
 function tile_type_and_shape_for_julia!(ctx::CGCtx, @nospecialize(T))
     actual_type = CC.widenconst(T)
     type_id = tile_type_for_julia!(ctx, actual_type)
-
-    # Extract shape from Tile types
-    shape = if actual_type <: Tile
-        collect(Int, size(actual_type))
-    else
-        Int[]
-    end
-
-    return (type_id, shape)
+    return (type_id, RowMajorShape(extract_tile_shape(actual_type)))
 end
 
 #=============================================================================
@@ -491,14 +587,39 @@ end
 #-----------------------------------------------------------------------------
 
 """
-    extract_tile_shape(T) -> Vector{Int}
+    extract_tile_shape(T) -> Union{ColMajorShape, ScalarShape}
 
-Extract shape from a Tile{T, Shape} type, returning Int[] if not a Tile type.
+Extract shape from a Tile{T, Shape} type in Julia's column-major convention.
+Returns ScalarShape for non-Tile types.
 """
 function extract_tile_shape(@nospecialize(T))
+    is_token_type(T) && return ScalarShape()
     T = CC.widenconst(T)
     if T <: Tile
-        return collect(Int, size(T))
+        return ColMajorShape(size(T))
     end
-    Int[]
+    ScalarShape()
+end
+
+#-----------------------------------------------------------------------------
+# Other helpers
+#-----------------------------------------------------------------------------
+
+# Encode characters outside [a-zA-Z0-9_] as _XX hex escapes for PTX/MLIR compatibility.
+sanitize_name(name::String) = replace(name, r"[^a-zA-Z0-9_]" => c -> "_$(string(UInt8(only(c)); base=16, pad=2))")
+
+"""
+    lookup_method_instance(f, argtypes; world) -> MethodInstance
+
+Look up a MethodInstance for a cuTile function, checking the overlay method table first.
+"""
+function lookup_method_instance(@nospecialize(f), @nospecialize(argtypes);
+                                world::UInt=Base.get_world_counter())
+    tt = Base.signature_type(f, argtypes)
+    if !Base.isdispatchtuple(tt)
+        throw(ArgumentError("requires a dispatch tuple, got non-concrete signature"))
+    end
+    @something(match_method_instance(f, argtypes; world, method_table=cuTileMethodTable),
+               match_method_instance(f, argtypes; world),
+               throw(MethodError(f, argtypes)))
 end

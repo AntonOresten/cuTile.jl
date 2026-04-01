@@ -43,6 +43,13 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     for (i, argtype) in enumerate(sci.argtypes)
         argtype_unwrapped = CC.widenconst(argtype)
         if is_ghost_type(argtype_unwrapped)
+            # No kernel parameter, but register a ghost CGVal so codegen
+            # can resolve the value (e.g. get_constant on function singletons)
+            tv = ghost_value(argtype_unwrapped,
+                             Base.issingletontype(argtype_unwrapped) ?
+                                 argtype_unwrapped.instance : nothing)
+            ctx[SlotNumber(i)] = tv
+            ctx[Argument(i)] = tv
             continue
         elseif is_const_arg(i)
             continue  # const arg: no kernel parameter
@@ -93,8 +100,13 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                 throw(IRError("Expected exactly one value for argument $arg_idx, got $(length(values))"))
             end
             val = values[1]
-            type_id = tile_type_for_julia!(ctx, sci.argtypes[arg_idx])
-            tv = CGVal(val, type_id, sci.argtypes[arg_idx])
+            argtype = CC.widenconst(sci.argtypes[arg_idx])
+            type_id = tile_type_for_julia!(ctx, argtype)
+            # Promote scalar kernel args to 0D tile jltype at the boundary.
+            # sci.argtypes retains the Julia signature (Int32), but the IR
+            # body is uniformly tile-typed after scalar_elim_pass!.
+            jltype = argtype <: Number ? Tile{argtype, Tuple{}} : sci.argtypes[arg_idx]
+            tv = CGVal(val, type_id, jltype)
             ctx[SlotNumber(arg_idx)] = tv
             ctx[Argument(arg_idx)] = tv
         end
@@ -109,10 +121,10 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             T = typeof(val)
             type_id = tile_type_for_julia!(ctx, T; throw_error=false)
             if type_id !== nothing
-                # Scalar: emit ConstantOp
+                # Primitive: emit ConstantOp (jltype promoted to 0D tile)
                 bytes = constant_to_bytes(val, T)
                 v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tv = CGVal(v, type_id, T, Int[], nothing, Some(val), nothing)
+                tv = CGVal(v, type_id, Tile{T, Tuple{}}, ScalarShape(), nothing, Some(val), nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)
@@ -134,13 +146,15 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         create_tensor_views!(ctx, arg_idx, argtype, Int[])
     end
 
-    # Create memory ordering token
-    token_type = Token(tt)
-    ctx.token_type = token_type
-    ctx.token = encode_MakeTokenOp!(cb, token_type)
-
-    # Hoist early returns out of IfOp regions (tileiras rejects ReturnOp inside IfOp)
+    # Hoist early returns BEFORE token ordering — hoist_returns! rewrites
+    # ReturnNode terminators to YieldOp, which the token pass then extends.
     hoist_returns!(ctx.sci.entry)
+
+    # Run the pass pipeline (normalize, optimize, token ordering, DCE).
+    run_passes!(sci)
+
+    # Cache the token bytecode type for codegen
+    ctx.token_type = Token(tt)
 
     # Emit the structured IR (uses original Julia SSA indices everywhere)
     emit_block!(ctx, ctx.sci.entry)
@@ -199,10 +213,8 @@ function emit_getfield!(ctx::CGCtx, args, @nospecialize(result_type))
     obj_arg = args[1]
     field_arg = args[2]
 
-    # Extract field name or index
-    field = get_constant(ctx, field_arg)
+    field = @something get_constant(ctx, field_arg) return nothing
 
-    # Try to get the object as a CGVal
     obj_tv = emit_value!(ctx, obj_arg)
 
     # Tuple indexing: extract component by integer index
@@ -238,8 +250,7 @@ function emit_getindex!(ctx::CGCtx, args, @nospecialize(result_type))
     obj_arg = args[1]
     index_arg = args[2]
 
-    # Extract constant index
-    index = get_constant(ctx, index_arg)
+    index = @something get_constant(ctx, index_arg) return nothing
     index isa Integer || return nothing
 
     # Try to get the object as a CGVal
@@ -278,25 +289,37 @@ A `YieldOp` is emitted with the return value(s).
 """
 function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
                           block_args::Vector{Value}, block_type_ids::Vector{TypeId})
+    F = typeof(func)
+    if !is_ghost_type(F)
+        throw(IRError("emit_subprogram!: function argument $(F) (sizeof=$(sizeof(F))) is not " *
+                      "a zero-size type. All non-tile arguments must be zero-size."))
+    end
+
     # 1. Resolve method instance
     argtuple = Tuple{arg_types...}
     world = ctx.cache.world
-    mi = @something(
-        match_method_instance(func, argtuple;
-                              world, method_table=cuTileMethodTable),
-        match_method_instance(func, argtuple; world),
-        error("No method found for $func($(join(arg_types, ", ")))")
-    )
+    mi = lookup_method_instance(func, argtuple; world)
 
     # 2. Compile through cuTile pipeline (cached)
     if !haskey(ctx.cache, mi)
         error("Expected $func($(join(arg_types, ", "))) to be cached already by inference.")
     end
-    sci, _, _ = emit_ir(ctx.cache, mi)
+    # Suppress compile_hook to avoid @device_code_tiled treating
+    # region bodies (e.g. reduce combiners) as standalone entries.
+    old_hook = compile_hook[]
+    compile_hook[] = nothing
+    sci, _, _ = try
+        emit_structured!(ctx.cache, mi)
+    finally
+        compile_hook[] = old_hook
+    end
+
+    # 2b. Run the pass pipeline on subprogram IR
+    run_passes!(sci)
 
     # 3. Create sub-context
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
-                      ctx.token, ctx.token_type,
+                      ctx.token_type,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)
 
@@ -304,6 +327,10 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     #    consume block_args sequentially.
     n_argtypes = length(sci.argtypes)
     block_idx = 1  # cursor into block_args
+
+    # Helper to promote scalar arg types to 0D tile at the boundary.
+    # sci.argtypes retains the Julia signature; the IR body is tile-typed.
+    _arg_jltype(T) = let U = CC.widenconst(T); U <: Number ? Tile{U, Tuple{}} : T end
 
     if mi.def.isva
         # Varargs: fixed argtypes are 1:n_argtypes-1, last is the varargs tuple.
@@ -314,7 +341,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
             if is_ghost_type(CC.widenconst(argtype))
                 sub_ctx[Argument(i)] = ghost_value(argtype)
             else
-                sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], arg_types[block_idx])
+                sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], _arg_jltype(arg_types[block_idx]))
                 block_idx += 1
             end
         end
@@ -322,7 +349,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
         va_offset = n_argtypes + length(block_args)  # high indices to avoid collision
         tuple_components = Any[]
         for j in block_idx:length(block_args)
-            sub_ctx[Argument(va_offset + j - block_idx + 1)] = CGVal(block_args[j], block_type_ids[j], arg_types[j])
+            sub_ctx[Argument(va_offset + j - block_idx + 1)] = CGVal(block_args[j], block_type_ids[j], _arg_jltype(arg_types[j]))
             push!(tuple_components, Argument(va_offset + j - block_idx + 1))
         end
         constants = Vector{Any}(fill(nothing, length(tuple_components)))
@@ -333,7 +360,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
             if is_ghost_type(CC.widenconst(argtype))
                 sub_ctx[Argument(i)] = ghost_value(argtype)
             else
-                sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], arg_types[block_idx])
+                sub_ctx[Argument(i)] = CGVal(block_args[block_idx], block_type_ids[block_idx], _arg_jltype(arg_types[block_idx]))
                 block_idx += 1
             end
         end
@@ -343,7 +370,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     emit_block!(sub_ctx, sci.entry; skip_terminator=true)
 
     # 6. Extract return value and yield
-    ret = sci.entry.terminator::ReturnNode
+    ret = terminator(sci.entry)::ReturnNode
     tv = emit_value!(sub_ctx, ret.val)
     if tv.tuple !== nothing
         # Tuple return: resolve each component to a concrete Value

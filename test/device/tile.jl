@@ -867,3 +867,302 @@ end
         end
     end
 end
+
+@testset "matmul" begin
+    @testset "basic matmul" begin
+        function matmul_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                               c::ct.TileArray{Float32,2})
+            bidx = ct.bid(1)
+            bidy = ct.bid(2)
+            # Load tiles: a is (M, K), b is (K, N)
+            tile_a = ct.load(a, (bidx, 1), (32, 16))
+            tile_b = ct.load(b, (1, bidy), (16, 32))
+            # matmul: c = a @ b (using * operator)
+            result = tile_a * tile_b
+            ct.store(c, (bidx, bidy), result)
+            return
+        end
+
+        M, K, N = 64, 16, 64
+        a = CUDA.rand(Float32, M, K)
+        b = CUDA.rand(Float32, K, N)
+        c = CUDA.zeros(Float32, M, N)
+
+        grid_x = cld(M, 32)
+        grid_y = cld(N, 32)
+        ct.launch(matmul_kernel, (grid_x, grid_y, 1), a, b, c)
+
+        # Verify against CPU reference
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        c_ref = a_cpu * b_cpu
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "vec-mat outer product" begin
+        function outer_product_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,2},
+                                      c::ct.TileArray{Float32,2})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (16,))
+            tile_b = ct.load(b, bidx, (1, 16))
+            result = tile_a * tile_b
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, N = 16, 16
+        a = CUDA.rand(Float32, M)
+        b = CUDA.rand(Float32, 1, N)
+        c = CUDA.zeros(Float32, M, N)
+
+        ct.launch(outer_product_kernel, 1, a, b, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        # Julia: (M,) * (1, N) = (M, 1) * (1, N) = (M, N)
+        c_ref = reshape(a_cpu, :, 1) * b_cpu
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "mat-vec" begin
+        function matvec_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1},
+                               c::ct.TileArray{Float32,1})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (32, 16))
+            tile_b = ct.load(b, bidx, (16,))
+            result = tile_a * tile_b
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, K = 32, 16
+        a = CUDA.rand(Float32, M, K)
+        b = CUDA.rand(Float32, K)
+        c = CUDA.zeros(Float32, M)
+
+        ct.launch(matvec_kernel, 1, a, b, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        c_ref = a_cpu * b_cpu
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "batched matmul with trailing batch broadcast" begin
+        function batched_matmul_kernel(a::ct.TileArray{Float32,3}, b::ct.TileArray{Float32,3},
+                                       c::ct.TileArray{Float32,3})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (32, 16, 1))
+            tile_b = ct.load(b, bidx, (16, 32, 4))
+            result = tile_a * tile_b
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, K, N, B = 32, 16, 32, 4
+        a = CUDA.rand(Float32, M, K, 1)
+        b = CUDA.rand(Float32, K, N, B)
+        c = CUDA.zeros(Float32, M, N, B)
+
+        ct.launch(batched_matmul_kernel, 1, a, b, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        # Reference: broadcast batch dim and matmul per batch
+        a_bc = repeat(a_cpu, 1, 1, B)
+        c_ref = similar(c_cpu)
+        for i in 1:B
+            c_ref[:, :, i] = a_bc[:, :, i] * b_cpu[:, :, i]
+        end
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "multi-block vec-mat" begin
+        function multi_vecmat_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,2},
+                                     c::ct.TileArray{Float32,2})
+            bidx = ct.bid(1)
+            bidy = ct.bid(2)
+            tile_a = ct.load(a, bidx, (16,))
+            tile_b = ct.load(b, (1, bidy), (1, 32))
+            result = tile_a * tile_b
+            ct.store(c, (bidx, bidy), result)
+            return
+        end
+
+        M, N = 64, 128
+        a = CUDA.rand(Float32, M)
+        b = CUDA.rand(Float32, 1, N)
+        c = CUDA.zeros(Float32, M, N)
+
+        # Each block handles a 16-row chunk of a and a 32-col chunk of b
+        ct.launch(multi_vecmat_kernel, (cld(M, 16), cld(N, 32)), a, b, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        c_ref = reshape(a_cpu, :, 1) * b_cpu
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "multi-block mat-vec" begin
+        function multi_matvec_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1},
+                                     c::ct.TileArray{Float32,1})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (32, 16))
+            tile_b = ct.load(b, 1, (16,))
+            result = tile_a * tile_b
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, K = 128, 16
+        a = CUDA.rand(Float32, M, K)
+        b = CUDA.rand(Float32, K)
+        c = CUDA.zeros(Float32, M)
+
+        ct.launch(multi_matvec_kernel, cld(M, 32), a, b, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        c_ref = a_cpu * b_cpu
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "batched mat-vec (3D × 1D) errors" begin
+        @test_throws cuTile.IRError begin
+            ct.code_tiled(Tuple{ct.TileArray{Float32,3,ct.ArraySpec{3}(16,true)},
+                                ct.TileArray{Float32,1,ct.ArraySpec{1}(16,true)}}) do a, b
+                bidx = ct.bid(1)
+                tile_a = ct.load(a, bidx, (16, 8, 4))
+                tile_b = ct.load(b, bidx, (8,))
+                tile_a * tile_b
+                return
+            end
+        end
+    end
+
+    @testset "4D batched matmul (2 batch dims)" begin
+        function batched_4d_kernel(a::ct.TileArray{Float32,4}, b::ct.TileArray{Float32,4},
+                                   c::ct.TileArray{Float32,4})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (16, 8, 2, 4))
+            tile_b = ct.load(b, bidx, (8, 16, 2, 4))
+            result = tile_a * tile_b
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, K, N, B1, B2 = 16, 8, 16, 2, 4
+        a = CUDA.rand(Float32, M, K, B1, B2)
+        b = CUDA.rand(Float32, K, N, B1, B2)
+        c = CUDA.zeros(Float32, M, N, B1, B2)
+
+        ct.launch(batched_4d_kernel, 1, a, b, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        c_ref = similar(c_cpu)
+        for j in 1:B2, i in 1:B1
+            c_ref[:, :, i, j] = a_cpu[:, :, i, j] * b_cpu[:, :, i, j]
+        end
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "mixed dtype matmul (Float16 × Float32 with explicit convert)" begin
+        function mixed_matmul_kernel(a::ct.TileArray{Float16,2}, b::ct.TileArray{Float32,2},
+                                     c::ct.TileArray{Float32,2})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (32, 16))
+            tile_b = ct.load(b, bidx, (16, 32))
+            # MmaFOp requires matching input types; caller must convert
+            result = convert(ct.Tile{Float32}, tile_a) * tile_b
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, K, N = 32, 16, 32
+        a = CUDA.rand(Float16, M, K)
+        b = CUDA.rand(Float32, K, N)
+        c = CUDA.zeros(Float32, M, N)
+
+        ct.launch(mixed_matmul_kernel, 1, a, b, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        c_cpu = Array(c)
+        c_ref = Float32.(a_cpu) * b_cpu
+
+        @test c_cpu ≈ c_ref rtol=1e-2
+    end
+
+    @testset "muladd mat-vec accumulated" begin
+        function matvec_muladd_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,1},
+                                      bias::ct.TileArray{Float32,1}, c::ct.TileArray{Float32,1})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (32, 16))
+            tile_b = ct.load(b, 1, (16,))
+            tile_bias = ct.load(bias, bidx, (32,))
+            result = muladd(tile_a, tile_b, tile_bias)
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, K = 64, 16
+        a = CUDA.rand(Float32, M, K)
+        b = CUDA.rand(Float32, K)
+        bias = CUDA.rand(Float32, M)
+        c = CUDA.zeros(Float32, M)
+
+        ct.launch(matvec_muladd_kernel, cld(M, 32), a, b, bias, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        bias_cpu = Array(bias)
+        c_cpu = Array(c)
+        c_ref = a_cpu * b_cpu + bias_cpu
+
+        @test c_cpu ≈ c_ref
+    end
+
+    @testset "muladd matmul accumulated" begin
+        function matmul_muladd_kernel(a::ct.TileArray{Float32,2}, b::ct.TileArray{Float32,2},
+                                      bias::ct.TileArray{Float32,2}, c::ct.TileArray{Float32,2})
+            bidx = ct.bid(1)
+            tile_a = ct.load(a, bidx, (32, 16))
+            tile_b = ct.load(b, bidx, (16, 32))
+            tile_bias = ct.load(bias, bidx, (32, 32))
+            result = muladd(tile_a, tile_b, tile_bias)
+            ct.store(c, bidx, result)
+            return
+        end
+
+        M, K, N = 32, 16, 32
+        a = CUDA.rand(Float32, M, K)
+        b = CUDA.rand(Float32, K, N)
+        bias = CUDA.rand(Float32, M, N)
+        c = CUDA.zeros(Float32, M, N)
+
+        ct.launch(matmul_muladd_kernel, 1, a, b, bias, c)
+
+        a_cpu = Array(a)
+        b_cpu = Array(b)
+        bias_cpu = Array(bias)
+        c_cpu = Array(c)
+        c_ref = a_cpu * b_cpu + bias_cpu
+
+        @test c_cpu ≈ c_ref
+    end
+end

@@ -232,8 +232,9 @@ end
             @check "loop iter_values"
             # The store MUST use a column index derived from loopIdx, not the spinloop result
             # After 1→0 index conversion, the store uses (loopIdx - 1)
+            # With row-major Tile IR, indices are reversed: Julia (row, col) → TileIR [col, row]
             @check "[[IDX:%.+]] = subi %loopIdx"
-            @check "store_view_tko{{.*}}[%{{[^,]+}}, [[IDX]]]"
+            @check "store_view_tko{{.*}}[[[IDX]], %{{[^,]+}}]"
             code_tiled(Tuple{ct.TileArray{Float32,2,spec}, ct.TileArray{Int32,1,spec1d},
                            Int32, ct.Constant{Int,4}, ct.Constant{Int,4}}) do DB, Locks, num_iters, GROUP_SIZE_M, TILE_N
                 bid_m = ct.bid(1)
@@ -465,7 +466,7 @@ end
                     pid = ct.bid(1)
                     # Create index tile (simple: just use arange)
                     @check "iota"
-                    indices = ct.arange(16, Int32)
+                    indices = ct.arange(16)
                     # Gather from array
                     @check "offset"
                     @check "load_ptr_tko"
@@ -485,7 +486,7 @@ end
                     tile = ct.load(a, pid, (16,))
                     # Create index tile (simple: just use arange)
                     @check "iota"
-                    indices = ct.arange(16, Int32)
+                    indices = ct.arange(16)
                     # Scatter to array
                     @check "offset"
                     @check "store_ptr_tko"
@@ -502,7 +503,7 @@ end
                     pid = ct.bid(1)
                     # Use Int (Int64) to test type conversion
                     @check "iota"
-                    indices = ct.arange(16, Int)
+                    indices = ct.arange(16; dtype=Int)
                     # Should convert to Int32 internally
                     @check "trunci"
                     @check "offset"
@@ -522,7 +523,7 @@ end
                     tile = ct.load(a, pid, (16,))
                     # Use Int (Int64) to test type conversion
                     @check "iota"
-                    indices = ct.arange(16, Int)
+                    indices = ct.arange(16; dtype=Int)
                     # Should convert to Int32 internally
                     @check "trunci"
                     @check "offset"
@@ -541,12 +542,14 @@ end
         spec = ct.ArraySpec{1}(16, true)
 
         @testset "binary op type mismatch errors in Julia" begin
-            # This should fail with an IRError, since the intrinsic
-            # is invoked with mismatched types (Int32 + Int64)
+            # addi with mismatched types (Int32 + Int64) should fail if the
+            # result is used. Dead code is removed by DCE before codegen.
             @test_throws ct.IRError code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                 pid = ct.bid(1)  # Int32
                 # Force type mismatch by calling addi with different types
                 result = ct.Intrinsics.addi(pid, Int64(1))
+                # Use the result so DCE doesn't remove it
+                Base.donotdelete(result)
                 return
             end
         end
@@ -618,7 +621,7 @@ end
         @testset "non-power-of-2 arange shape rejected" begin
             @test_throws "arange: tile dimension 1 must be a power of 2, got 7" begin
                 code_tiled(Tuple{}) do
-                    ct.arange(7, Int32)
+                    ct.arange(7)
                 end
             end
         end
@@ -888,8 +891,10 @@ end
     end
 
     @testset "no hints" begin
+        # sm_arch without hints still emits optimization_hints with an empty dict
+        # (matching Python cuTile, which always emits the target architecture).
         @test @filecheck begin
-            @check_not "optimization_hints"
+            @check "optimization_hints=<sm_100 = {}>"
             ct.code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"10.0") do a
                 pid = ct.bid(1)
                 t = ct.load(a, pid, (16,))
@@ -1179,7 +1184,7 @@ end
             @check "optimization_hints = <sm_120 = {latency = 3}>"
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
-                indices = ct.arange(16, Int32)
+                indices = ct.arange(16)
                 tile = ct.gather(a, indices; latency=3)
                 ct.store(b, pid, tile)
                 return nothing
@@ -1194,7 +1199,7 @@ end
             code_tiled(Tuple{ct.TileArray{Float32, 1, spec1d}, ct.TileArray{Float32, 1, spec1d}}; sm_arch=v"12.0") do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
-                indices = ct.arange(16, Int32)
+                indices = ct.arange(16)
                 ct.scatter(b, indices, tile; latency=5)
                 return nothing
             end
@@ -1234,6 +1239,25 @@ end
                 ct.store(b, pid, tile)
                 return
             end
+        end
+    end
+
+    @testset "function singleton argument" begin
+        # Ghost function types (e.g. typeof(+)) passed as kernel arguments
+        # must be registered in the codegen context so that get_constant can
+        # resolve them.
+        @test @filecheck begin
+            @check_label "entry"
+            @check "addf"
+            function _ghost_op_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, op)
+                pid = ct.bid(1)
+                tile_a = ct.load(a, pid, (16,))
+                tile_b = ct.load(b, pid, (16,))
+                result = op.(tile_a, tile_b)
+                ct.store(a, pid, result)
+                return
+            end
+            code_tiled(_ghost_op_kernel, Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec}, typeof(+)})
         end
     end
 end

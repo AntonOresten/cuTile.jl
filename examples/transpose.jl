@@ -11,9 +11,9 @@ function transpose_kernel(x::ct.TileArray{T,2}, y::ct.TileArray{T,2},
                           tm::Int, tn::Int) where {T}
     bidx = ct.bid(1)
     bidy = ct.bid(2)
-    input_tile = ct.load(x, (bidx, bidy), (tm, tn))
+    input_tile = ct.load(x; index=(bidx, bidy), shape=(tm, tn))
     transposed_tile = transpose(input_tile)
-    ct.store(y, (bidy, bidx), transposed_tile)
+    ct.store(y; index=(bidy, bidx), tile=transposed_tile)
     return
 end
 
@@ -54,6 +54,12 @@ end
 
 function verify(data, result)
     @assert Array(result.y) ≈ transpose(Array(data.x))
+end
+
+function metric(data)
+    T = eltype(data.x)
+    # 1 read + 1 write
+    return 2 * data.m * data.n * sizeof(T), "GB/s"
 end
 
 #=============================================================================
