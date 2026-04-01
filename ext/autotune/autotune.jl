@@ -106,7 +106,7 @@ function precompile_cfg(@nospecialize(f), cfg, grid_fn::Function, args_fn::Funct
     opts = (sm_arch=sm_arch, opt_level=opt_level, num_ctas=hints.num_ctas, occupancy=hints.occupancy,
             bytecode_version=bytecode_version)
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
-    emit_function(cache, mi; const_argtypes)
+    emit_function!(cache, mi; const_argtypes)
 end
 
 function precompile_candidates(@nospecialize(f), configs::Vector{Any},

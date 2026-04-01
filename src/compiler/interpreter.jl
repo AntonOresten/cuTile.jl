@@ -19,9 +19,12 @@ struct cuTileInterpreter <: CC.AbstractInterpreter
     opt_params::CC.OptimizationParams
 end
 
+using Base.ScopedValues: ScopedValue, with
+const _SCOPED_INF_CACHE = ScopedValue{Vector{CC.InferenceResult}}()
+
 function cuTileInterpreter(cache::CacheView; always_inline::Bool=true)
     method_table = get_method_table_view(cache.world)
-    inf_cache = Vector{CC.InferenceResult}()
+    inf_cache = isassigned(_SCOPED_INF_CACHE) ? _SCOPED_INF_CACHE[] : Vector{CC.InferenceResult}()
     inf_params = CC.InferenceParams()
     opt_params = if always_inline
         CC.OptimizationParams(; inline_cost_threshold=typemax(Int))

@@ -57,7 +57,7 @@ function check_tile_ir_support()
     return VersionNumber(cuda_ver.major, cuda_ver.minor)
 end
 
-const EMIT_CODE_LOCK = ReentrantLock()
+const EMIT_TILE_LOCK = ReentrantLock()
 
 """
     emit_binary!(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
@@ -66,7 +66,7 @@ Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 """
 function emit_binary!(cache::CacheView, mi::Core.MethodInstance;
                       const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    bytecode = lock(EMIT_CODE_LOCK) do
+    bytecode = lock(EMIT_TILE_LOCK) do
         emit_tile!(cache, mi; const_argtypes)
     end
 
