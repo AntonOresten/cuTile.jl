@@ -335,11 +335,25 @@ end
  Rewrite Application
 =============================================================================#
 
-"""Resolve an RHS operand, inserting sub-calls before `ref` as needed."""
-resolve_rhs(driver, block, ref, op::RBind, bindings, typ) = bindings[op.name]
-resolve_rhs(driver, block, ref, op::RConst, bindings, typ) = op.val
-function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, typ)
-    operands = Any[resolve_rhs(driver, block, ref, sub, bindings, typ) for sub in op.operands]
+"""Resolve an RHS operand, inserting sub-calls before `ref` as needed.
+`root_typ` is the type of the original matched instruction — used only for the
+outermost RCall (which replaces the root in-place). Intermediate RCalls infer
+their type from the first SSA operand, since element-wise ops preserve type."""
+resolve_rhs(driver, block, ref, op::RBind, bindings, root_typ) = bindings[op.name]
+resolve_rhs(driver, block, ref, op::RConst, bindings, root_typ) = op.val
+function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, root_typ)
+    operands = Any[resolve_rhs(driver, block, ref, sub, bindings, root_typ) for sub in op.operands]
+    # Infer type from first SSA operand — correct for element-wise ops (addi,
+    # subi, negf, etc.) whose result type matches their operands. Falls back to
+    # root_typ when no SSA operand is available.
+    typ = root_typ
+    for o in operands
+        o isa SSAValue || continue
+        t = value_type(block, o)
+        t === nothing && continue
+        typ = CC.widenconst(t)
+        break
+    end
     inst = insert_before!(block, ref, Expr(:call, op.func, operands...), typ)
     notify_insert!(driver, block, inst)
     SSAValue(inst)
