@@ -145,3 +145,69 @@ end
 end
 
 end
+
+
+@testset "exp2 with flush_to_zero" begin
+    function exp2_ftz_kernel(a::ct.TileArray{Float32, 1}, b::ct.TileArray{Float32, 1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        result = ct.exp2(tile; flush_to_zero=true)
+        ct.store(b, pid, result)
+        return
+    end
+
+    n = 1024
+    tile_size = 16
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float32, n)
+
+    ct.launch(exp2_ftz_kernel, cld(n, tile_size), a, b)
+
+    @test Array(b) ≈ exp2.(Array(a)) rtol=1e-5
+end
+
+
+@testset "truediv" begin
+
+@testset "same shape with ftz and rounding" begin
+    function truediv_kernel(a::ct.TileArray{Float32, 2}, b::ct.TileArray{Float32, 2},
+                            c::ct.TileArray{Float32, 2})
+        pid = ct.bid(1)
+        ta = ct.load(a; index=(Int32(1), pid), shape=(64, 1))
+        tb = ct.load(b; index=(Int32(1), pid), shape=(64, 1))
+        result = ct.truediv(ta, tb; flush_to_zero=true, rounding_mode=ct.Rounding.Approx)
+        ct.store(c; index=(Int32(1), pid), tile=result)
+        return
+    end
+
+    m, n = 64, 32
+    a = CUDA.rand(Float32, m, n) .+ 1.0f0
+    b = CUDA.rand(Float32, m, n) .+ 1.0f0
+    c = CUDA.zeros(Float32, m, n)
+    ct.launch(truediv_kernel, n, a, b, c)
+
+    @test Array(c) ≈ Array(a) ./ Array(b) rtol=1e-2
+end
+
+@testset "broadcasting" begin
+    function truediv_bcast_kernel(a::ct.TileArray{Float32, 2},
+                                  c::ct.TileArray{Float32, 2})
+        pid = ct.bid(1)
+        ta = ct.load(a; index=(Int32(1), pid), shape=(64, 1))
+        col_sum = sum(ta; dims=1)  # (1, 1)
+        result = ct.truediv(ta, col_sum; flush_to_zero=true, rounding_mode=ct.Rounding.Approx)
+        ct.store(c; index=(Int32(1), pid), tile=result)
+        return
+    end
+
+    m, n = 64, 32
+    a = CUDA.rand(Float32, m, n) .+ 1.0f0
+    c = CUDA.zeros(Float32, m, n)
+    ct.launch(truediv_bcast_kernel, n, a, c)
+
+    a_cpu = Array(a)
+    expected = a_cpu ./ sum(a_cpu; dims=1)
+    @test Array(c) ≈ expected rtol=1e-2
+end
+
+end
