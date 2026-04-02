@@ -204,6 +204,7 @@ mutable struct RewriteDriver
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
     constants::Dict{SSAValue, Any}   # SSA → constant value (from propagate_constants)
+    modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
     max_rewrites::Int
 end
 
@@ -448,12 +449,18 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         # Look up live instruction for RFunc interface
         pos = findfirst(==(val.id), block.body.ssa_idxes)
         pos === nothing && return false
-        inst = Instruction(val.id, block.body.stmts[pos], block.body.types[pos])
+        inst = Instruction(val.id, block.body.stmts[pos], block.body.types[pos], block)
         rule.rhs.func(driver.sci, block, inst, match, driver) || return false
         return true
     elseif rule.rhs isa RBind
         # Forwarding: replace all uses of root with the bound value, delete root.
-        # Collect users BEFORE replace_uses! updates their operands.
+        # Mark immediate users as modified — their operands are about to change.
+        # When these are later popped from the worklist without a match, the
+        # driver propagates to THEIR users (see modified check in main loop).
+        # This gives MLIR-style notifyOperationModified cascading.
+        for inst in users(driver.sci.entry, val)
+            push!(driver.modified, SSAValue(inst))
+        end
         add_users_to_worklist!(driver, val)
         replace_uses!(driver.sci.entry, val, match.bindings[rule.rhs.name])
         erase_op!(driver, entry)
@@ -524,7 +531,7 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         end
     end
 
-    driver = RewriteDriver(sci, defs, dispatch, wl, constants, max_rewrites)
+    driver = RewriteDriver(sci, defs, dispatch, wl, constants, Set{SSAValue}(), max_rewrites)
 
     num_rewrites = 0
     while !isempty(driver.worklist) && num_rewrites < driver.max_rewrites
@@ -553,15 +560,33 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
 
         # Look up applicable rules by function
         applicable = get(driver.dispatch, entry.func, nothing)
-        applicable === nothing && continue
+        matched = false
+        if applicable !== nothing
+            for rule in applicable
+                m = pattern_match(driver, val, rule.lhs)
+                m === nothing && continue
+                rule.guard !== nothing && !rule.guard(m, driver) && continue
+                if apply_rewrite!(driver, entry.block, val, rule, m) === false
+                    continue  # RFunc declined — try next rule
+                end
+                num_rewrites += 1
+                matched = true
+                break
+            end
+        end
 
-        for rule in applicable
-            m = pattern_match(driver, val, rule.lhs)
-            m === nothing && continue
-            rule.guard !== nothing && !rule.guard(m, driver) && continue
-            apply_rewrite!(driver, entry.block, val, rule, m)
-            num_rewrites += 1
-            break
+        # Operand-modified propagation (MLIR notifyOperationModified equivalent):
+        # if this instruction's operands were changed by a forwarding rewrite but
+        # no rule fired here, propagate to users — the operand change may enable
+        # new matches further up the use chain. Mark users as modified too so the
+        # cascade continues through the fixpoint.
+        if !matched && val in driver.modified
+            delete!(driver.modified, val)
+            for inst in users(driver.sci.entry, val)
+                uv = SSAValue(inst)
+                push!(driver.modified, uv)
+                haskey(driver.defs, uv) && push!(driver.worklist, uv)
+            end
         end
     end
 end
