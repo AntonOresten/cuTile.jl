@@ -1657,6 +1657,19 @@ function encode_ExtIOp!(cb::CodeBuilder, result_type::TypeId, source::Value;
 end
 
 """
+    encode_BitcastOp!(cb, result_type, source) -> Value
+
+Bitcast: reinterpret bits as a different type (e.g., Float32 → Int32).
+Source and target must have the same bitwidth. Opcode: 9
+"""
+function encode_BitcastOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.BitcastOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
     encode_BroadcastOp!(cb, result_type, source) -> Value
 
 Broadcast a scalar or smaller tile to a larger tile shape.

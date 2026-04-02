@@ -58,6 +58,9 @@ const INTRINSIC_RULES = RewriteRule[
     @rewrite Core.Intrinsics.ne_float(~x, ~y) =>
             Intrinsics.cmpf(~x, ~y, $(ComparisonPredicate.NotEqual))
 
+    # Bitcast (reinterpret): Core.Intrinsics.bitcast(T, x) → Intrinsics.bitcast(x, T)
+    @rewrite Core.Intrinsics.bitcast(~T, ~x) => Intrinsics.bitcast(~x, ~T)
+
     # Builtins
     @rewrite (===)(~x, ~y) =>
             Intrinsics.cmpi(~x, ~y, $(ComparisonPredicate.Equal), $(Signedness.Signed))

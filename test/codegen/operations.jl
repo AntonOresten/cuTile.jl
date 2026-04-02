@@ -832,7 +832,44 @@ end
  8.4 Conversions
 =========================================================================#
 @testset "Conversions" begin
-    # TODO: bitcast - reinterpret bits as different type
+    @testset "bitcast" begin
+        # Int32 -> UInt32 (same Tile IR type I32): no bitcast op emitted
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{UInt32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check_not "bitcast"
+                ct.store(b, pid, reinterpret.(UInt32, tile))
+                return
+            end
+        end
+
+        # Float32 -> Int32 (different Tile IR types): bitcast op emitted
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "bitcast"
+                ct.store(b, pid, reinterpret.(Int32, tile))
+                return
+            end
+        end
+
+        # Int32 -> Float32 (different Tile IR types): bitcast op emitted
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "bitcast"
+                ct.store(b, pid, reinterpret.(Float32, tile))
+                return
+            end
+        end
+    end
+
     # TODO: exti - sign/zero extend integer
     # TODO: ftoi - float to integer
     # TODO: itof - integer to float
