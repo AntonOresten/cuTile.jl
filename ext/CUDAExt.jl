@@ -57,6 +57,8 @@ function check_tile_ir_support()
     return VersionNumber(cuda_ver.major, cuda_ver.minor)
 end
 
+const EMIT_TILE_LOCK = ReentrantLock()
+
 """
     emit_binary!(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
 
@@ -64,7 +66,9 @@ Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 """
 function emit_binary!(cache::CacheView, mi::Core.MethodInstance;
                       const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    bytecode = emit_tile!(cache, mi; const_argtypes)
+    bytecode = lock(EMIT_TILE_LOCK) do
+        emit_tile!(cache, mi; const_argtypes)
+    end
 
     ci = get(cache, mi)
     res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
@@ -260,5 +264,7 @@ to_tile_arg(arr::AbstractArray) = TileArray(arr)
 
 # Tiled Broadcast — TiledStyle wins over CuArrayStyle
 BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.TiledStyle{max(N,M)}()
+
+include("autotune/autotune.jl")
 
 end

@@ -68,4 +68,6 @@ include("mapreduce.jl")
 public launch, Tiled, ByTarget, @compiler_options, @fpmode, @.
 launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
 
+include("Experimental.jl")
+
 end # module cuTile
