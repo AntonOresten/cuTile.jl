@@ -306,6 +306,42 @@ function encode_AssertOp!(cb::CodeBuilder, condition::Value, message::String)
 end
 
 """
+    encode_PrintTkoOp!(cb, token_type, args; token, format_string) -> Union{Value, Nothing}
+
+Print a formatted string with optional token ordering.
+Opcode: 85
+
+Returns the result token for synchronization (v13.2+), or nothing (v13.1).
+"""
+function encode_PrintTkoOp!(cb::CodeBuilder,
+                             token_type::Union{TypeId, Nothing},
+                             args::Vector{Value};
+                             token::Union{Value, Nothing}=nothing,
+                             format_string::String)
+    encode_varint!(cb.buf, Opcode.PrintOp)
+    # Variadic result types: [token] in v13.2+, empty in v13.1
+    if cb.version >= v"13.2"
+        encode_typeid_seq!(cb.buf, [token_type])
+    else
+        encode_typeid_seq!(cb.buf, TypeId[])
+    end
+    # Flags: bit 0 = has input token (v13.2+ only)
+    if cb.version >= v"13.2"
+        encode_varint!(cb.buf, token !== nothing ? 1 : 0)
+    end
+    # Attributes: format string
+    encode_opattr_str!(cb, format_string)
+    # Operands: sized variadic args + optional token
+    encode_sized_operands!(cb.buf, args)
+    if cb.version >= v"13.2"
+        encode_optional_operand!(cb.buf, token)
+    end
+    num_results = cb.version >= v"13.2" ? 1 : 0
+    result = new_op!(cb, num_results)
+    return result  # Value for v13.2+, nothing for v13.1
+end
+
+"""
     encode_AssumeOp!(cb, result_type, value, predicate) -> Value
 
 Create an assume operation that annotates a value with a predicate.

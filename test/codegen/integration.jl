@@ -588,7 +588,8 @@ end
             @test_throws "Unsupported function call during Tile IR compilation" begin
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                     tile = ct.load(a, ct.bid(1), (16,))
-                    print(tile)
+                    # write() has no overlay — should fail as unsupported
+                    write(stdout, tile)
                     return
                 end
             end

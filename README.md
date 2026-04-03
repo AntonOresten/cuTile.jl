@@ -250,6 +250,23 @@ ct.scatter(arr, indices, tile; mask=active_mask)
 All atomics accept `memory_order` (default: `ct.MemoryOrder.AcqRel`) and
 `memory_scope` (default: `ct.MemScope.Device`) keyword arguments.
 
+### Debugging
+| Operation | Description |
+|-----------|-------------|
+| `print(args...)` | Print values (Base overlay) |
+| `println(args...)` | Print values with newline (Base overlay) |
+
+Standard Julia `print`/`println` work inside kernels. String constants and tiles
+can be mixed freely; format specifiers are inferred from element types at compile
+time. String interpolation is supported.
+
+```julia
+println("Block ", ct.bid(1), ": tile=", tile)
+println("result=$result")  # string interpolation
+```
+
+This is a debugging aid and is not optimized for performance.
+
 
 ## Differences from cuTile Python
 

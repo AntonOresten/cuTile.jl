@@ -112,6 +112,35 @@ end
 
 
 #=============================================================================
+ Printing
+=============================================================================#
+
+# Override all print/println entry points from coreio.jl to bypass stdout
+# and route directly to the print_tko Tile IR instruction.
+# Uses @consistent_overlay (not @overlay) because print has side effects.
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.print(x) =
+    Intrinsics.print_tko(x)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.print(x1, x2) =
+    Intrinsics.print_tko(x1, x2)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.print(xs...) =
+    Intrinsics.print_tko(xs...)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println() =
+    Intrinsics.print_tko("\n")
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println(x) =
+    Intrinsics.print_tko(x, "\n")
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println(x1, x2) =
+    Intrinsics.print_tko(x1, x2, "\n")
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println(xs...) =
+    Intrinsics.print_tko(xs..., "\n")
+
+# String interpolation support: route string() to format_string intrinsic.
+# For all-constant args, the interpreter constant-folds via :foldable effects.
+# For args containing Tiles, the format_string intrinsic is emitted in the IR
+# and later fused into print_tko by the print fusion pass.
+@overlay Base.string(xs...) = Intrinsics.format_string(xs...)
+
+
+#=============================================================================
  Tile Constructors
 =============================================================================#
 

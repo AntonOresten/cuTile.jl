@@ -27,11 +27,13 @@ struct PBind <: PatternNode; name::Symbol; end
 struct PTypedBind <: PatternNode; name::Symbol; type::Type; end
 struct POneUse <: PatternNode; inner::PatternNode; end
 struct PLiteral <: PatternNode; val::Any; end
+struct PSplat <: PatternNode; name::Symbol; end  # ~x... — captures remaining operands
 
 abstract type RewriteNode end
 struct RCall <: RewriteNode; func::Any; operands::Vector{RewriteNode}; end
 struct RBind <: RewriteNode; name::Symbol; end
 struct RConst <: RewriteNode; val::Any; end
+struct RSplat <: RewriteNode; name::Symbol; end  # ~x... — expands splat binding
 
 """
     RFunc(func)
@@ -117,6 +119,15 @@ function compile_lhs(ex)
     if ex isa Expr && ex.head === :$
         return :(PLiteral($(ex.args[1])))
     end
+    # ~x... on the LHS: splat capture of remaining operands
+    # Julia parses `~x...` as Expr(:..., Expr(:call, :~, :x))
+    if ex isa Expr && ex.head === :... && length(ex.args) == 1
+        inner = ex.args[1]
+        if inner isa Expr && inner.head === :call && inner.args[1] === :~ && length(inner.args) == 2
+            name = inner.args[2]
+            return :(PSplat($(QuoteNode(name))))
+        end
+    end
     ex isa Expr && ex.head === :call || error("@rewrite LHS: expected call, got $ex")
     f = ex.args[1]
     if f === :~
@@ -133,6 +144,14 @@ end
 function compile_rhs(ex)
     if ex isa Expr && ex.head === :$
         return :(RConst($(ex.args[1])))
+    end
+    # ~x... on the RHS: expand splat binding
+    if ex isa Expr && ex.head === :... && length(ex.args) == 1
+        inner = ex.args[1]
+        if inner isa Expr && inner.head === :call && inner.args[1] === :~ && length(inner.args) == 2
+            name = inner.args[2]
+            return :(RSplat($(QuoteNode(name))))
+        end
     end
     ex isa Expr && ex.head === :call || error("@rewrite RHS: expected call or \$const, got $ex")
     f = ex.args[1]
@@ -283,13 +302,22 @@ function pattern_match(driver::RewriteDriver, @nospecialize(val), pat::PCall,
 
     if entry.func === pat.func
         ops = def_operands(entry)
-        if length(ops) == length(pat.operands)
+        has_splat = !isempty(pat.operands) && last(pat.operands) isa PSplat
+        n_fixed = has_splat ? length(pat.operands) - 1 : length(pat.operands)
+
+        if has_splat ? length(ops) >= n_fixed : length(ops) == n_fixed
             result = MatchResult(Dict{Symbol,Any}(), SSAValue[val])
-            for (op, sub) in zip(ops, pat.operands)
-                m = pattern_match(driver, op, sub, entry.block)
+            # Match fixed operands
+            for i in 1:n_fixed
+                m = pattern_match(driver, ops[i], pat.operands[i], entry.block)
                 m === nothing && return nothing
                 merge_bindings!(result.bindings, m.bindings) || return nothing
                 append!(result.matched_ssas, m.matched_ssas)
+            end
+            # Capture remaining operands into the splat binding
+            if has_splat
+                splat_name = pat.operands[end]::PSplat
+                result.bindings[splat_name.name] = ops[n_fixed+1:end]
             end
             return result
         end
@@ -343,7 +371,15 @@ their type from the first SSA operand, since element-wise ops preserve type."""
 resolve_rhs(driver, block, ref, op::RBind, bindings, root_typ) = bindings[op.name]
 resolve_rhs(driver, block, ref, op::RConst, bindings, root_typ) = op.val
 function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, root_typ)
-    operands = Any[resolve_rhs(driver, block, ref, sub, bindings, root_typ) for sub in op.operands]
+    # Flatten RSplat nodes: each RSplat expands to multiple operands
+    operands = Any[]
+    for sub in op.operands
+        if sub isa RSplat
+            append!(operands, bindings[sub.name])
+        else
+            push!(operands, resolve_rhs(driver, block, ref, sub, bindings, root_typ))
+        end
+    end
     # Infer type from first SSA operand — correct for element-wise ops (addi,
     # subi, negf, etc.) whose result type matches their operands. Falls back to
     # root_typ when no SSA operand is available.
@@ -477,8 +513,15 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         end
         pos = findfirst(==(val.id), block.body.ssa_idxes)
         typ = block.body.types[pos]
-        operands = Any[resolve_rhs(driver, block, val, op, match.bindings, typ)
-                       for op in rule.rhs.operands]
+        # Build operands, flattening RSplat nodes into multiple operands
+        operands = Any[]
+        for op in rule.rhs.operands
+            if op isa RSplat
+                append!(operands, match.bindings[op.name])
+            else
+                push!(operands, resolve_rhs(driver, block, val, op, match.bindings, typ))
+            end
+        end
         # Recompute pos: resolve_rhs may insert instructions before val
         # (e.g. negf in subf→fma), shifting positions.
         pos = findfirst(==(val.id), block.body.ssa_idxes)

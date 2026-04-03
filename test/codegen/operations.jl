@@ -1860,4 +1860,82 @@ end
  8.12 Miscellaneous
 =========================================================================#
 # TODO: assume - optimization hint
-# TODO: print_tko - debug printing
+
+@testset "print_tko" begin
+    @testset "print constant string" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                @check "print_tko"
+                @check "hello\n"
+                print("hello\n")
+                tile = ct.load(a, bid, (16,))
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "print with float tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "print_tko"
+                @check "value: %f"
+                print("value: ", tile)
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "println with tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "print_tko"
+                @check "value: %f\n"
+                println("value: ", tile)
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "print integer tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "print_tko"
+                @check "%d"
+                print(tile)
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "print multiple tiles" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+                bid = ct.bid(1)
+                ta = ct.load(a, bid, (16,))
+                tb = ct.load(b, bid, (16,))
+                @check "print_tko"
+                @check "x=%f y=%d"
+                print("x=", ta, " y=", tb)
+                ct.store(a, bid, ta)
+                ct.store(b, bid, tb)
+                return
+            end
+        end
+    end
+end

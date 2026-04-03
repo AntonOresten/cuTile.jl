@@ -72,6 +72,8 @@ function classify_memory_op(resolved_func)
     elseif resolved_func === Intrinsics.store_partition_view ||
            resolved_func === Intrinsics.store_ptr_tko
         return MEM_STORE
+    elseif resolved_func === Intrinsics.print_tko
+        return MEM_STORE
     elseif is_atomic_intrinsic(resolved_func)
         return MEM_STORE
     else

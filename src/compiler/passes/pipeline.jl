@@ -5,6 +5,20 @@
 # (alias_analysis.jl, token_order.jl, dce.jl) and are called from run_passes!.
 
 #=============================================================================
+ Print Fusion (rewrite)
+=============================================================================#
+
+# Fuse format_string (from string interpolation overlay) into print_tko.
+# Julia lowers `print("hello $x")` → `print(string("hello ", x))`, which our
+# overlays compile to `print_tko(format_string("hello ", x), "\n")`.
+# This rule inlines format_string's args into the print_tko call.
+
+const PRINT_FUSION_RULES = RewriteRule[
+    @rewrite Intrinsics.print_tko(Intrinsics.format_string(~parts...), ~rest...) =>
+             Intrinsics.print_tko(~parts..., ~rest...)
+]
+
+#=============================================================================
  FMA Fusion (rewrite)
 =============================================================================#
 
@@ -286,6 +300,8 @@ and subprogram compilation.
 """
 function run_passes!(sci::StructuredIRCode)
     canonicalize!(sci)
+
+    rewrite_patterns!(sci, PRINT_FUSION_RULES)
 
     constants = propagate_constants(sci)
     rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
