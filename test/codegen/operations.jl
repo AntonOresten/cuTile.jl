@@ -1058,11 +1058,44 @@ end
                 pid = ct.bid(1)
                 acc = zeros(Float32, (16,))
                 @check "for"
-                k = Int32(1)
-                while k <= n
+                for k in Int32(1):n
                     tile = ct.load(a, (pid - Int32(1)) * n + k, (16,))
                     acc = acc + tile
-                    k += Int32(1)
+                end
+                ct.store(b, pid, acc)
+                return
+            end
+        end
+    end
+
+    @testset "for with step (StepRange)" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
+                pid = ct.bid(1)
+                acc = zeros(Float32, (16,))
+                @check "for"
+                for k in Int32(1):Int32(2):n
+                    tile = ct.load(a, k, (16,))
+                    acc = acc + tile
+                end
+                ct.store(b, pid, acc)
+                return
+            end
+        end
+    end
+
+    @testset "for with decrement (StepRange)" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
+                pid = ct.bid(1)
+                acc = zeros(Float32, (16,))
+                # Decrementing StepRange compiles to a generic loop (not ForOp)
+                @check "loop"
+                for k in n:Int32(-1):Int32(1)
+                    tile = ct.load(a, k, (16,))
+                    acc = acc + tile
                 end
                 ct.store(b, pid, acc)
                 return
