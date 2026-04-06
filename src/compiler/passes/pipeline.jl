@@ -328,7 +328,10 @@ function run_passes!(sci::StructuredIRCode)
     rewrite_patterns!(sci, OPTIMIZATION_RULES; constants)
 
     alias_result = alias_analysis_pass!(sci)
+
     token_order_pass!(sci, alias_result)
+
+    licm_pass!(sci)
 
     dce_pass!(sci)
 end
