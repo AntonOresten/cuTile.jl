@@ -387,6 +387,26 @@ end
     @test Array(b) ≈ Array(a)
 end
 
+@testset "Type parameter (auto-wrapped)" begin
+    function vadd_type_param(a, b, c, tile_size::Int, ::Type{T}) where T
+        pid = ct.bid(1)
+        tile_a = ct.load(a; index=pid, shape=(tile_size,))
+        tile_b = ct.load(b; index=pid, shape=(tile_size,))
+        ct.store(c; index=pid, tile=T.(tile_a) + T.(tile_b))
+        return
+    end
+
+    n = 1024
+    tile_size = 32
+    a = CUDA.rand(Float32, n)
+    b = CUDA.rand(Float32, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_type_param, cld(n, tile_size), a, b, c, ct.Constant(tile_size), Float32)
+
+    @test Array(c) ≈ Array(a) + Array(b)
+end
+
 end
 
 @testset "TileArray auto-conversion" begin

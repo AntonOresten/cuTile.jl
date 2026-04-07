@@ -82,7 +82,7 @@ Returns `(stripped, nothing)` when no Constant types are present.
 function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
     params = argtypes isa DataType ? argtypes.parameters :
              argtypes isa Tuple ? argtypes : fieldtypes(argtypes)
-    has_consts = any(T -> T <: Constant, params)
+    has_consts = any(T -> T <: Constant || CC.isconstType(T), params)
     stripped_params = map(params) do T
         T <: Constant ? constant_eltype(T) : T
     end
@@ -90,7 +90,13 @@ function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
     const_argtypes = if has_consts
         cats = Any[CC.Const(f)]
         for T in params
-            push!(cats, T <: Constant ? CC.Const(constant_value(T)) : T)
+            if T <: Constant
+                push!(cats, CC.Const(constant_value(T)))
+            elseif CC.isconstType(T)
+                push!(cats, CC.Const(T.parameters[1]))
+            else
+                push!(cats, T)
+            end
         end
         cats
     else

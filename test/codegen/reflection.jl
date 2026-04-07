@@ -105,12 +105,12 @@ end
     end
 end
 
-@testset "Constant Type args" begin
+@testset "Type args" begin
     const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
 
     @test ct.Constant(Int) isa ct.Constant{Type{Int}, Int}
 
-    @testset "code_tiled with Constant Type parameter" begin
+    @testset "code_tiled with Type parameter" begin
         function reflect_type_param(a, b, c, tile_size::Int, ::Type{T}) where T
             pid = ct.bid(1)
             tile_a = ct.load(a; index=pid, shape=(tile_size,))
@@ -121,7 +121,7 @@ end
 
         ConstTypeTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
                             ct.TileArray{Float32,1,const_spec}, ct.Constant{Int64, 16},
-                            ct.Constant{Type{Float32}, Float32}}
+                            Type{Float32}}
 
         @test @filecheck begin
             @check "load_view_tko"

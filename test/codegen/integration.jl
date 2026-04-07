@@ -1284,7 +1284,7 @@ end
             @check "store_view_tko"
             code_tiled(_type_param_kernel,
                        Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec},
-                             ct.Constant{Int,16}, ct.Constant{Type{Float32},Float32}})
+                             ct.Constant{Int,16}, Type{Float32}})
         end
     end
 end

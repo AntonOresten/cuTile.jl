@@ -257,6 +257,7 @@ Other values pass through unchanged.
 """
 to_tile_arg(x) = x
 to_tile_arg(arr::AbstractArray) = TileArray(arr)
+to_tile_arg(t::Type) = Constant(t)
 
 # Tiled Broadcast — TiledStyle wins over CuArrayStyle
 BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.TiledStyle{max(N,M)}()
