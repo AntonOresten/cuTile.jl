@@ -115,13 +115,13 @@ end
             pid = ct.bid(1)
             tile_a = ct.load(a; index=pid, shape=(tile_size,))
             tile_b = ct.load(b; index=pid, shape=(tile_size,))
-            ct.store(c; index=pid, tile=tile_a + tile_b)
+            ct.store(c; index=pid, tile=tile_a + tile_b + zeros(T, (tile_size,)))
             return
         end
 
         ConstTypeTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
                             ct.TileArray{Float32,1,const_spec}, ct.Constant{Int64, 16},
-                            ct.Constant{Type{Nothing}, Nothing}}
+                            ct.Constant{Type{Float32}, Float32}}
 
         @test @filecheck begin
             @check "load_view_tko"
