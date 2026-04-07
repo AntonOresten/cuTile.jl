@@ -138,7 +138,6 @@ Assert that the intrinsic returned a type compatible with what the IR expects.
 function validate_result_type(@nospecialize(result), @nospecialize(expected_type), @nospecialize(func))
     result === nothing && return  # void return
     result isa CGVal || return
-
     actual = CC.widenconst(result.jltype)
     expected = CC.widenconst(expected_type)
 
