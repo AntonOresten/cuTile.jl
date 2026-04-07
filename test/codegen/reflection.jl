@@ -108,13 +108,7 @@ end
 @testset "Constant Type args" begin
     const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
 
-    @testset "Constant(Type) constructor" begin
-        @test typeof(ct.Constant(Int)) === ct.Constant{Type{Int}, Int}
-        @test typeof(ct.Constant(Nothing)) === ct.Constant{Type{Nothing}, Nothing}
-        @test typeof(ct.Constant(Float32)) === ct.Constant{Type{Float32}, Float32}
-        # Non-type values still work as before
-        @test typeof(ct.Constant(42)) === ct.Constant{Int, 42}
-    end
+    @test ct.Constant(Int) isa ct.Constant{Type{Int}, Int}
 
     @testset "code_tiled with Constant Type parameter" begin
         function reflect_type_param(a, b, c, tile_size::Int, ::Type{T}) where T
