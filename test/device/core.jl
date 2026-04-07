@@ -398,13 +398,13 @@ end
 
     n = 1024
     tile_size = 32
-    a = CUDA.rand(Float32, n)
-    b = CUDA.rand(Float32, n)
+    a = CUDA.rand(Float16, n)
+    b = CUDA.rand(Float16, n)
     c = CUDA.zeros(Float32, n)
 
     ct.launch(vadd_type_param, cld(n, tile_size), a, b, c, ct.Constant(tile_size), Float32)
 
-    @test Array(c) ≈ Array(a) + Array(b)
+    @test Array(c) ≈ Float32.(Array(a)) + Float32.(Array(b))
 end
 
 end
