@@ -104,3 +104,36 @@ end
         end
     end
 end
+
+@testset "Constant Type args" begin
+    const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
+
+    @testset "Constant(Type) constructor" begin
+        @test typeof(ct.Constant(Int)) === ct.Constant{Type{Int}, Int}
+        @test typeof(ct.Constant(Nothing)) === ct.Constant{Type{Nothing}, Nothing}
+        @test typeof(ct.Constant(Float32)) === ct.Constant{Type{Float32}, Float32}
+        # Non-type values still work as before
+        @test typeof(ct.Constant(42)) === ct.Constant{Int, 42}
+    end
+
+    @testset "code_tiled with Constant Type parameter" begin
+        function reflect_type_param(a, b, c, tile_size::Int, ::Type{T}) where T
+            pid = ct.bid(1)
+            tile_a = ct.load(a; index=pid, shape=(tile_size,))
+            tile_b = ct.load(b; index=pid, shape=(tile_size,))
+            ct.store(c; index=pid, tile=tile_a + tile_b)
+            return
+        end
+
+        ConstTypeTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
+                            ct.TileArray{Float32,1,const_spec}, ct.Constant{Int64, 16},
+                            ct.Constant{Type{Nothing}, Nothing}}
+
+        @test @filecheck begin
+            @check "load_view_tko"
+            @check "addf"
+            @check "store_view_tko"
+            ct.code_tiled(reflect_type_param, ConstTypeTT)
+        end
+    end
+end

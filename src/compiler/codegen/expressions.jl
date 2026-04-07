@@ -20,6 +20,14 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         # Bounds checking is always disabled in Tile IR kernels.
         # Emit false so IfOps referencing this SSA can resolve the condition.
         return emit_constant!(ctx, false, Bool)
+    elseif expr.head === :static_parameter
+        # Static type parameter reference (e.g., V in `f(::T{V}) where {V}`).
+        # Look up the concrete value from the method's sptypes.
+        idx = expr.args[1]::Int
+        sp = ctx.sci.sptypes[idx]
+        sptyp = sp isa CC.VarState ? sp.typ : sp
+        val = sptyp isa CC.Const ? sptyp.val : CC.widenconst(sptyp)
+        return emit_value!(ctx, val)
     elseif expr.head === :code_coverage_effect
         return nothing
     else

@@ -1263,6 +1263,51 @@ end
 end
 
 #=============================================================================
+ Constant Type Arguments
+=============================================================================#
+
+@testset "Constant Type Arguments" begin
+    spec = ct.ArraySpec{1}(16, true)
+
+    function _type_param_kernel(a, b, tile_size::Int, ::Type{T}) where T
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (tile_size,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    @testset "Type parameter via static_parameter" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "load_view_tko"
+            @check "store_view_tko"
+            code_tiled(_type_param_kernel,
+                       Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec},
+                             ct.Constant{Int,16}, ct.Constant{Type{Nothing},Nothing}})
+        end
+    end
+
+    # Test that Constant(Type) constructor produces correct types
+    function _use_type_param_kernel(a, b, tile_size::Int, ::Type{T}) where T
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (tile_size,))
+        ct.store(b, pid, tile)
+        return
+    end
+
+    @testset "Constant(Type) via convenience constructor" begin
+        @test @filecheck begin
+            @check_label "entry"
+            @check "load_view_tko"
+            @check "store_view_tko"
+            code_tiled(_use_type_param_kernel,
+                       Tuple{ct.TileArray{Float32,1,spec}, ct.TileArray{Float32,1,spec},
+                             ct.Constant{Int,16}, ct.Constant{Type{Float32},Float32}})
+        end
+    end
+end
+
+#=============================================================================
  For Loops
 =============================================================================#
 
