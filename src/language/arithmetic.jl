@@ -52,6 +52,7 @@
 
 # mul_hi (high bits of integer multiply — no Core.Intrinsic equivalent)
 @static if VERSION >= v"1.13-"
+    using Base: mul_hi
     @overlay Base.mul_hi(x::T, y::T) where {T <: Signed} = Intrinsics.mulhii(x, y, Signedness.Signed)
     @overlay Base.mul_hi(x::T, y::T) where {T <: Unsigned} = Intrinsics.mulhii(x, y, Signedness.Unsigned)
 else
