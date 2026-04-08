@@ -192,7 +192,7 @@ end
 
 function prepare(; benchmark::Bool=false,
                   batch::Int=benchmark ? 64 : 2,
-                  factors::NTuple{3,Int}=benchmark ? (8, 8, 16) : (2, 2, 2),
+                  factors::NTuple{3,Int}=benchmark ? (8, 8, 8) : (2, 2, 2),
                   atom_packing_dim::Int=min(64, 2 * prod(factors)))
     n = prod(factors)
     @assert (n * 2) % atom_packing_dim == 0 "N*2 must be divisible by atom_packing_dim"
