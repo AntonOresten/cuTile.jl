@@ -122,7 +122,12 @@ function scalar_elim_block!(block::Block)
     for inst in instructions(block)
         call = resolve_call(block, stmt(inst))
         call === nothing && continue
-        _, ops = call
+        func, ops = call
+
+        # isa is a scalar type check, not a tile operation — its result shape
+        # should not inherit from operands. (On Julia nightly, InferenceCache
+        # interactions can leave isa unresolved in the IR; see _combine_masks.)
+        func === isa && continue
 
         current_type = value_type(inst)
         current_type === nothing && continue

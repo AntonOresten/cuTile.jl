@@ -560,7 +560,7 @@ end
         isdefined(Core, :throw_methoderror) &&
         @testset "mismatched tile shapes with + produces MethodError" begin
             spec2d = ct.ArraySpec{2}(16, true)
-            @test_throws "MethodError during Tile IR compilation" begin
+            @test_throws "Unsupported function call during Tile IR compilation" begin
                 code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
                     pid = ct.bid(1)
                     tile_a = ct.load(a, pid, (4, 8))
@@ -574,7 +574,7 @@ end
         isdefined(Core, :throw_methoderror) &&
         @testset "no matching method produces MethodError" begin
             only_ints(x::Int) = x
-            @test_throws "MethodError during Tile IR compilation" begin
+            @test_throws "Unsupported function call during Tile IR compilation" begin
                 code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
                     tile = ct.load(a, ct.bid(1), (16,))
                     only_ints(tile)
