@@ -129,6 +129,7 @@ uses standard Julia syntax and is overlaid on `Base`.
 
 **Integers:** `Int8`, `UInt8`, `Int16`, `UInt16`, `Int32`, `UInt32`, `Int64`, `UInt64`
 **Floats:** `Float16`, `BFloat16`, `Float32`, `Float64`, `TFloat32`
+**FP8:** `Float8_E4M3FN`, `Float8_E5M2` (requires [DLFP8Types.jl](https://github.com/JuliaGPU/DLFP8Types.jl))
 **Boolean:** `Bool`
 
 `TFloat32` is a 32-bit floating-point type with reduced mantissa precision (10 bits),
@@ -168,7 +169,6 @@ ct.scatter(arr, indices, tile; mask=active_mask)
 | `for i in start:stop` | Counted loops (compiled to Tile IR ForOp) |
 | `for i in start:step:stop` | Stepped loops |
 | `while cond ... end` | While loops |
-| `ifelse.(cond, x, y)` | Element-wise conditional selection |
 
 Standard Julia control flow works inside kernels and is compiled to structured
 Tile IR operations.
@@ -214,6 +214,11 @@ Tile IR operations.
 | `mapreduce(f, op, tile; dims, init)` | Map then reduce |
 | `accumulate(f, tile; dims, init, rev)` | Scan/prefix-sum with arbitrary function |
 
+Most scalar operations listed in this document (arithmetic, math, comparisons, etc.)
+work on both scalars and tiles. Use Julia's broadcast syntax (`.` operator) to apply
+any scalar function element-wise over tiles: `sqrt.(tile)`, `max.(a, b)`,
+`cld.(tile, 4)`, etc.
+
 ### Reductions
 | Operation | Description |
 |-----------|-------------|
@@ -232,41 +237,41 @@ Tile IR operations.
 ### Math
 | Operation | Description |
 |-----------|-------------|
-| `sqrt.(tile)` | Square root |
-| `rsqrt.(tile)` | Reciprocal square root |
-| `exp.(tile)` | Natural exponential |
-| `exp2.(tile)` | Base-2 exponential |
-| `log.(tile)` | Natural logarithm |
-| `log2.(tile)` | Base-2 logarithm |
-| `sin.(tile)`, `cos.(tile)`, `tan.(tile)` | Trigonometric functions |
-| `sinh.(tile)`, `cosh.(tile)`, `tanh.(tile)` | Hyperbolic functions |
-| `fma.(a, b, c)` | Fused multiply-add |
-| `abs.(tile)` | Absolute value |
-| `isnan.(tile)` | NaN test |
-| `max(a, b)`, `min(a, b)` | Maximum/minimum (scalars) |
-| `ceil.(tile)`, `floor.(tile)` | Rounding |
+| `sqrt(x)` | Square root |
+| `rsqrt(x)` | Reciprocal square root |
+| `exp(x)`, `exp2(x)` | Exponential |
+| `log(x)`, `log2(x)` | Logarithm |
+| `sin(x)`, `cos(x)`, `tan(x)` | Trigonometric functions |
+| `sinh(x)`, `cosh(x)`, `tanh(x)` | Hyperbolic functions |
+| `fma(a, b, c)` | Fused multiply-add |
+| `abs(x)` | Absolute value |
+| `isnan(x)` | NaN test |
+| `max(a, b)`, `min(a, b)` | Maximum/minimum |
+| `ceil(x)`, `floor(x)` | Rounding |
 | `ct.@fpmode rounding_mode=ct.Rounding.Approx flush_to_zero=true begin ... end` | Scoped FP rounding mode and flush-to-zero |
 
 ### Comparison
 | Operation | Description |
 |-----------|-------------|
-| `.<`, `.>`, `.<=`, `.>=` | Element-wise comparisons (return `Tile{Bool}`) |
-| `.==`, `.!=` | Element-wise equality |
-| `ifelse.(cond, x, y)` | Conditional selection |
+| `<`, `>`, `<=`, `>=` | Comparison (returns `Bool` tile when broadcast) |
+| `==`, `!=` | Equality |
+| `ifelse(cond, x, y)` | Conditional selection |
 
 ### Type Conversion
 | Operation | Description |
 |-----------|-------------|
 | `convert(Tile{T}, tile)` | Convert element type |
-| `T.(tile)` | Broadcasting conversion (e.g. `Float16.(tile)`) |
+| `T(x)` | Scalar type conversion (e.g. `Float16.(tile)` via broadcast) |
 
-### Integer Arithmetic
+### Integer & Bitwise
 | Operation | Description |
 |-----------|-------------|
 | `cld(a, b)` | Ceiling division |
 | `fld(a, b)` | Floor division |
 | `div(a, b)` | Truncating division |
-| `mul_hi.(tile_a, tile_b)`, `mul_hi(x, y)` | High bits of integer multiply (use `Base.mul_hi` on Julia 1.13+) |
+| `mul_hi(a, b)` | High bits of integer multiply (`Base.mul_hi` on Julia 1.13+) |
+| `~x` | Bitwise NOT |
+| `&`, `\|`, `xor` | Bitwise AND, OR, XOR |
 
 ### Indexing
 | Operation | Description |
