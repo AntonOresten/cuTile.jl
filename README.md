@@ -98,17 +98,17 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 
 | Kernel | Size | Julia | Python | Status |
 |--------|------|-------|--------|--------|
-| Vector Addition | 2^27 f32 | 841 GB/s | 845 GB/s | OK (=) |
-| Matrix Transpose | 8192² f32 | 805 GB/s | 811 GB/s | OK (-1%) |
-| Layer Norm fwd | 4096² f32 | 925 GB/s | 722 GB/s | +28%* |
-| Layer Norm bwd | 4096² f32 | 243 GB/s | 251 GB/s | -3% |
-| Matrix Multiplication | 4096³ f32 | 46.9 TFLOPS | 43.4 TFLOPS | +8%** |
-| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.6 TFLOPS | 30.9 TFLOPS | +9%** |
-| FFT (3-stage Cooley-Tukey) | 1024-pt ×64 c64 | 3263 μs | 3127 μs | -4% |
-| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 19.3 TFLOPS | 20.3 TFLOPS | -5% |
-| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 88.5 TFLOPS | 61.6 TFLOPS | +44%*** |
+| Vector Addition | 2^27 f32 | 842 GB/s | 847 GB/s | OK (=) |
+| Matrix Transpose | 8192² f32 | 813 GB/s | 812 GB/s | OK (=) |
+| Layer Norm fwd | 4096² f32 | 931 GB/s | 716 GB/s | +30%* |
+| Layer Norm bwd | 4096² f32 | 245 GB/s | 250 GB/s | OK (-2%) |
+| Matrix Multiplication | 4096³ f32 | 47.0 TFLOPS | 43.3 TFLOPS | +9%** |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.4 TFLOPS | 30.7 TFLOPS | +9%** |
+| FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 592 μs | 562 μs | OK (+5%) |
+| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 18.8 TFLOPS | 20.3 TFLOPS | -7% |
+| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 89.3 TFLOPS | 63.9 TFLOPS | +40%*** |
 
-\* The pow(x, 2) → mulf(x, x) strength reduction eliminates the expensive
+\* The `pow(x, 2)` → `mulf(x, x)` strength reduction eliminates the expensive
 transcendental in the variance computation. Python still emits `pow`.
 
 \*\* Likely because Julia's `for` loop guards give `tileiras` a guarantee that the
