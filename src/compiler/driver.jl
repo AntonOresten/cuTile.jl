@@ -224,7 +224,7 @@ function emit_structured!(cache::CacheView, mi::Core.MethodInstance;
             for i in eachindex(arg_types)
                 if const_argtypes[i+1] isa CC.Const
                     val = const_argtypes[i+1].val
-                    arg_types[i] = Constant{typeof(val), val}
+                    arg_types[i] = typeof(Constant(val))
                 end
             end
         end
