@@ -210,12 +210,57 @@ const POWER_RULES = RewriteRule[
 ]
 
 #=============================================================================
+ Float Identity Simplification (rewrite)
+=============================================================================#
+
+# Eliminate multiply/add/fma with known constant identity or annihilator values.
+# x * 1 → x, x * 0 → 0, x + 0 → x, fma(1, x, y) → x + y, fma(0, x, y) → y.
+# Enables DCE of dead producers (e.g., entire matmul loop when alpha=0 in GEMM).
+
+# Guard factory: check that a binding resolves to a constant equal to `target`.
+function is_const_val(key::Symbol, target)
+    (match, driver) -> begin
+        v = const_value(driver.constants, match.bindings[key])
+        v !== nothing && v == target
+    end
+end
+
+const FLOAT_IDENTITY_RULES = RewriteRule[
+    # mulf identity: x * 1 → x
+    @rewrite(Intrinsics.mulf(~x, ~y) => ~x, is_const_val(:y, 1))
+    @rewrite(Intrinsics.mulf(~x, ~y) => ~y, is_const_val(:x, 1))
+
+    # mulf annihilator: x * 0 → 0
+    @rewrite(Intrinsics.mulf(~x, ~y) => ~y, is_const_val(:y, 0))
+    @rewrite(Intrinsics.mulf(~x, ~y) => ~x, is_const_val(:x, 0))
+
+    # addf identity: x + 0 → x
+    @rewrite(Intrinsics.addf(~x, ~y) => ~x, is_const_val(:y, 0))
+    @rewrite(Intrinsics.addf(~x, ~y) => ~y, is_const_val(:x, 0))
+
+    # subf identity: x - 0 → x
+    @rewrite(Intrinsics.subf(~x, ~y) => ~x, is_const_val(:y, 0))
+
+    # fma with unit multiplier: fma(1, x, z) → addf(x, z)
+    @rewrite(Intrinsics.fma(~x, ~y, ~z) => Intrinsics.addf(~y, ~z), is_const_val(:x, 1))
+    @rewrite(Intrinsics.fma(~x, ~y, ~z) => Intrinsics.addf(~x, ~z), is_const_val(:y, 1))
+
+    # fma with zero multiplier: fma(0, x, z) → z
+    @rewrite(Intrinsics.fma(~x, ~y, ~z) => ~z, is_const_val(:x, 0))
+    @rewrite(Intrinsics.fma(~x, ~y, ~z) => ~z, is_const_val(:y, 0))
+
+    # fma with zero accumulator: fma(x, y, 0) → mulf(x, y)
+    @rewrite(Intrinsics.fma(~x, ~y, ~z) => Intrinsics.mulf(~x, ~y), is_const_val(:z, 0))
+]
+
+#=============================================================================
  Combined Rule Set
 =============================================================================#
 
 const OPTIMIZATION_RULES = RewriteRule[
     IDENTITY_RULES...,
     ALGEBRA_RULES...,
+    FLOAT_IDENTITY_RULES...,
     FMA_RULES...,
     COMPARISON_RULES...,
     POWER_RULES...,
