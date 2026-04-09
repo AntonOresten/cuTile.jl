@@ -462,6 +462,25 @@ end
     ct.launch(kernel!, 1)
 end
 
+@testset "inlined Unicode operator in debug info" begin
+    # Regression: sanitize_name crashed on Unicode codepoints > 0xFF when emitting
+    # debug info for inlined functions with Unicode names (e.g. →, ⊞).
+    a ⊞ b = a + b
+
+    function unicode_op_kernel(src::ct.TileArray{Float32,1}, dst::ct.TileArray{Float32,1})
+        pid = ct.bid(1)
+        tile = ct.load(src, pid, (16,))
+        ct.store(dst, pid, tile ⊞ tile)
+        return
+    end
+
+    n = 256
+    src = CUDA.rand(Float32, n)
+    dst = CUDA.zeros(Float32, n)
+    ct.launch(unicode_op_kernel, cld(n, 16), src, dst)
+    @test Array(dst) ≈ 2 .* Array(src)
+end
+
 @testset "non-Constant ghost type argument (nothing)" begin
     function ghost_nothing_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1}, ::Nothing)
         pid = ct.bid(1)
