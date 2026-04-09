@@ -199,7 +199,7 @@ function find_or_tune(@nospecialize(f), space::AbstractSearchSpace, rng::Abstrac
     trials = collect(space)
 
     trials = Any[trials...]
-    trials, precompile_error = Base.ScopedValues.with(cuTile._SCOPED_INF_CACHE => CC.InferenceResult[]) do
+    trials, precompile_error = Base.ScopedValues.with(cuTile._SCOPED_INF_CACHE => cuTile.create_inf_cache()) do
         precompile_candidates(f, trials, grid_fn, args_fn;
             sm_arch, opt_level, workers=tuning.precompile_workers)
     end
