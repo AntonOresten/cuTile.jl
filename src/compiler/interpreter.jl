@@ -20,7 +20,7 @@ struct cuTileInterpreter <: CC.AbstractInterpreter
 end
 
 using Base.ScopedValues: ScopedValue, with
-const _SCOPED_INF_CACHE = ScopedValue()
+const _SCOPED_INF_CACHE = ScopedValue{Any}()
 
 create_inf_cache() = @static isdefined(CC, :InferenceCache) ? CC.InferenceCache() : CC.InferenceResult[]
 get_inf_cache() = isassigned(_SCOPED_INF_CACHE) ? _SCOPED_INF_CACHE[] : create_inf_cache()
