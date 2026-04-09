@@ -651,7 +651,7 @@ end
 #-----------------------------------------------------------------------------
 
 # Encode characters outside [a-zA-Z0-9_] as _XX hex escapes for PTX/MLIR compatibility.
-sanitize_name(name::String) = replace(name, r"[^a-zA-Z0-9_]" => c -> "_$(string(UInt8(only(c)); base=16, pad=2))")
+sanitize_name(name::String) = replace(name, r"[^a-zA-Z0-9_]" => c -> "_x$(string(codepoint(only(c)); base=16))_")
 
 """
     lookup_method_instance(f, argtypes; world) -> MethodInstance
