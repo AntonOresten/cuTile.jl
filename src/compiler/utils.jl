@@ -77,9 +77,14 @@ end
 # walk_uses! extensions so that IRStructurizer's uses()/replace_uses! see
 # operands inside cuTile-specific IR nodes.
 IRStructurizer.walk_uses!(f, node::JoinTokensNode) =
-    for i in 1:length(node.tokens); f(IndexedUseRef(node.tokens, i)); end
+    for i in 1:length(node.tokens); f(IRStructurizer.IndexedUseRef(node.tokens, i)); end
 IRStructurizer.walk_uses!(f, ::TokenResultNode) = nothing
 IRStructurizer.walk_uses!(f, ::MakeTokenNode) = nothing
+
+# operands extensions for cuTile-specific IR nodes.
+operands(::Block, s::JoinTokensNode) = s.tokens
+operands(::Block, s::TokenResultNode) = Any[SSAValue(s.mem_op_ssa)]
+operands(::Block, ::MakeTokenNode) = Any[]
 
 
 """
@@ -157,7 +162,7 @@ struct CGVal
     v::Union{Value, Vector{Value}, Nothing}  # Single value, multi-value, or nothing
     type_id::Union{TypeId, Nothing}  # Tile IR type (nothing for lazy refs or multi-value)
     jltype::Any               # Original Julia type
-    shape::TileShape        # Tile shape (ScalarShape for scalars)
+    shape::TileShape        # Tile shape (empty dims for scalars)
     # Lazy argument reference: (arg_idx, [field_indices...])
     # e.g., (1, [2, 1]) means "argument 1, field 2, sub-field 1"
     arg_ref::Union{Tuple{Int, Vector{Int}}, Nothing}
@@ -167,18 +172,18 @@ end
 
 # Convenience constructors for concrete values
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype)) =
-    CGVal(v, type_id, jltype, ScalarShape(), nothing, nothing, nothing)
+    CGVal(v, type_id, jltype, RowMajorShape(()), nothing, nothing, nothing)
 
 CGVal(v::Value, type_id::TypeId, @nospecialize(jltype), shape::TileShape) =
     CGVal(v, type_id, jltype, shape, nothing, nothing, nothing)
 
 # Constructor for multi-value results (from loops, ifs)
 CGVal(v::Vector{Value}, @nospecialize(jltype)) =
-    CGVal(v, nothing, jltype, ScalarShape(), nothing, nothing, nothing)
+    CGVal(v, nothing, jltype, RowMajorShape(()), nothing, nothing, nothing)
 
 # Constructor for lazy argument references
 function arg_ref_value(arg_idx::Int, chain::Vector{Int}, @nospecialize(jltype))
-    CGVal(nothing, nothing, jltype, ScalarShape(), (arg_idx, chain), nothing, nothing)
+    CGVal(nothing, nothing, jltype, RowMajorShape(()), (arg_idx, chain), nothing, nothing)
 end
 
 """
@@ -187,8 +192,8 @@ end
 Create a ghost value (zero-size singleton with no runtime representation).
 Optionally stores a compile-time constant value.
 """
-ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, ScalarShape(), nothing, nothing, nothing)
-ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, ScalarShape(), nothing, Some(constant), nothing)
+ghost_value(@nospecialize(jltype)) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, nothing, nothing)
+ghost_value(@nospecialize(jltype), constant) = CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, Some(constant), nothing)
 
 """
     tuple_value(jltype, component_refs, component_constants) -> CGVal
@@ -203,7 +208,7 @@ function tuple_value(@nospecialize(jltype), component_refs::Vector{Any}, compone
     else
         nothing
     end
-    CGVal(nothing, TypeId(-1), jltype, ScalarShape(), nothing, constant, component_refs)
+    CGVal(nothing, TypeId(-1), jltype, RowMajorShape(()), nothing, constant, component_refs)
 end
 
 """
@@ -220,6 +225,21 @@ Check if a CGVal is a lazy argument reference.
 """
 is_arg_ref(tv::CGVal) = tv.arg_ref !== nothing
 
+
+#=============================================================================
+ FPMode: Floating-point mode for rounding and flush-to-zero
+=============================================================================#
+
+"""
+    FPMode
+
+Active floating-point mode within an `@fpmode` scope. Tracks rounding mode
+and flush-to-zero settings that apply to FP operations during codegen.
+"""
+struct FPMode
+    rounding_mode::Union{RoundingMode.T, Nothing}
+    flush_to_zero::Bool
+end
 
 #=============================================================================
  CGCtx: Compilation context
@@ -273,13 +293,24 @@ mutable struct CGCtx
 
     # Compilation cache (needed for combiner compilation)
     cache::CacheView
+
+    # Active floating-point mode stack (pushed/popped by @fpmode via fpmode_begin/end)
+    fpmode_stack::Vector{FPMode}
+
+    # Debug info emitter (DebugInfoEmitter or nothing)
+    debug_emitter::Any
+
+    # Kernel linkage name (for debug info subprogram)
+    linkage_name::String
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
                  token_type::Union{TypeId, Nothing} = nothing,
                  type_cache::Dict{Type, TypeId} = Dict{Type, TypeId}(),
                  sm_arch::Union{VersionNumber, Nothing} = nothing,
-                 cache::CacheView)
+                 cache::CacheView,
+                 debug_emitter = nothing,
+                 linkage_name::String = "")
     CGCtx(
         Dict{Int, CGVal}(),
         Dict{Int, CGVal}(),
@@ -297,7 +328,21 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         type_cache,
         sm_arch,
         cache,
+        FPMode[],                        # fpmode_stack
+        debug_emitter,
+        linkage_name,
     )
+end
+
+"""
+    current_fpmode(ctx::CGCtx) -> FPMode
+
+Return the active floating-point mode, or a default (no rounding, no FTZ)
+if no `@fpmode` scope is active.
+"""
+function current_fpmode(ctx::CGCtx)
+    isempty(ctx.fpmode_stack) && return FPMode(nothing, false)
+    return ctx.fpmode_stack[end]
 end
 
 
@@ -451,30 +496,30 @@ end
 function _tile_type_for_julia!(tt::TypeTable, @nospecialize(T::Type))
     # Scalar types -> 0-D tile
     if T === Bool
-        return tile_type!(tt, I1(tt), ScalarShape())
+        return tile_type!(tt, I1(tt), RowMajorShape(()))
     elseif T === Int8 || T === UInt8
-        return tile_type!(tt, I8(tt), ScalarShape())
+        return tile_type!(tt, I8(tt), RowMajorShape(()))
     elseif T === Int16 || T === UInt16
-        return tile_type!(tt, I16(tt), ScalarShape())
+        return tile_type!(tt, I16(tt), RowMajorShape(()))
     elseif T === Int32 || T === UInt32
-        return tile_type!(tt, I32(tt), ScalarShape())
+        return tile_type!(tt, I32(tt), RowMajorShape(()))
     elseif T === Int64 || T === UInt64
-        return tile_type!(tt, I64(tt), ScalarShape())
+        return tile_type!(tt, I64(tt), RowMajorShape(()))
     elseif T === Float16
-        return tile_type!(tt, F16(tt), ScalarShape())
+        return tile_type!(tt, F16(tt), RowMajorShape(()))
     elseif T === BFloat16
-        return tile_type!(tt, BF16(tt), ScalarShape())
+        return tile_type!(tt, BF16(tt), RowMajorShape(()))
     elseif T === Float32
-        return tile_type!(tt, F32(tt), ScalarShape())
+        return tile_type!(tt, F32(tt), RowMajorShape(()))
     elseif T === Float64
-        return tile_type!(tt, F64(tt), ScalarShape())
+        return tile_type!(tt, F64(tt), RowMajorShape(()))
     end
 
     # Pointers -> 0-D tile of pointer type
     if T <: Ptr
         elem_dtype = julia_to_tile_dtype!(tt, eltype(T))
         ptr_type = pointer_type!(tt, elem_dtype)
-        return tile_type!(tt, ptr_type, ScalarShape())
+        return tile_type!(tt, ptr_type, RowMajorShape(()))
     end
 
     # Tile{T, Shape} -> tile type with shape
@@ -587,18 +632,18 @@ end
 #-----------------------------------------------------------------------------
 
 """
-    extract_tile_shape(T) -> Union{ColMajorShape, ScalarShape}
+    extract_tile_shape(T) -> Union{ColMajorShape, RowMajorShape}
 
 Extract shape from a Tile{T, Shape} type in Julia's column-major convention.
-Returns ScalarShape for non-Tile types.
+Returns RowMajorShape(()) (0D RowMajorShape) for non-Tile types.
 """
 function extract_tile_shape(@nospecialize(T))
-    is_token_type(T) && return ScalarShape()
+    is_token_type(T) && return RowMajorShape(())
     T = CC.widenconst(T)
     if T <: Tile
         return ColMajorShape(size(T))
     end
-    ScalarShape()
+    RowMajorShape(())
 end
 
 #-----------------------------------------------------------------------------

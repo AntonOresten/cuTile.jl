@@ -1,6 +1,35 @@
 # Type conversions
 
-# TODO: cuda_tile.bitcast
+# cuda_tile.bitcast (reinterpret bits as different type, same bitwidth)
+@intrinsic bitcast(x, ::Type{T}) where {T}
+function tfunc(𝕃, ::typeof(Intrinsics.bitcast), @nospecialize(x), @nospecialize(target_type))
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
+    src = CC.widenconst(x)
+    src <: Tile ? similar_type(src, T) : T
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    source = @something emit_value!(ctx, args[1]) throw(IRError("bitcast: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("bitcast: requires compile-time target type"))
+
+    dtype = julia_to_tile_dtype!(tt, target_type)
+    result_type_id = tile_type!(tt, dtype, source.shape)
+
+    src_type = CC.widenconst(source.jltype)
+    result_jltype = similar_type(src_type, target_type)
+
+    # No-op when source and target map to the same Tile IR type (e.g., Int32 ↔ UInt32).
+    # Tile IR integers are signless, so these are the same type.
+    if result_type_id == source.type_id
+        return CGVal(source.v, source.type_id, result_jltype, source.shape)
+    end
+
+    result_v = encode_BitcastOp!(cb, result_type_id, source.v)
+    CGVal(result_v, result_type_id, result_jltype, source.shape)
+end
 
 # cuda_tile.exti (scalar integer extension)
 @intrinsic exti(x::I, ::Type{T}, s::Signedness.T) where {I<:Integer, T<:Integer}

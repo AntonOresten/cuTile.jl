@@ -9,6 +9,29 @@ end
 
 
 #=============================================================================
+ StepRange Construction
+=============================================================================#
+
+# GPU-safe replacement for Base.steprange_last to enable `for i in start:step:stop`.
+# The original pulls in ArgumentError, @noinline overflow_case, and checked_srem_int.
+# This overlay uses unsigned arithmetic (bitcast → unsigned rem → bitcast) which
+# produces identical results and maps cleanly to Tile IR (signless integers make
+# signed↔unsigned bitcasts no-ops).
+@overlay function Base.steprange_last(start::T, step::T, stop::T) where {T<:Base.BitInteger}
+    stop == start && return stop
+    if step > zero(step)
+        stop < start && return start - oneunit(step)  # empty range
+        remain = signed(unsigned(stop - start) % unsigned(step))
+        return stop - remain
+    else
+        stop > start && return start + oneunit(step)  # empty range
+        remain = signed(unsigned(start - stop) % unsigned(-step))
+        return stop + remain
+    end
+end
+
+
+#=============================================================================
  Broadcasting
 =============================================================================#
 
@@ -109,6 +132,35 @@ for F in Floats
         end
     end
 end
+
+
+#=============================================================================
+ Printing
+=============================================================================#
+
+# Override all print/println entry points from coreio.jl to bypass stdout
+# and route directly to the print_tko Tile IR instruction.
+# Uses @consistent_overlay (not @overlay) because print has side effects.
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.print(x) =
+    Intrinsics.print_tko(x)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.print(x1, x2) =
+    Intrinsics.print_tko(x1, x2)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.print(xs...) =
+    Intrinsics.print_tko(xs...)
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println() =
+    Intrinsics.print_tko("\n")
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println(x) =
+    Intrinsics.print_tko(x, "\n")
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println(x1, x2) =
+    Intrinsics.print_tko(x1, x2, "\n")
+Base.Experimental.@consistent_overlay cuTileMethodTable Base.println(xs...) =
+    Intrinsics.print_tko(xs..., "\n")
+
+# String interpolation support: route string() to format_string intrinsic.
+# For all-constant args, the interpreter constant-folds via :foldable effects.
+# For args containing Tiles, the format_string intrinsic is emitted in the IR
+# and later fused into print_tko by the print fusion pass.
+@overlay Base.string(xs...) = Intrinsics.format_string(xs...)
 
 
 #=============================================================================

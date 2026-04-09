@@ -87,7 +87,7 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance;
     compiled = false
     try
         write(input_path, bytecode)
-        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(opts.sm_arch)) -O$(opt_level)`,
+        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(opts.sm_arch)) -O$(opt_level) --lineinfo`,
                      "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
         proc, log = run_and_collect(cmd)
         if !success(proc)
@@ -261,6 +261,7 @@ Other values pass through unchanged.
 """
 to_tile_arg(x) = x
 to_tile_arg(arr::AbstractArray) = TileArray(arr)
+to_tile_arg(t::Type) = Constant(t)
 
 # Tiled Broadcast — TiledStyle wins over CuArrayStyle
 BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.TiledStyle{max(N,M)}()

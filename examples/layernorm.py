@@ -255,9 +255,14 @@ def verify(data, result):
         f"DB mismatch! max diff: {np.max(np.abs(cp.asnumpy(result['DB']) - expected_DB))}"
 
 def metric(data):
-    """Return (total_bytes, unit) for throughput calculation."""
-    # Forward: 3 reads of X + W + B reads + Y write + Mean/Rstd writes ≈ 4*M*N floats
-    return 4 * data["M"] * data["N"] * 4, "GB/s"
+    """Return per-implementation (total_bytes, unit) for throughput calculation."""
+    MN = data["M"] * data["N"] * 4  # sizeof(float32)
+    return {
+        # Forward: X read (3 passes: mean, var, normalize) + Y write ≈ 4*M*N floats
+        "cuTile Fwd": (4 * MN, "GB/s"),
+        # Backward: X read (2 passes) + DY read (2 passes) + DX write ≈ 5*M*N floats
+        "cuTile Bwd": (5 * MN, "GB/s"),
+    }
 
 
 # No run_others for layernorm - no simple reference implementation to compare against

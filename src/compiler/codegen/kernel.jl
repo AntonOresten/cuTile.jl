@@ -21,7 +21,11 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       const_argtypes::Union{Vector{Any}, Nothing} = nothing)
     tt = writer.type_table
     cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
-    ctx = CGCtx(; cb, tt, sci, sm_arch, cache)
+
+    # Create debug info emitter
+    debug_emitter = DebugInfoEmitter(writer.debug_attr_table)
+
+    ctx = CGCtx(; cb, tt, sci, sm_arch, cache, debug_emitter, linkage_name=name)
 
     # Determine which argument positions are const-seeded
     # const_argtypes is 1-indexed: [Const(f), arg2, arg3, ...]
@@ -71,10 +75,17 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # Create entry hints if provided
     entry_hints = encode_entry_hints(writer, sm_arch, EntryHints(; num_ctas, occupancy))
 
+    # Create function-level debug attribute
+    func_debug_attr = make_func_debug_attr(debug_emitter, sci; linkage_name=name)
+
     # Create function
     cb = add_function!(writer, func_buf, name, param_types, result_types;
-                       is_entry, entry_hints)
+                       is_entry, entry_hints, func_debug_attr)
     ctx.cb = cb
+
+    # Set function-level debug attr as default so setup operations
+    # (tensor views, constants, etc.) get the kernel's source location
+    cb.cur_debug_attr = func_debug_attr
 
     # Set up argument values
     arg_values = make_block_args!(cb, length(param_types))
@@ -124,7 +135,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                 # Primitive: emit ConstantOp (jltype promoted to 0D tile)
                 bytes = constant_to_bytes(val, T)
                 v = encode_ConstantOp!(ctx.cb, type_id, bytes)
-                tv = CGVal(v, type_id, Tile{T, Tuple{}}, ScalarShape(), nothing, Some(val), nothing)
+                tv = CGVal(v, type_id, Tile{T, Tuple{}}, RowMajorShape(()), nothing, Some(val), nothing)
             else
                 # Non-primitive (tuple etc.): ghost with constant
                 tv = ghost_value(T, val)
@@ -317,11 +328,12 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     # 2b. Run the pass pipeline on subprogram IR
     run_passes!(sci)
 
-    # 3. Create sub-context
+    # 3. Create sub-context (inherits active fpmode from caller)
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
                       ctx.token_type,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)
+    append!(sub_ctx.fpmode_stack, ctx.fpmode_stack)
 
     # 4. Map arguments dynamically: ghost args get ghost_value, non-ghost args
     #    consume block_args sequentially.

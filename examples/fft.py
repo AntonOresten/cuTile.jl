@@ -116,7 +116,7 @@ def prepare(*, benchmark: bool = False, batch: int = None, factors: tuple = None
     if batch is None:
         batch = 64 if benchmark else 2
     if factors is None:
-        factors = (8, 8, 16) if benchmark else (2, 2, 2)
+        factors = (8, 8, 8) if benchmark else (2, 2, 2)
     F0, F1, F2 = factors
     N = F0 * F1 * F2
     D = min(64, N * 2) if atom_packing_dim is None else atom_packing_dim

@@ -198,6 +198,24 @@ end # invalidations
         String(take!(buf))
     end
 
+    # @device_code_tiled with debug info
+    @test @filecheck begin
+        @check_dag "di_file"
+        @check_dag "di_subprogram"
+        @check_dag "di_loc"
+        @check_dag "callsite"
+        @check_dag "name = \"reflect_vadd\""
+        buf = IOBuffer()
+        ct.@device_code_tiled io=buf debuginfo=true ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        String(take!(buf))
+    end
+
+    # @device_code_sass has source location annotations
+    @test @filecheck begin
+        @check "; Location"
+        CUDA.@device_code_sass ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+    end
+
     # @device_code_tiled with Constant arguments
     function reflect_const_vadd(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
                                 c::ct.TileArray{Float32,1}, tile_size::Int)
@@ -367,6 +385,26 @@ end
     ct.launch(const_nothing_kernel, cld(n, 16), a, b, ct.Constant(nothing))
 
     @test Array(b) ≈ Array(a)
+end
+
+@testset "Type parameter (auto-wrapped)" begin
+    function vadd_type_param(a, b, c, tile_size::Int, ::Type{T}) where T
+        pid = ct.bid(1)
+        tile_a = ct.load(a; index=pid, shape=(tile_size,))
+        tile_b = ct.load(b; index=pid, shape=(tile_size,))
+        ct.store(c; index=pid, tile=T.(tile_a) + T.(tile_b))
+        return
+    end
+
+    n = 1024
+    tile_size = 32
+    a = CUDA.rand(Float16, n)
+    b = CUDA.rand(Float16, n)
+    c = CUDA.zeros(Float32, n)
+
+    ct.launch(vadd_type_param, cld(n, tile_size), a, b, c, ct.Constant(tile_size), Float32)
+
+    @test Array(c) ≈ Float32.(Array(a)) + Float32.(Array(b))
 end
 
 end

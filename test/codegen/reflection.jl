@@ -45,6 +45,33 @@ end
     end
 end
 
+@testset "Debug info" begin
+    @testset "code_tiled debuginfo=true" begin
+        @test @filecheck begin
+            # Debug info entries can appear in any order
+            @check_dag "di_file"
+            @check_dag "di_compile_unit"
+            @check_dag "name = \"reflect_vadd\""
+            @check_dag "di_loc"
+            @check_dag "callsite"
+            @check_dag "name = \"bid\""
+            @check_dag "name = \"load\""
+            @check_dag "name = \"store\""
+
+            ct.code_tiled(reflect_vadd, TT3; debuginfo=true)
+        end
+    end
+
+    @testset "code_tiled default has no debug info" begin
+        @test @filecheck begin
+            @check_not "di_loc"
+            @check_not "di_subprogram"
+            @check_not "callsite"
+            ct.code_tiled(reflect_vadd, TT3)
+        end
+    end
+end
+
 @testset "Constant args" begin
     const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
     ConstTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
@@ -74,6 +101,33 @@ end
             @check "(16,)"
             @check "Tuple{16}"
             ct.code_structured(reflect_const_vadd, ConstTT; optimize=false)
+        end
+    end
+end
+
+@testset "Type args" begin
+    const_spec = ct.ArraySpec{1}(128, true, (0,), (32,))
+
+    @test ct.Constant(Int) isa ct.Constant{Type{Int}, Int}
+
+    @testset "code_tiled with Type parameter" begin
+        function reflect_type_param(a, b, c, tile_size::Int, ::Type{T}) where T
+            pid = ct.bid(1)
+            tile_a = ct.load(a; index=pid, shape=(tile_size,))
+            tile_b = ct.load(b; index=pid, shape=(tile_size,))
+            ct.store(c; index=pid, tile=tile_a + tile_b + zeros(T, (tile_size,)))
+            return
+        end
+
+        ConstTypeTT = Tuple{ct.TileArray{Float32,1,const_spec}, ct.TileArray{Float32,1,const_spec},
+                            ct.TileArray{Float32,1,const_spec}, ct.Constant{Int64, 16},
+                            Type{Float32}}
+
+        @test @filecheck begin
+            @check "load_view_tko"
+            @check "addf"
+            @check "store_view_tko"
+            ct.code_tiled(reflect_type_param, ConstTypeTT)
         end
     end
 end

@@ -20,6 +20,14 @@ function emit_expr!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
         # Bounds checking is always disabled in Tile IR kernels.
         # Emit false so IfOps referencing this SSA can resolve the condition.
         return emit_constant!(ctx, false, Bool)
+    elseif expr.head === :static_parameter
+        # Static type parameter reference (e.g., V in `f(::T{V}) where {V}`).
+        # Look up the concrete value from the method's sptypes.
+        idx = expr.args[1]::Int
+        sp = ctx.sci.sptypes[idx]
+        sptyp = sp isa CC.VarState ? sp.typ : sp
+        val = sptyp isa CC.Const ? sptyp.val : CC.widenconst(sptyp)
+        return emit_value!(ctx, val)
     elseif expr.head === :code_coverage_effect
         return nothing
     else
@@ -39,6 +47,12 @@ In Tile IR codegen, only ghost types (zero-size immutables like `Val{V}`,
 function emit_new!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     T = CC.widenconst(result_type)
     is_ghost_type(T) && return ghost_value(T)
+    # On older Julia versions, method errors are emitted as
+    # %new(MethodError, func, args_tuple, world) instead of Core.throw_methoderror
+    if T === MethodError
+        # expr.args: (MethodError, func, args_tuple, world)
+        _throw_method_error(ctx, expr.args[2:end-1])
+    end
     throw(IRError("Struct construction not supported in Tile IR: $T"))
 end
 
@@ -103,7 +117,7 @@ function emit_call!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     end
 
     result = emit_intrinsic!(ctx, func, call_args)
-    result === missing && _unsupported_call(ctx, func, call_args)
+    result === missing && _throw_method_error(ctx, [func; call_args])
     validate_result_type(result, result_type, func)
     return result
 end
@@ -125,7 +139,7 @@ function emit_invoke!(ctx::CGCtx, expr::Expr, @nospecialize(result_type))
     end
 
     result = emit_intrinsic!(ctx, func, call_args)
-    result === missing && _unsupported_call(ctx, func, call_args)
+    result === missing && _throw_method_error(ctx, [func; call_args])
     validate_result_type(result, result_type, func)
     return result
 end
@@ -138,7 +152,6 @@ Assert that the intrinsic returned a type compatible with what the IR expects.
 function validate_result_type(@nospecialize(result), @nospecialize(expected_type), @nospecialize(func))
     result === nothing && return  # void return
     result isa CGVal || return
-
     actual = CC.widenconst(result.jltype)
     expected = CC.widenconst(expected_type)
 
@@ -151,13 +164,15 @@ end
 """
     _throw_method_error(ctx, call_args)
 
-Provide a clear error message when Julia inserts a `throw_methoderror` call,
-indicating that type inference found no matching method for a function call.
+Provide a clear error message when an unsupported function is encountered during
+Tile IR compilation, either from an explicit `throw_methoderror` / `MethodError`
+construction, or from a function call with no Tile IR intrinsic mapping.
+
+`call_args` contains `(function, arg1, arg2, ...)`.
 """
 function _throw_method_error(ctx::CGCtx, call_args)
-    # call_args typically contains: (function, arg1, arg2, ...)
     if isempty(call_args)
-        throw(IRError("MethodError during Tile IR compilation"))
+        throw(IRError("Unsupported function call during Tile IR compilation"))
     end
 
     func_val = try
@@ -168,18 +183,7 @@ function _throw_method_error(ctx::CGCtx, call_args)
 
     argtypes = argextype.(Ref(ctx), call_args[2:end])
     typestr = isempty(argtypes) ? "" : " with argument types ($(join(argtypes, ", ")))"
-    throw(IRError("MethodError during Tile IR compilation: no matching method for $func_val$typestr"))
-end
-
-"""
-    _unsupported_call(ctx, func, call_args)
-
-Provide a clear error message when a function has no Tile IR intrinsic mapping.
-"""
-function _unsupported_call(ctx::CGCtx, @nospecialize(func), call_args)
-    argtypes = argextype.(Ref(ctx), call_args)
-    typestr = isempty(argtypes) ? "" : " with argument types ($(join(argtypes, ", ")))"
-    throw(IRError("Unsupported function call during Tile IR compilation: $func$typestr has no Tile IR equivalent"))
+    throw(IRError("Unsupported function call during Tile IR compilation: $func_val$typestr has no Tile IR equivalent"))
 end
 
 """

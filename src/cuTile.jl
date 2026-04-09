@@ -3,7 +3,9 @@ module cuTile
 using IRStructurizer
 using IRStructurizer: Block, ControlFlowOp, BlockArgument,
                       YieldOp, ContinueOp, BreakOp, ConditionOp,
-                      IfOp, ForOp, WhileOp, LoopOp, Undef
+                      IfOp, ForOp, WhileOp, LoopOp, Undef,
+                      SourceLocation
+import IRStructurizer: operands
 
 using Base: compilerbarrier, donotdelete
 using Core: MethodInstance, CodeInfo, SSAValue, Argument, SlotNumber,
@@ -43,8 +45,10 @@ include("compiler/passes/canonicalize.jl")
 include("compiler/passes/alias_analysis.jl")
 include("compiler/passes/token_keys.jl")
 include("compiler/passes/token_order.jl")
+include("compiler/passes/licm.jl")
 include("compiler/passes/dce.jl")
 include("compiler/passes/pipeline.jl")
+include("compiler/codegen/debug.jl")
 include("compiler/codegen/kernel.jl")
 include("compiler/codegen/control_flow.jl")
 include("compiler/codegen/statements.jl")
@@ -65,7 +69,7 @@ include("tiled.jl")
 include("broadcast.jl")
 include("mapreduce.jl")
 
-public launch, Tiled, ByTarget, @compiler_options, @.
+public launch, Tiled, ByTarget, @compiler_options, @fpmode, @.
 launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
 
 include("Experimental.jl")

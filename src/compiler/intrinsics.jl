@@ -6,7 +6,7 @@ module Intrinsics
 
 using Base: compilerbarrier, inferencebarrier
 using ..cuTile: Tile, TileArray, Constant, TensorView, PartitionView
-using ..cuTile: Signedness, ComparisonPredicate
+using ..cuTile: Signedness, ComparisonPredicate, ComparisonOrdering
 using ..cuTile: IdentityVal, FloatIdentityVal, IntegerIdentityVal
 
 end
@@ -70,5 +70,6 @@ include("intrinsics/memory.jl")
 include("intrinsics/atomics.jl")
 include("intrinsics/views.jl")
 include("intrinsics/misc.jl")
+include("intrinsics/fpmode.jl")
 
 include("intrinsics/julia.jl")

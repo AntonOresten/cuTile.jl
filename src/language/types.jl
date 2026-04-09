@@ -316,8 +316,9 @@ argtypes = Tuple{Ptr{Float32}, Constant{Int, 16}}
 """
 struct Constant{T, V} end
 
-# Convenience constructor that infers type from value
+# Convenience constructors that infer type from value
 Constant(val::T) where {T} = Constant{T, val}()
+Constant(val::Type{T}) where {T} = Constant{Type{T}, T}()
 
 # Extract constant value - @inline ensures this folds to a constant in IR
 @inline Base.getindex(::Constant{T, V}) where {T, V} = V

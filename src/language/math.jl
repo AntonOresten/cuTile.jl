@@ -1,6 +1,6 @@
 # Math operations
 
-public rsqrt
+public rsqrt, exp2
 
 
 ## scalar math
@@ -15,6 +15,8 @@ end
 @overlay Base.abs(x::T) where {T <: ScalarFloat} = Intrinsics.absf(x)
 @overlay Base.abs(x::T) where {T <: Signed} = Intrinsics.absi(x)
 
+@overlay Base.isnan(x::T) where {T <: ScalarFloat} = Intrinsics.cmpf(x, x, ComparisonPredicate.NotEqual, ComparisonOrdering.Unordered)
+
 @overlay Base.rem(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.remf(x, y)
 
 @overlay Base.fma(x::T, y::T, z::T) where {T <: ScalarFloat} = Intrinsics.fma(x, y, z)
@@ -24,8 +26,8 @@ end
 @overlay Base.max(x::T, y::T) where {T <: Unsigned} = Intrinsics.maxi(x, y, Signedness.Unsigned)
 @overlay Base.min(x::T, y::T) where {T <: Signed} = Intrinsics.mini(x, y, Signedness.Signed)
 @overlay Base.min(x::T, y::T) where {T <: Unsigned} = Intrinsics.mini(x, y, Signedness.Unsigned)
-@overlay Base.max(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.maxf(x, y, false)
-@overlay Base.min(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.minf(x, y, false)
+@overlay Base.max(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.maxf(x, y)
+@overlay Base.min(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.minf(x, y)
 
 
 ## tile math

@@ -98,8 +98,9 @@ def run_benchmark(name: str):
     data = prepare_fn(benchmark=True)
 
     # Get metric info if available
+    # metric() returns either (total, unit) or dict{"impl": (total, unit)}
     metric_fn = getattr(mod, "metric", None)
-    metric_total, metric_unit = (0, "") if not metric_fn else metric_fn(data)
+    metric_result = metric_fn(data) if metric_fn else None
 
     # Run cuTile
     result = run_fn(data, nruns=NRUNS, warmup=WARMUP)
@@ -121,7 +122,7 @@ def run_benchmark(name: str):
         others = run_others_fn(data, nruns=NRUNS, warmup=WARMUP)
         results.update(others)
 
-    return results, metric_total, metric_unit
+    return results, metric_result
 
 
 #=============================================================================
@@ -147,14 +148,21 @@ def main():
             print("  (skipped - no prepare/run functions)")
             continue
 
-        results, metric_total, metric_unit = ret
+        results, metric_result = ret
 
         # Convert to BenchmarkResult for printing
         benchmark_results = []
         for impl_name, times in results.items():
             min_t = min(times)
             mean_t = sum(times) / len(times)
-            tp = format_throughput(metric_total, metric_unit, min_t) if metric_unit else ""
+            tp = ""
+            if isinstance(metric_result, dict):
+                if impl_name in metric_result:
+                    mt, mu = metric_result[impl_name]
+                    tp = format_throughput(mt, mu, min_t)
+            elif isinstance(metric_result, tuple):
+                mt, mu = metric_result
+                tp = format_throughput(mt, mu, min_t) if mu else ""
             benchmark_results.append(BenchmarkResult(impl_name, min_t, mean_t, tp))
 
         # Sort by min time

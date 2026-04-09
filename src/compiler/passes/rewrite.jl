@@ -27,11 +27,13 @@ struct PBind <: PatternNode; name::Symbol; end
 struct PTypedBind <: PatternNode; name::Symbol; type::Type; end
 struct POneUse <: PatternNode; inner::PatternNode; end
 struct PLiteral <: PatternNode; val::Any; end
+struct PSplat <: PatternNode; name::Symbol; end  # ~x... — captures remaining operands
 
 abstract type RewriteNode end
 struct RCall <: RewriteNode; func::Any; operands::Vector{RewriteNode}; end
 struct RBind <: RewriteNode; name::Symbol; end
 struct RConst <: RewriteNode; val::Any; end
+struct RSplat <: RewriteNode; name::Symbol; end  # ~x... — expands splat binding
 
 """
     RFunc(func)
@@ -117,6 +119,15 @@ function compile_lhs(ex)
     if ex isa Expr && ex.head === :$
         return :(PLiteral($(ex.args[1])))
     end
+    # ~x... on the LHS: splat capture of remaining operands
+    # Julia parses `~x...` as Expr(:..., Expr(:call, :~, :x))
+    if ex isa Expr && ex.head === :... && length(ex.args) == 1
+        inner = ex.args[1]
+        if inner isa Expr && inner.head === :call && inner.args[1] === :~ && length(inner.args) == 2
+            name = inner.args[2]
+            return :(PSplat($(QuoteNode(name))))
+        end
+    end
     ex isa Expr && ex.head === :call || error("@rewrite LHS: expected call, got $ex")
     f = ex.args[1]
     if f === :~
@@ -133,6 +144,14 @@ end
 function compile_rhs(ex)
     if ex isa Expr && ex.head === :$
         return :(RConst($(ex.args[1])))
+    end
+    # ~x... on the RHS: expand splat binding
+    if ex isa Expr && ex.head === :... && length(ex.args) == 1
+        inner = ex.args[1]
+        if inner isa Expr && inner.head === :call && inner.args[1] === :~ && length(inner.args) == 2
+            name = inner.args[2]
+            return :(RSplat($(QuoteNode(name))))
+        end
     end
     ex isa Expr && ex.head === :call || error("@rewrite RHS: expected call or \$const, got $ex")
     f = ex.args[1]
@@ -204,6 +223,7 @@ mutable struct RewriteDriver
     dispatch::Dict{Any, Vector{RewriteRule}}
     worklist::Worklist
     constants::Dict{SSAValue, Any}   # SSA → constant value (from propagate_constants)
+    modified::Set{SSAValue}          # instructions whose operands were modified by forwarding
     max_rewrites::Int
 end
 
@@ -282,13 +302,22 @@ function pattern_match(driver::RewriteDriver, @nospecialize(val), pat::PCall,
 
     if entry.func === pat.func
         ops = def_operands(entry)
-        if length(ops) == length(pat.operands)
+        has_splat = !isempty(pat.operands) && last(pat.operands) isa PSplat
+        n_fixed = has_splat ? length(pat.operands) - 1 : length(pat.operands)
+
+        if has_splat ? length(ops) >= n_fixed : length(ops) == n_fixed
             result = MatchResult(Dict{Symbol,Any}(), SSAValue[val])
-            for (op, sub) in zip(ops, pat.operands)
-                m = pattern_match(driver, op, sub, entry.block)
+            # Match fixed operands
+            for i in 1:n_fixed
+                m = pattern_match(driver, ops[i], pat.operands[i], entry.block)
                 m === nothing && return nothing
                 merge_bindings!(result.bindings, m.bindings) || return nothing
                 append!(result.matched_ssas, m.matched_ssas)
+            end
+            # Capture remaining operands into the splat binding
+            if has_splat
+                splat_name = pat.operands[end]::PSplat
+                result.bindings[splat_name.name] = ops[n_fixed+1:end]
             end
             return result
         end
@@ -335,11 +364,33 @@ end
  Rewrite Application
 =============================================================================#
 
-"""Resolve an RHS operand, inserting sub-calls before `ref` as needed."""
-resolve_rhs(driver, block, ref, op::RBind, bindings, typ) = bindings[op.name]
-resolve_rhs(driver, block, ref, op::RConst, bindings, typ) = op.val
-function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, typ)
-    operands = Any[resolve_rhs(driver, block, ref, sub, bindings, typ) for sub in op.operands]
+"""Resolve an RHS operand, inserting sub-calls before `ref` as needed.
+`root_typ` is the type of the original matched instruction — used only for the
+outermost RCall (which replaces the root in-place). Intermediate RCalls infer
+their type from the first SSA operand, since element-wise ops preserve type."""
+resolve_rhs(driver, block, ref, op::RBind, bindings, root_typ) = bindings[op.name]
+resolve_rhs(driver, block, ref, op::RConst, bindings, root_typ) = op.val
+function resolve_rhs(driver::RewriteDriver, block, ref, op::RCall, bindings, root_typ)
+    # Flatten RSplat nodes: each RSplat expands to multiple operands
+    operands = Any[]
+    for sub in op.operands
+        if sub isa RSplat
+            append!(operands, bindings[sub.name])
+        else
+            push!(operands, resolve_rhs(driver, block, ref, sub, bindings, root_typ))
+        end
+    end
+    # Infer type from first SSA operand — correct for element-wise ops (addi,
+    # subi, negf, etc.) whose result type matches their operands. Falls back to
+    # root_typ when no SSA operand is available.
+    typ = root_typ
+    for o in operands
+        o isa SSAValue || continue
+        t = value_type(block, o)
+        t === nothing && continue
+        typ = CC.widenconst(t)
+        break
+    end
     inst = insert_before!(block, ref, Expr(:call, op.func, operands...), typ)
     notify_insert!(driver, block, inst)
     SSAValue(inst)
@@ -434,12 +485,18 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         # Look up live instruction for RFunc interface
         pos = findfirst(==(val.id), block.body.ssa_idxes)
         pos === nothing && return false
-        inst = Instruction(val.id, block.body.stmts[pos], block.body.types[pos])
+        inst = Instruction(val.id, block.body.stmts[pos], block.body.types[pos], block)
         rule.rhs.func(driver.sci, block, inst, match, driver) || return false
         return true
     elseif rule.rhs isa RBind
         # Forwarding: replace all uses of root with the bound value, delete root.
-        # Collect users BEFORE replace_uses! updates their operands.
+        # Mark immediate users as modified — their operands are about to change.
+        # When these are later popped from the worklist without a match, the
+        # driver propagates to THEIR users (see modified check in main loop).
+        # This gives MLIR-style notifyOperationModified cascading.
+        for inst in users(driver.sci.entry, val)
+            push!(driver.modified, SSAValue(inst))
+        end
         add_users_to_worklist!(driver, val)
         replace_uses!(driver.sci.entry, val, match.bindings[rule.rhs.name])
         erase_op!(driver, entry)
@@ -456,8 +513,15 @@ function apply_rewrite!(driver::RewriteDriver, block, val::SSAValue, rule, match
         end
         pos = findfirst(==(val.id), block.body.ssa_idxes)
         typ = block.body.types[pos]
-        operands = Any[resolve_rhs(driver, block, val, op, match.bindings, typ)
-                       for op in rule.rhs.operands]
+        # Build operands, flattening RSplat nodes into multiple operands
+        operands = Any[]
+        for op in rule.rhs.operands
+            if op isa RSplat
+                append!(operands, match.bindings[op.name])
+            else
+                push!(operands, resolve_rhs(driver, block, val, op, match.bindings, typ))
+            end
+        end
         # Recompute pos: resolve_rhs may insert instructions before val
         # (e.g. negf in subf→fma), shifting positions.
         pos = findfirst(==(val.id), block.body.ssa_idxes)
@@ -510,7 +574,7 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
         end
     end
 
-    driver = RewriteDriver(sci, defs, dispatch, wl, constants, max_rewrites)
+    driver = RewriteDriver(sci, defs, dispatch, wl, constants, Set{SSAValue}(), max_rewrites)
 
     num_rewrites = 0
     while !isempty(driver.worklist) && num_rewrites < driver.max_rewrites
@@ -539,15 +603,33 @@ function rewrite_patterns!(sci::StructuredIRCode, rules::Vector{RewriteRule};
 
         # Look up applicable rules by function
         applicable = get(driver.dispatch, entry.func, nothing)
-        applicable === nothing && continue
+        matched = false
+        if applicable !== nothing
+            for rule in applicable
+                m = pattern_match(driver, val, rule.lhs)
+                m === nothing && continue
+                rule.guard !== nothing && !rule.guard(m, driver) && continue
+                if apply_rewrite!(driver, entry.block, val, rule, m) === false
+                    continue  # RFunc declined — try next rule
+                end
+                num_rewrites += 1
+                matched = true
+                break
+            end
+        end
 
-        for rule in applicable
-            m = pattern_match(driver, val, rule.lhs)
-            m === nothing && continue
-            rule.guard !== nothing && !rule.guard(m, driver) && continue
-            apply_rewrite!(driver, entry.block, val, rule, m)
-            num_rewrites += 1
-            break
+        # Operand-modified propagation (MLIR notifyOperationModified equivalent):
+        # if this instruction's operands were changed by a forwarding rewrite but
+        # no rule fired here, propagate to users — the operand change may enable
+        # new matches further up the use chain. Mark users as modified too so the
+        # cascade continues through the fixpoint.
+        if !matched && val in driver.modified
+            delete!(driver.modified, val)
+            for inst in users(driver.sci.entry, val)
+                uv = SSAValue(inst)
+                push!(driver.modified, uv)
+                haskey(driver.defs, uv) && push!(driver.worklist, uv)
+            end
         end
     end
 end

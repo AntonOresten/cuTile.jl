@@ -28,7 +28,7 @@ end
 
 """
 Rounding mode for floating-point operations.
-Use with reduction and scan kwargs (e.g., `sum(tile; dims, rounding_mode=ct.Rounding.Zero)`).
+Use with `@fpmode` to set the rounding mode for a block of code.
 """
 @enumx Rounding begin
     NearestEven = 0
@@ -169,7 +169,7 @@ end
     idx = Intrinsics.iota((flat_len,), Int32)
     mask = idx .== Int32(linear)
     val_tile = broadcast_to(Tile(T(val)), (flat_len,))
-    new_flat = where(mask, val_tile, flat)
+    new_flat = ifelse.(mask, val_tile, flat)
     reshape(new_flat, S)
 end
 
@@ -254,19 +254,19 @@ end
 @inline _combine_masks(::Nothing, b::Tile) = b
 @inline _combine_masks(::Nothing, ::Nothing) = nothing
 
-# 1D bounds mask: 0 <= index < size
+# 1D bounds mask: index < size (unsigned comparison catches negative indices)
+# After 1→0 index conversion, valid indices are >= 0. Reinterpreting as unsigned
+# makes negative values wrap to large values, so a single .< catches both cases.
 @inline function _bounds_mask_1d(indices_i32, array)
-    (indices_i32 .>= Tile(Int32(0))) .& (indices_i32 .< Tile(size(array, 1)))
+    reinterpret.(UInt32, indices_i32) .< reinterpret(UInt32, Int32(size(array, 1)))
 end
 
-# 2D bounds mask: 0 <= idx0 < size0 && 0 <= idx1 < size1
+# 2D bounds mask: idx0 < size0 && idx1 < size1 (unsigned)
 @inline function _bounds_mask_2d(idx0_i32, idx1_i32, array, S)
-    zero_0d = Tile(Int32(0))
-    zero_bc = broadcast_to(zero_0d, S)
-    size0_bc = broadcast_to(Tile(size(array, 1)), S)
-    size1_bc = broadcast_to(Tile(size(array, 2)), S)
-    mask0 = (idx0_i32 .>= zero_bc) .& (idx0_i32 .< size0_bc)
-    mask1 = (idx1_i32 .>= zero_bc) .& (idx1_i32 .< size1_bc)
+    size0_bc = broadcast_to(Tile(reinterpret(UInt32, Int32(size(array, 1)))), S)
+    size1_bc = broadcast_to(Tile(reinterpret(UInt32, Int32(size(array, 2)))), S)
+    mask0 = reinterpret.(UInt32, idx0_i32) .< size0_bc
+    mask1 = reinterpret.(UInt32, idx1_i32) .< size1_bc
     mask0 .& mask1
 end
 
@@ -699,41 +699,17 @@ sums = reduce(+, tile; dims=2, init=zero(Float32))
     mapreduce(identity, f, tile; dims, init)
 end
 
-# Callable operators with rounding/ftz encoded in type parameters,
-# because emit_subprogram! does not support closures with captures.
-struct AddF{RM, FTZ} end
-struct MulF{RM, FTZ} end
-struct MaxF{FTZ} end
-struct MinF{FTZ} end
-(::AddF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.addf(a, b, RM, FTZ)
-(::MulF{RM, FTZ})(a, b) where {RM, FTZ} = Intrinsics.mulf(a, b, RM, FTZ)
-(::MaxF{FTZ})(a, b) where {FTZ} = Intrinsics.maxf(a, b, FTZ)
-(::MinF{FTZ})(a, b) where {FTZ} = Intrinsics.minf(a, b, FTZ)
-
-for (f, op, custom_op, init_expr, has_rounding) in [
-    (:sum,     :(+),   :AddF,  :(zero(T)),    true),
-    (:prod,    :(*),   :MulF,  :(one(T)),     true),
-    (:maximum, :(max), :MaxF,  :(typemin(T)), false),
-    (:minimum, :(min), :MinF,  :(typemax(T)), false),
+for (f, op, init_expr) in [
+    (:sum,     :(+),   :(zero(T))),
+    (:prod,    :(*),   :(one(T))),
+    (:maximum, :(max), :(typemin(T))),
+    (:minimum, :(min), :(typemax(T))),
 ]
-    # Integer: no rounding/ftz kwargs
     @eval @inline function Base.$f(tile::Tile{T,S}; dims) where {T<:Integer, S}
         reduce($op, tile; dims, init=$init_expr)
     end
-
-    # Float: with rounding/ftz kwargs (sum/prod get rounding_mode; max/min don't)
-    if has_rounding
-        @eval @inline function Base.$f(tile::Tile{T,S}; dims,
-                                        rounding_mode=nothing, flush_to_zero=false) where {T<:AbstractFloat, S}
-            op = rounding_mode === nothing && !flush_to_zero ? $op : $custom_op{rounding_mode, flush_to_zero}()
-            reduce(op, tile; dims, init=$init_expr)
-        end
-    else
-        @eval @inline function Base.$f(tile::Tile{T,S}; dims,
-                                        flush_to_zero=false) where {T<:AbstractFloat, S}
-            op = !flush_to_zero ? $op : $custom_op{flush_to_zero}()
-            reduce(op, tile; dims, init=$init_expr)
-        end
+    @eval @inline function Base.$f(tile::Tile{T,S}; dims) where {T<:AbstractFloat, S}
+        reduce($op, tile; dims, init=$init_expr)
     end
 end
 
@@ -898,22 +874,17 @@ Supported functions: `+`, `*`, `max`, `min`.
     Intrinsics.scan((tile,), dims - 1, f, (T(init),), rev)[1]
 end
 
-for (f, op, custom_op, init_expr) in [
-    (:cumsum,  :(+), :AddF, :(zero(T))),
-    (:cumprod, :(*), :MulF, :(one(T))),
+for (f, op, init_expr) in [
+    (:cumsum,  :(+), :(zero(T))),
+    (:cumprod, :(*), :(one(T))),
 ]
-    # Integer: no rounding/ftz kwargs
     @eval @inline function Base.$f(tile::Tile{T,S}; dims::Integer,
                                     rev::Bool=false) where {T<:Integer, S}
         accumulate($op, tile; dims, init=$init_expr, rev)
     end
-
-    # Float: with rounding/ftz kwargs
     @eval @inline function Base.$f(tile::Tile{T,S}; dims::Integer,
-                                    rev::Bool=false, rounding_mode=nothing,
-                                    flush_to_zero=false) where {T<:AbstractFloat, S}
-        op = rounding_mode === nothing && !flush_to_zero ? $op : $custom_op{rounding_mode, flush_to_zero}()
-        accumulate(op, tile; dims, init=$init_expr, rev)
+                                    rev::Bool=false) where {T<:AbstractFloat, S}
+        accumulate($op, tile; dims, init=$init_expr, rev)
     end
 end
 
@@ -1067,22 +1038,7 @@ end
  Selection
 =============================================================================#
 
-public where, extract
-
-"""
-    where(cond::Tile{Bool}, x, y) -> Tile
-
-Element-wise conditional selection: returns x where cond is true, y otherwise.
-Similar to numpy.where() or torch.where(). Supports broadcasting and scalar arguments.
-
-# Example
-```julia
-mask = tile_a .> tile_b  # Boolean tile
-result = ct.where(mask, tile_a, tile_b)  # Element-wise max
-result = ct.where(mask, tile_a, 0.0f0)  # Zero out where mask is false
-```
-"""
-where(cond, x, y) = ifelse.(cond, x, y)
+public extract
 
 """
     extract(tile::Tile{T, S}, index::NTuple{N, Int}, shape::NTuple{N, Int}) -> Tile{T, shape}
@@ -1200,4 +1156,67 @@ macro compiler_options(args...)
     end
 
     return Expr(:block, metas...)
+end
+
+
+#=============================================================================
+ @fpmode macro
+=============================================================================#
+
+"""
+    @fpmode [rounding_mode=Rounding.X] [flush_to_zero=bool] begin ... end
+
+Set the floating-point mode for all FP operations in the block.
+Operations that support rounding mode and/or flush-to-zero will use the
+specified values. The mode applies to all operations in the block,
+including those inside inlined function calls.
+
+Nested `@fpmode` blocks inherit unspecified fields from the outer scope.
+
+# Examples
+```julia
+ct.@fpmode rounding_mode=ct.Rounding.Approx flush_to_zero=true begin
+    acc = acc ./ l_i   # uses Approx rounding + FTZ
+    p = exp2.(qk)      # uses FTZ
+end
+
+# Nesting: inner inherits FTZ from outer
+ct.@fpmode rounding_mode=ct.Rounding.Approx flush_to_zero=true begin
+    x = a + b                                        # Approx + FTZ
+    ct.@fpmode rounding_mode=ct.Rounding.NearestEven begin
+        y = c + d                                    # NearestEven + FTZ (inherited)
+    end
+end
+```
+"""
+macro fpmode(args...)
+    length(args) < 1 && error("@fpmode requires at least a block argument")
+
+    block = args[end]
+    block isa Expr && block.head === :block || error("@fpmode: last argument must be a begin...end block")
+
+    rounding_mode = nothing
+    flush_to_zero = nothing
+
+    for arg in args[1:end-1]
+        arg isa Expr && arg.head === :(=) || error("@fpmode: expected key=val, got $arg")
+        key = arg.args[1]
+        if key === :flush_to_zero
+            flush_to_zero = arg.args[2]
+        elseif key === :rounding_mode
+            rounding_mode = arg.args[2]
+        else
+            error("@fpmode: unknown option '$key'; expected rounding_mode or flush_to_zero")
+        end
+    end
+
+    rm_expr = rounding_mode === nothing ? :nothing : esc(rounding_mode)
+    ftz_expr = flush_to_zero === nothing ? :nothing : esc(flush_to_zero)
+
+    quote
+        $(Intrinsics.fpmode_begin)($rm_expr, $ftz_expr)
+        local __fpmode_result__ = $(esc(block))
+        $(Intrinsics.fpmode_end)()
+        __fpmode_result__
+    end
 end

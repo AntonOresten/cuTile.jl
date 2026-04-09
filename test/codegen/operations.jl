@@ -366,7 +366,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_b = ct.load(b, pid, (16,))
                 @check "cmpf"
                 mask = tile_a .< tile_b
-                result = ct.where(mask, tile_a, tile_b)
+                result = ifelse.(mask, tile_a, tile_b)
                 ct.store(c, pid, result)
                 return
             end
@@ -382,7 +382,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_b = ct.load(b, pid, (16,))
                 @check "cmpi"
                 mask = tile_a .< tile_b
-                result = ct.where(mask, tile_a, tile_b)
+                result = ifelse.(mask, tile_a, tile_b)
                 ct.store(c, pid, result)
                 return
             end
@@ -402,7 +402,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 result = a .< b
                 # Use same-typed operands for where to avoid Union type
                 b_promoted = convert(ct.Tile{Int64}, b)
-                selected = ct.where(result, a, b_promoted)
+                selected = ifelse.(result, a, b_promoted)
                 ct.store(out, Int32(0), selected)
                 return
             end
@@ -820,7 +820,7 @@ spec4d = ct.ArraySpec{4}(16, true)
                 tile_b = ct.load(b, pid, (16,))
                 mask = tile_a .> tile_b
                 @check "select"
-                result = ct.where(mask, tile_a, tile_b)
+                result = ifelse.(mask, tile_a, tile_b)
                 ct.store(c, pid, result)
                 return
             end
@@ -832,7 +832,44 @@ end
  8.4 Conversions
 =========================================================================#
 @testset "Conversions" begin
-    # TODO: bitcast - reinterpret bits as different type
+    @testset "bitcast" begin
+        # Int32 -> UInt32 (same Tile IR type I32): no bitcast op emitted
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{UInt32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check_not "bitcast"
+                ct.store(b, pid, reinterpret.(UInt32, tile))
+                return
+            end
+        end
+
+        # Float32 -> Int32 (different Tile IR types): bitcast op emitted
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "bitcast"
+                ct.store(b, pid, reinterpret.(Int32, tile))
+                return
+            end
+        end
+
+        # Int32 -> Float32 (different Tile IR types): bitcast op emitted
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "bitcast"
+                ct.store(b, pid, reinterpret.(Float32, tile))
+                return
+            end
+        end
+    end
+
     # TODO: exti - sign/zero extend integer
     # TODO: ftoi - float to integer
     # TODO: itof - integer to float
@@ -1021,11 +1058,44 @@ end
                 pid = ct.bid(1)
                 acc = zeros(Float32, (16,))
                 @check "for"
-                k = Int32(1)
-                while k <= n
+                for k in Int32(1):n
                     tile = ct.load(a, (pid - Int32(1)) * n + k, (16,))
                     acc = acc + tile
-                    k += Int32(1)
+                end
+                ct.store(b, pid, acc)
+                return
+            end
+        end
+    end
+
+    @testset "for with step (StepRange)" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
+                pid = ct.bid(1)
+                acc = zeros(Float32, (16,))
+                @check "for"
+                for k in Int32(1):Int32(2):n
+                    tile = ct.load(a, k, (16,))
+                    acc = acc + tile
+                end
+                ct.store(b, pid, acc)
+                return
+            end
+        end
+    end
+
+    @testset "for with decrement (StepRange)" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}, Int32}) do a, b, n
+                pid = ct.bid(1)
+                acc = zeros(Float32, (16,))
+                # Decrementing StepRange compiles to a generic loop (not ForOp)
+                @check "loop"
+                for k in n:Int32(-1):Int32(1)
+                    tile = ct.load(a, k, (16,))
+                    acc = acc + tile
                 end
                 ct.store(b, pid, acc)
                 return
@@ -1152,6 +1222,8 @@ end
                 Base.donotdelete(log.(tile))
                 @check "log2"
                 Base.donotdelete(log2.(tile))
+                @check "cmpf"
+                Base.donotdelete(isnan.(tile))
                 return
             end
         end
@@ -1320,15 +1392,28 @@ end
             end
         end
 
-        # scalar exponent
+        # scalar exponent (pow(x, 2) is strength-reduced to mulf(x, x))
         @test @filecheck begin
             @check_label "entry"
             code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
-                @check "broadcast"
-                @check "pow"
+                @check "mulf"
+                @check_not "pow"
                 Base.donotdelete(tile .^ 2.0f0)
+                return
+            end
+        end
+
+        # pow2 strength reduction works for Float64 too
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float64,1,spec1d}}) do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "mulf"
+                @check_not "pow"
+                Base.donotdelete(tile .^ 2.0)
                 return
             end
         end
@@ -1823,4 +1908,82 @@ end
  8.12 Miscellaneous
 =========================================================================#
 # TODO: assume - optimization hint
-# TODO: print_tko - debug printing
+
+@testset "print_tko" begin
+    @testset "print constant string" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                @check "print_tko"
+                @check "hello\n"
+                print("hello\n")
+                tile = ct.load(a, bid, (16,))
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "print with float tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "print_tko"
+                @check "value: %f"
+                print("value: ", tile)
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "println with tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "print_tko"
+                @check "value: %f\n"
+                println("value: ", tile)
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "print integer tile" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Int32,1,spec1d}}) do a
+                bid = ct.bid(1)
+                tile = ct.load(a, bid, (16,))
+                @check "print_tko"
+                @check "%d"
+                print(tile)
+                ct.store(a, bid, tile)
+                return
+            end
+        end
+    end
+
+    @testset "print multiple tiles" begin
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Int32,1,spec1d}}) do a, b
+                bid = ct.bid(1)
+                ta = ct.load(a, bid, (16,))
+                tb = ct.load(b, bid, (16,))
+                @check "print_tko"
+                @check "x=%f y=%d"
+                print("x=", ta, " y=", tb)
+                ct.store(a, bid, ta)
+                ct.store(b, bid, tb)
+                return
+            end
+        end
+    end
+end

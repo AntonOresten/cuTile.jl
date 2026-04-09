@@ -5,12 +5,15 @@
 export code_tiled
 public code_typed, code_ircode, code_structured
 
-function disassemble_tileir(bytecode::Vector{UInt8})::String
+function disassemble_tileir(bytecode::Vector{UInt8}; debuginfo::Bool=false)::String
     mktempdir() do dir
         input_path = joinpath(dir, "kernel.tile")
-        output_path = joinpath(dir, "kernel.disasm")
         write(input_path, bytecode)
-        read(`$(cuda_tile_translate()) --cudatilebc-to-mlir $input_path`, String)
+        flags = `--cudatilebc-to-mlir`
+        if debuginfo
+            flags = `$flags --mlir-print-debuginfo`
+        end
+        read(`$(cuda_tile_translate()) $flags $input_path`, String)
     end
 end
 
@@ -62,7 +65,7 @@ function code_structured(@nospecialize(f), @nospecialize(argtypes);
     ir, rettype = emit_julia(cache, mi; const_argtypes)
     sci, rettype, _ = emit_structured(ir, rettype)
     if optimize
-        sci = deepcopy(sci)
+        sci = copy(sci)
         run_passes!(sci)
     end
     [sci => rettype]
@@ -79,7 +82,7 @@ Returns `(stripped, nothing)` when no Constant types are present.
 function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
     params = argtypes isa DataType ? argtypes.parameters :
              argtypes isa Tuple ? argtypes : fieldtypes(argtypes)
-    has_consts = any(T -> T <: Constant, params)
+    has_consts = any(T -> T <: Constant || CC.isconstType(T), params)
     stripped_params = map(params) do T
         T <: Constant ? constant_eltype(T) : T
     end
@@ -87,7 +90,13 @@ function process_const_argtypes(@nospecialize(f), @nospecialize(argtypes))
     const_argtypes = if has_consts
         cats = Any[CC.Const(f)]
         for T in params
-            push!(cats, T <: Constant ? CC.Const(constant_value(T)) : T)
+            if T <: Constant
+                push!(cats, CC.Const(constant_value(T)))
+            elseif CC.isconstType(T)
+                push!(cats, CC.Const(T.parameters[1]))
+            else
+                push!(cats, T)
+            end
         end
         cats
     else
@@ -112,6 +121,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
                     num_ctas::Union{Int, Nothing}=nothing,
                     occupancy::Union{Int, Nothing}=nothing,
                     bytecode_version::VersionNumber=DEFAULT_BYTECODE_VERSION,
+                    debuginfo::Bool=false,
                     world::UInt=Base.get_world_counter())
     stripped, const_argtypes = process_const_argtypes(f, argtypes)
     mi = lookup_method_instance(f, stripped; world)
@@ -124,7 +134,7 @@ function code_tiled(io::IO, @nospecialize(f), @nospecialize(argtypes);
     bytecode = emit_tile(sci, rettype, kernel_meta;
                          name=sanitize_name(string(mi.def.name)),
                          opts, cache, const_argtypes)
-    print(io, disassemble_tileir(bytecode))
+    print(io, disassemble_tileir(bytecode; debuginfo))
 end
 code_tiled(@nospecialize(f), @nospecialize(argtypes); kwargs...) =
     code_tiled(stdout, f, argtypes; kwargs...)
