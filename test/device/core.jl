@@ -237,6 +237,29 @@ end # invalidations
     end
     @test Array(c2) ≈ Array(a) + Array(b)
 
+    # @device_code_tiled with Type argument
+    # Regression: compile hook reconstructed Constant{typeof(val), val} for Type
+    # arguments, producing Constant{DataType, T} instead of Constant{Type{T}, T}
+    # and failing with "requires a dispatch tuple, got non-concrete signature".
+    function reflect_type_vadd(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float32,1},
+                               c::ct.TileArray{Float32,1}, ::Type{T}) where T
+        pid = ct.bid(1)
+        tile_a = ct.load(a, pid, (16,))
+        tile_b = ct.load(b, pid, (16,))
+        ct.store(c, pid, tile_a + tile_b + zeros(T, (16,)))
+        return
+    end
+
+    c3 = CUDA.zeros(Float32, n)
+    @test @filecheck begin
+        @check "entry @reflect_type_vadd"
+        @check "load_view"
+        @check "addf"
+        @check "store_view"
+        ct.@device_code_tiled ct.launch(reflect_type_vadd, cld(n, 16), a, b, c3, Float32)
+    end
+    @test Array(c3) ≈ Array(a) + Array(b)
+
     # @device_code_tiled with reduce subprogram
     # Regression: compile hook tried to compile the reduce combiner (e.g. +) as a
     # standalone entry, which cuda-tile-translate rejects.
