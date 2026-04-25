@@ -1,6 +1,70 @@
 # cuTile DSL operations
 
 
+#=============================================================================
+ Slicing
+=============================================================================#
+
+# Users express slices via Julia's standard `@view A[i:j, :]` macro, which is
+# routed here by the `Base.view` / `Base.maybeview` overlays in overlays.jl.
+# The layout mirrors Base's view hierarchy:
+#
+#   Base.maybeview / Base.view (overlay) → check_slice_bounds → unsafe_view
+#
+# `unsafe_view` walks the index tuple axis by axis, calling `Intrinsics.slice`
+# for each `UnitRange`. All slice arithmetic and the new shape / strides
+# tuples are built here so they go through the regular intrinsics (constant
+# folding, strength reduction); `Intrinsics.slice` is just an aggregate-
+# packaging step.
+
+# Empty tuple: all axes walked, return the accumulated slice.
+unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
+# `:` is a no-op; advance to the next axis.
+function unsafe_view(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
+    unsafe_view(arr, Val(Axis + 1), Base.tail(inds))
+end
+# UnitRange: emit the slice and recurse.
+function unsafe_view(arr::TileArray, ::Val{Axis},
+                     inds::Tuple{UnitRange, Vararg}) where {Axis}
+    r = inds[1]
+    size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
+    # Julia 1-indexed inclusive [first, last] → 0-indexed half-open [start, stop).
+    # `stop = last(r)` because inclusive 1-indexed end == half-open 0-indexed end
+    # (e.g. 3:10 is 8 elements → [2, 10) in 0-indexed half-open).
+    start_0 = size_elem_T(first(r)) - size_elem_T(1)
+    stop_0 = size_elem_T(last(r))
+    new_axis_size = stop_0 - start_0
+    offset_elems = start_0 * arr.strides[Axis]
+    new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
+    new_sizes = ntuple(i -> i == Axis ? new_axis_size : arr.sizes[i], Val(ndims(arr)))
+    new_strides = ntuple(i -> arr.strides[i], Val(ndims(arr)))
+    sub = Intrinsics.slice(arr, new_base, new_sizes, new_strides)
+    unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
+end
+
+# Per-range bounds asserts. The tuple methods recurse via `inds[1]`/`Base.tail`
+# (rather than `foreach`/`map`/`ntuple`) because constprop on `UnitRange`
+# endpoints survives only through direct indexing — every higher-order
+# alternative we tried widened `Const(3:10)` to `UnitRange{Int}` and left the
+# literal range alive into codegen. `@constprop :aggressive` on each step is
+# what propagates Const-ness through the helper boundary so that
+# `first(r) >= T(1)` folds at literal call sites like `@view a[0:10]`.
+#
+# Only `start >= 1` is checked: Julia's `unitrange_last` already clamps
+# `last(r)` to `>= first(r) - 1`, so a `last >= start - 1` assert would always
+# pass at runtime.
+check_slice_bounds(::Tuple{}) = nothing
+Base.@constprop :aggressive function check_slice_bounds(inds::Tuple)
+    check_slice_bounds(inds[1])
+    check_slice_bounds(Base.tail(inds))
+end
+check_slice_bounds(::Colon) = nothing
+Base.@constprop :aggressive function check_slice_bounds(r::UnitRange{T}) where {T<:Integer}
+    Intrinsics.assert(first(r) >= T(1), "@view: slice start must be ≥ 1")
+    return
+end
+
+
 # Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples
 @inline _deinterleave_accs(a, e, rest...) = (a, _deinterleave_accs(rest...)...)
 @inline _deinterleave_accs() = ()
