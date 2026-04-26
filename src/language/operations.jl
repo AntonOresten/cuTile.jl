@@ -2,20 +2,61 @@
 
 
 #=============================================================================
- Slicing
+ View construction on TileArrays
 =============================================================================#
 
-# Users express slices via Julia's standard `@view A[i:j, :]` macro, which is
-# routed here by the `Base.view` / `Base.maybeview` overlays in overlays.jl.
-# The layout mirrors Base's view hierarchy:
+# All operations in this section derive a new TileArray with adjusted
+# sizes/strides (and sometimes rank) without touching the underlying memory.
+# They mirror the AbstractArray methods Julia Base provides for ordinary
+# arrays (`Base.view`, `Base.permutedims`, `Base.transpose`, `Base.reshape`)
+# and are defined as regular methods on `TileArray` — TileArray is its own
+# type, not an `AbstractArray` subtype, so there's no Base method to shadow
+# and no need for the `@overlay` mechanism. The new aggregate is built via
+# the regular Julia inner constructor `TileArray{T,N,S}(ptr, sizes, strides)`;
+# Julia's SROA pass eliminates the temporary struct so the IR sees direct
+# field references at each downstream use.
 #
-#   Base.maybeview / Base.view (overlay) → check_slice_bounds → unsafe_view
+# Doing the size/stride arithmetic at the language level keeps it in the SCI
+# so it benefits from constant folding, strength reduction, LICM, etc.
+
+#-----------------------------------------------------------------------------
+# view / @view → unsafe_view
+#-----------------------------------------------------------------------------
+
+# Restricted to `Vararg{Union{Colon, UnitRange}, N}`: rank mismatches and
+# unsupported index types (StepRange, Int, CartesianIndex, …) fall through
+# to Base's regular `view` methods (which don't match TileArray) and surface
+# as a codegen-time `IRError`. The error message there is whatever
+# `_throw_method_error`'s formatting produces — cleaner reporting is tied
+# to a broader rework toward runtime asserts; defer.
 #
-# `unsafe_view` walks the index tuple axis by axis, calling `Intrinsics.slice`
-# for each `UnitRange`. All slice arithmetic and the new shape / strides
-# tuples are built here so they go through the regular intrinsics (constant
-# folding, strength reduction); `Intrinsics.slice` is just an aggregate-
-# packaging step.
+# Throwing from inside `unsafe_view` doesn't work either: a
+# `throw(ArgumentError(...))` reached from inlined kernel code leaks the
+# exception object to codegen, which can't lower String / Exception values.
+Base.maybeview(arr::TileArray{T, N}, inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N} =
+    Base.view(arr, inds...)
+function Base.view(arr::TileArray{T, N}, inds::Vararg{Union{Colon, UnitRange}, N}) where {T, N}
+    check_slice_bounds(inds)
+    unsafe_view(arr, Val(1), inds)
+end
+
+"""
+    sliced_arraytype(SrcT) -> Type{<:TileArray}
+
+Result `TileArray` type for a slice of `SrcT`. Conservative ArraySpec:
+drops alignment to 0 and zeros all per-axis `shape_div_by`. Strides and
+contiguity are preserved (slicing doesn't change `stride[1] == 1` for
+column-major arrays). A future divisibility analysis can recover tighter
+facts from the IR.
+"""
+function sliced_arraytype(@nospecialize(SrcT::Type{<:TileArray}))
+    spec = array_spec(SrcT)
+    elem_T = eltype(SrcT)
+    N = ndims(SrcT)
+    spec === nothing && return TileArray{elem_T, N}
+    new_spec = ArraySpec{N, 0, spec.contiguous, spec.stride_div_by, ntuple(_ -> 0, N)}()
+    return TileArray{elem_T, N, new_spec}
+end
 
 # Empty tuple: all axes walked, return the accumulated slice.
 unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
@@ -23,7 +64,9 @@ unsafe_view(arr::TileArray, ::Val, ::Tuple{}) = arr
 function unsafe_view(arr::TileArray, ::Val{Axis}, inds::Tuple{Colon, Vararg}) where {Axis}
     unsafe_view(arr, Val(Axis + 1), Base.tail(inds))
 end
-# UnitRange: emit the slice and recurse.
+# UnitRange: derive the new components and package via the TileArray
+# constructor. SROA elides the temporary aggregate so the IR sees direct
+# field references at each downstream use.
 function unsafe_view(arr::TileArray, ::Val{Axis},
                      inds::Tuple{UnitRange, Vararg}) where {Axis}
     r = inds[1]
@@ -35,10 +78,10 @@ function unsafe_view(arr::TileArray, ::Val{Axis},
     stop_0 = size_elem_T(last(r))
     new_axis_size = stop_0 - start_0
     offset_elems = start_0 * arr.strides[Axis]
-    new_base = Intrinsics.to_scalar(Intrinsics.offset(arr.ptr, Tile(offset_elems)))
+    new_base = Intrinsics.to_scalar(Intrinsics.offset(Tile(arr.ptr), Tile(offset_elems)))
     new_sizes = ntuple(i -> i == Axis ? new_axis_size : arr.sizes[i], Val(ndims(arr)))
     new_strides = ntuple(i -> arr.strides[i], Val(ndims(arr)))
-    sub = Intrinsics.slice(arr, new_base, new_sizes, new_strides)
+    sub = sliced_arraytype(typeof(arr))(new_base, new_sizes, new_strides)
     unsafe_view(sub, Val(Axis + 1), Base.tail(inds))
 end
 
@@ -63,6 +106,140 @@ Base.@constprop :aggressive function check_slice_bounds(r::UnitRange{T}) where {
     Intrinsics.assert(first(r) >= T(1), "@view: slice start must be ≥ 1")
     return
 end
+
+
+#=============================================================================
+ permutedims / transpose / reshape on TileArray
+=============================================================================#
+
+# These derive a new TileArray with adjusted sizes/strides (and sometimes a
+# different rank) without touching the underlying memory. The new aggregate
+# is built via the regular `TileArray{T,N,S}(ptr, sizes, strides)` inner
+# constructor; SROA eliminates the temporary so the IR sees direct field
+# references at each downstream use.
+
+"""
+    permuted_arraytype(SrcT, ::Val{Perm}) -> Type{<:TileArray}
+
+Result `TileArray` type for `permutedims(arr, Perm)`. Permutes the per-axis
+spec fields; alignment is preserved (the base pointer is unchanged); the
+contiguous flag is preserved iff `Perm[1] == 1` (since contiguity tracks
+`stride[1] == 1`).
+"""
+function permuted_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
+                            ::Val{Perm}) where {Perm}
+    spec = array_spec(SrcT)
+    elem_T = eltype(SrcT)
+    N = ndims(SrcT)
+    spec === nothing && return TileArray{elem_T, N}
+    new_contiguous = spec.contiguous && Perm[1] == 1
+    new_stride_div_by = ntuple(i -> spec.stride_div_by[Perm[i]], Val(N))
+    new_shape_div_by  = ntuple(i -> spec.shape_div_by[Perm[i]],  Val(N))
+    new_spec = ArraySpec{N, spec.alignment, new_contiguous,
+                         new_stride_div_by, new_shape_div_by}()
+    return TileArray{elem_T, N, new_spec}
+end
+
+function unsafe_permutedims(arr::TileArray{T, N}, ::Val{Perm}) where {T, N, Perm}
+    Perm isa NTuple{N, Int} ||
+        throw(ArgumentError("permutedims: Perm must be an NTuple{$N, Int}, got $Perm"))
+    new_sizes = ntuple(i -> arr.sizes[Perm[i]], Val(N))
+    new_strides = ntuple(i -> arr.strides[Perm[i]], Val(N))
+    permuted_arraytype(typeof(arr), Val(Perm))(arr.ptr, new_sizes, new_strides)
+end
+
+"""
+    reshaped_arraytype(SrcT, ::Val{NewShape}) -> Type{<:TileArray}
+
+Result `TileArray` type for `reshape(arr, NewShape)`. Strides are recomputed
+column-major (so the result is contiguous by construction). Alignment is
+preserved; per-axis `shape_div_by` is set from `NewShape` literals where
+known. Reshape is only meaningful when the source is fully dense
+column-major; the language-level overlay should reject non-contiguous
+sources.
+"""
+function reshaped_arraytype(@nospecialize(SrcT::Type{<:TileArray}),
+                            ::Val{NewShape}) where {NewShape}
+    spec = array_spec(SrcT)
+    elem_T = eltype(SrcT)
+    M = length(NewShape)
+    new_shape_div_by = ntuple(i -> NewShape[i], Val(M))
+    if spec === nothing
+        new_spec = ArraySpec{M, 0, true, ntuple(_ -> 0, Val(M)), new_shape_div_by}()
+    else
+        new_spec = ArraySpec{M, spec.alignment, true,
+                             ntuple(_ -> 0, Val(M)), new_shape_div_by}()
+    end
+    return TileArray{elem_T, M, new_spec}
+end
+
+function unsafe_reshape(arr::TileArray{T, N}, ::Val{NewShape}) where {T, N, NewShape}
+    size_elem_T = eltype(fieldtype(typeof(arr), :sizes))
+    new_sizes = _typed_shape(size_elem_T, Val(NewShape))
+    # Column-major strides: stride[1]=1, stride[i]=stride[i-1]*new_sizes[i-1].
+    # Uses cumprod-style accumulation via a @generated helper to keep the
+    # tuple build closure-free (closures over kernel-local values don't
+    # lower cleanly).
+    new_strides = _column_major_strides(new_sizes)
+    reshaped_arraytype(typeof(arr), Val(NewShape))(arr.ptr, new_sizes, new_strides)
+end
+
+@generated function _typed_shape(::Type{T}, ::Val{Shape}) where {T, Shape}
+    exprs = [:(T($s)) for s in Shape]
+    Expr(:tuple, exprs...)
+end
+
+@generated function _column_major_strides(sizes::NTuple{M, T}) where {M, T}
+    M == 0 && return :(())
+    exprs = Expr[]
+    push!(exprs, :(s1 = oneunit(T)))
+    args = [:s1]
+    for i in 2:M
+        prev = Symbol(:s, i - 1)
+        cur = Symbol(:s, i)
+        push!(exprs, :($cur = $prev * sizes[$(i - 1)]))
+        push!(args, cur)
+    end
+    quote
+        $(exprs...)
+        $(Expr(:tuple, args...))
+    end
+end
+
+#-----------------------------------------------------------------------------
+# permutedims / transpose → unsafe_permutedims
+#-----------------------------------------------------------------------------
+
+Base.permutedims(arr::TileArray{T, N}, perm::NTuple{N, Int}) where {T, N} =
+    unsafe_permutedims(arr, Val(perm))
+Base.permutedims(arr::TileArray{T, N}, ::Val{Perm}) where {T, N, Perm} =
+    unsafe_permutedims(arr, Val(Perm))
+
+# 2D transpose = permutedims(arr, (2, 1)). 1D transpose is intentionally
+# not provided — Julia Base would reshape to (1, N), but TileArrays produced
+# from a 1D source would have stride-1 in both dims and are rarely useful;
+# users can call `permutedims(arr, Val((1,)))` or work with the 1D directly.
+Base.transpose(arr::TileArray{T, 2}) where {T} =
+    unsafe_permutedims(arr, Val((2, 1)))
+
+#-----------------------------------------------------------------------------
+# reshape → unsafe_reshape
+#-----------------------------------------------------------------------------
+
+# Reshape requires a contiguous (column-major dense) source TileArray. Only
+# the `stride[1] == 1` half of that is encoded in `ArraySpec.contiguous`;
+# the rest (stride[i] == prod(size[1:i-1])) is the caller's responsibility.
+# The check fires `Intrinsics.assert(true, ...)` for contiguous specs (which
+# the assert emitter elides) and `Intrinsics.assert(false, ...)` for
+# non-contiguous specs (a compile-time-known kernel abort).
+function Base.reshape(arr::TileArray{T, N}, ::Val{NewShape}) where {T, N, NewShape}
+    spec = array_spec(typeof(arr))
+    Intrinsics.assert(spec !== nothing && spec.contiguous,
+                      "reshape: TileArray must be contiguous (stride[1] == 1)")
+    unsafe_reshape(arr, Val(NewShape))
+end
+Base.reshape(arr::TileArray, dims::NTuple{<:Any, Int}) = reshape(arr, Val(dims))
+Base.reshape(arr::TileArray, dims::Int...) = reshape(arr, Val(dims))
 
 
 # Helpers to deinterleave (acc1, elem1, acc2, elem2, ...) into separate tuples
@@ -131,7 +308,7 @@ Axis is 1-indexed. Equivalent to cld(size(arr, axis), shape[axis]).
 ```
 """
 @inline function num_tiles(arr::TileArray, axis::Integer, shape::NTuple{<:Any, Int})
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     Intrinsics.get_index_space_shape(pv, axis - One())  # convert to 0-indexed
 end
@@ -196,7 +373,7 @@ tile = ct.load(arr, (bidx, bidy), (TM, TN); order=(2, 1))
                       latency::Union{Int, Nothing}=nothing,
                       allow_tma::Union{Bool, Nothing}=nothing)
     matched = _match_shape(Val(shape), Val(ndims(arr)))
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, matched, padding_mode, order)
     tile = Intrinsics.load_partition_view(pv, latency, allow_tma, promote(index...) .- One())
     reshape(tile, shape)
@@ -209,7 +386,7 @@ end
 
 # Scalar indexing: arr[i, j, ...] → scalar T
 @overlay function Base.getindex(arr::TileArray{T, N}, indices::Vararg{Integer, N}) where {T, N}
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     shape = ntuple(_ -> 1, Val(N))
     pv = Intrinsics.make_partition_view(tv, shape, PaddingMode.Undetermined, nothing)
     tile = Intrinsics.load_partition_view(pv, nothing, nothing, promote(indices...) .- One())
@@ -288,7 +465,7 @@ end
 
 @inline function _store_reshaped(arr::TileArray{T}, tile::Tile{T},
                                  order, latency, allow_tma, indices::NTuple{<:Any, <:Integer}) where {T}
-    tv = Intrinsics.make_tensor_view(arr)
+    tv = Intrinsics.make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)
     pv = Intrinsics.make_partition_view(tv, size(tile), PaddingMode.Undetermined, order)
     Intrinsics.store_partition_view(pv, tile, latency, allow_tma, indices)
 end
@@ -382,7 +559,7 @@ tile = ct.gather(arr, indices; mask=valid_mask, padding_value=-1.0f0)
                         latency::Union{Int, Nothing}=nothing) where {T, I <: Integer}
     indices_0 = indices .- one(I)
     indices_i32 = convert(Tile{Int32}, indices_0)
-    ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), indices_i32)
 
     bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
@@ -423,7 +600,7 @@ Indices are 1-indexed. Index tiles are broadcast to a common shape.
     stride1 = broadcast_to(stride1_0d, S)
 
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
     bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
@@ -455,7 +632,7 @@ ct.scatter(arr, indices, result_tile; mask=valid_mask)
                          latency::Union{Int, Nothing}=nothing) where {T, I <: Integer, S}
     indices_0 = indices .- one(I)
     indices_i32 = convert(Tile{Int32}, indices_0)
-    ptr_tile = Intrinsics.offset(array.ptr, indices_i32)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), indices_i32)
 
     bounds_mask = check_bounds ? _bounds_mask_1d(indices_i32, array) : nothing
     final_mask = _combine_masks(bounds_mask, mask)
@@ -500,7 +677,7 @@ Indices are 1-indexed. Index tiles and value tile must broadcast to same shape.
 
     # Compute linear index = idx0 * stride0 + idx1 * stride1
     linear_idx = idx0_i32 .* stride0 + idx1_i32 .* stride1
-    ptr_tile = Intrinsics.offset(array.ptr, linear_idx)
+    ptr_tile = Intrinsics.offset(Tile(array.ptr), linear_idx)
 
     bounds_mask = check_bounds ? _bounds_mask_2d(idx0_i32, idx1_i32, array, S) : nothing
     final_mask = _combine_masks(bounds_mask, mask)

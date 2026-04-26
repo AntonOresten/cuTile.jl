@@ -127,7 +127,7 @@ A CGVal takes one of four forms, distinguished by field states:
 | Variant              | `v`              | `type_id`    | `arg_ref`      | Notes                                          |
 |:---------------------|:-----------------|:-------------|:---------------|:-----------------------------------------------|
 | Concrete SSA value   | `Value`          | `TypeId`     | `nothing`      | Normal runtime value                           |
-| Multi-value result   | `Vector{Value}`  | `nothing`    | `nothing`      | From loop/if ops; extracted via `getfield`      |
+| Multi-value result   | `Vector{Value}`  | `nothing`    | `nothing`      | From loop/if ops; extracted via `getfield`     |
 | Lazy argument ref    | `nothing`        | `nothing`    | `(idx, chain)` | Deferred field access into destructured args   |
 | Ghost value          | `nothing`        | `TypeId(-1)` | `nothing`      | Zero-size type, compile-time only              |
 
@@ -156,7 +156,7 @@ diverge from the underlying IR type (e.g., broadcasting semantics, type promotio
 
 - `constant`: `Some(x)` for compile-time constants (ghost `Constant{T,V}` types), `nothing`
   otherwise.
-- `tuple`: component refs (`SSAValue`s etc.) for tuple values used by `cat()` and similar.
+- `tuple`: component refs (`SSAValue`s, `CGVal`s, …) for tuple values used by `cat()` and similar.
 """
 struct CGVal
     v::Union{Value, Vector{Value}, Nothing}  # Single value, multi-value, or nothing
@@ -265,10 +265,6 @@ mutable struct CGCtx
     arg_flat_values::Dict{Tuple{Int, Vector{Int}}, Vector{Value}}
     arg_types::Dict{Int, Type}
 
-    # Cached TensorViews for TileArray arguments
-    # Key: arg_idx::Int for top-level, or (arg_idx, path) for nested
-    tensor_views::Dict{Any, Tuple{Value, TypeId}}
-
     # Bytecode infrastructure
     cb::CodeBuilder
     tt::TypeTable
@@ -318,7 +314,6 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         Dict{Int, CGVal}(),
         Dict{Tuple{Int, Vector{Int}}, Vector{Value}}(),
         Dict{Int, Type}(),
-        Dict{Int, Tuple{Value, TypeId}}(),
         cb,
         tt,
         sci,
@@ -414,15 +409,36 @@ function collect_child_values(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, n::In
 end
 
 """
+    boundary_jltype(T) -> Type
+
+Promote a primitive scalar Julia type (`Number` or `Ptr`) to its 0-D tile
+representation `Tile{T, Tuple{}}` for the codegen boundary. Already-tile
+types and other types pass through unchanged.
+
+Used at every site that mints a CGVal from a kernel parameter / SSA leaf:
+the IR is uniformly tile-typed (matches cuTile Python's invariant that
+"scalar = 0-D tile"), even though Julia's source-level inference may
+annotate the value as a scalar `T`. Mirrors the promotion already applied
+to `Number` args; extends to `Ptr` so chained pointer arithmetic
+(slice-of-slice, recursive `unsafe_view`) doesn't trip on a
+scalar/tile mismatch after `scalar_elim_pass!`.
+"""
+boundary_jltype(@nospecialize(T)) =
+    (T <: Number || T <: Ptr) ? Tile{T, Tuple{}} : T
+
+"""
     try_materialize_scalar(ctx, arg_idx, path, rt) -> Union{CGVal, Nothing}
 
 If `path` maps to exactly one flat value, return a concrete CGVal for it.
+Promotes the jltype via `boundary_jltype` so the CGVal carries the
+tile-typed view of the value (the IR-level Tile IR type is always tiled
+regardless).
 """
 function try_materialize_scalar(ctx::CGCtx, arg_idx::Int, path::Vector{Int}, @nospecialize(rt))
     values = get_arg_flat_values(ctx, arg_idx, path)
     if values !== nothing && length(values) == 1
         type_id = tile_type_for_julia!(ctx, rt)
-        return CGVal(values[1], type_id, rt)
+        return CGVal(values[1], type_id, boundary_jltype(rt))
     end
     nothing
 end
@@ -430,8 +446,11 @@ end
 """
     resolve_arg_ref(ctx, arg_idx, chain, idx, rt) -> CGVal
 
-Extend an arg_ref chain by `idx`, materializing to a concrete value if the path
-maps to a leaf scalar, otherwise returning a new lazy arg_ref.
+Extend an arg_ref chain by `idx` and pick the right CGVal variant for the
+new path:
+
+- If the path maps to a single scalar leaf, materialize a concrete CGVal.
+- Otherwise return a new lazy arg_ref (e.g. for further struct navigation).
 """
 function resolve_arg_ref(ctx::CGCtx, arg_idx::Int, chain::Vector{Int}, idx::Int, @nospecialize(rt))
     new_chain = [chain..., idx]
@@ -469,8 +488,27 @@ error messages.
 """
 function resolve_tuple(ctx::CGCtx, @nospecialize(arg), name::AbstractString)
     tv = emit_value!(ctx, arg)
-    (tv === nothing || tv.tuple === nothing) &&
-        throw(IRError("$name must be a tuple"))
+    tv === nothing && throw(IRError("$name must be a tuple"))
+
+    # arg_ref of tuple type: expand from arg_flat_values via path-keyed scalars.
+    # Used when a destructured arg's tuple-typed field (e.g. TileArray.sizes)
+    # is consumed directly without going through Core.tuple in the IR.
+    if tv.arg_ref !== nothing
+        T_jl = CC.widenconst(tv.jltype)
+        T_jl <: Tuple || throw(IRError("$name must be a tuple"))
+        N = length(T_jl.parameters)
+        arg_idx, chain = tv.arg_ref
+        return CGVal[
+            let elem_T = T_jl.parameters[i],
+                cv = try_materialize_scalar(ctx, arg_idx, [chain..., i], elem_T)
+                cv === nothing && throw(IRError("$name: cannot resolve element $i"))
+                cv
+            end
+            for i in 1:N
+        ]
+    end
+
+    tv.tuple === nothing && throw(IRError("$name must be a tuple"))
     return CGVal[
         let comp = emit_value!(ctx, ref)
             comp === nothing && throw(IRError("$name: cannot resolve element"))

@@ -171,128 +171,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_partition_view), a
 end
 
 """
-    cache_tensor_view!(ctx, arg_idx[, path, tilearray_type])
-
-Create a TensorView for a TileArray argument at kernel entry.
-Uses TileArray's ndim from type and requires explicit sizes/strides from parameters.
-
-When `path` is provided (non-empty), the TileArray is nested inside a destructured struct
-and its flat values are found at paths like `[path..., fieldindex(T, :ptr)]`.
-"""
-function cache_tensor_view!(ctx::CGCtx, arg_idx::Int,
-                            path::Vector{Int}=Int[],
-                            @nospecialize(tilearray_type::Type=Nothing))
-    cb = ctx.cb
-
-    if tilearray_type === Nothing
-        tilearray_type = get_arg_type(ctx, arg_idx)
-    end
-    ndim = ndims(tilearray_type)
-    size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
-    scalar_size_type = tile_type_for_julia!(ctx, size_elem_type)
-
-    # Build paths for nested fields using field indices
-    ptr_fi = Base.fieldindex(tilearray_type, :ptr)
-    sizes_fi = Base.fieldindex(tilearray_type, :sizes)
-    strides_fi = Base.fieldindex(tilearray_type, :strides)
-
-    ptr_path = [path..., ptr_fi]
-    sizes_path = [path..., sizes_fi]
-    strides_path = [path..., strides_fi]
-
-    ptr_vals = get_arg_flat_values(ctx, arg_idx, ptr_path)
-    (ptr_vals === nothing || isempty(ptr_vals)) && throw(IRError("Cannot get ptr from TileArray argument at path $path"))
-    array_val = ptr_vals[1]
-
-    # Get sizes and strides from parameters (required at kernel entry)
-    # Tuple fields are destructured per-element, so collect children
-    sizes_from_arg = collect_child_values(ctx, arg_idx, sizes_path, ndim)
-    strides_from_arg = collect_child_values(ctx, arg_idx, strides_path, ndim)
-
-    sizes_from_arg === nothing && throw(IRError("TileArray at kernel entry requires explicit sizes"))
-    length(sizes_from_arg) < ndim && throw(IRError("TileArray sizes don't match ndim"))
-
-    # Sizes in Julia column-major order from parameters
-    julia_size_vals = Value[sizes_from_arg[i] for i in 1:ndim]
-
-    # Strides from parameters or compute for contiguous arrays (Julia column-major order)
-    if strides_from_arg !== nothing && length(strides_from_arg) >= ndim
-        julia_stride_vals = Value[strides_from_arg[i] for i in 1:ndim]
-    else
-        # Compute column-major strides: stride[1]=1, stride[i]=stride[i-1]*size[i-1]
-        julia_stride_vals = Value[]
-        for dim in 1:ndim
-            if dim == 1
-                stride_bytes = reinterpret(UInt8, [size_elem_type(1)])
-                push!(julia_stride_vals, encode_ConstantOp!(cb, scalar_size_type, collect(stride_bytes)))
-            else
-                push!(julia_stride_vals, encode_MulIOp!(cb, scalar_size_type, julia_stride_vals[end], julia_size_vals[dim-1]))
-            end
-        end
-    end
-
-    key = tensor_view_key(arg_idx, path)
-    create_tensor_view!(ctx, key, array_val, julia_size_vals, julia_stride_vals,
-                        tilearray_type)
-end
-
-"""
-    tensor_view_key(arg_idx, path) -> Any
-
-Build the cache key used by `ctx.tensor_views`. Bare `arg_idx` for empty paths
-(top-level args / slice results), a `(arg_idx, path)` tuple for nested paths.
-"""
-tensor_view_key(arg_idx::Int, path::Vector{Int}) =
-    isempty(path) ? arg_idx : (arg_idx, path)
-
-"""
-    create_tensor_view!(ctx, key, base_ptr, sizes, strides, tilearray_type) -> (Value, TypeId)
-
-Emit a `MakeTensorViewOp` from pre-resolved column-major base pointer, sizes,
-and strides. Handles TileArray-style `AssumeOp` annotations and caches the
-resulting TensorView under `key` for later retrieval by `make_tensor_view`.
-
-`sizes` and `strides` are Julia column-major (reversed on the way to Tile IR).
-"""
-function create_tensor_view!(ctx::CGCtx, key,
-                             array_val::Value,
-                             julia_size_vals::Vector{Value},
-                             julia_stride_vals::Vector{Value},
-                             @nospecialize(tilearray_type::Type))
-    cb = ctx.cb
-    tt = ctx.tt
-
-    elem_type = eltype(tilearray_type)
-    ndim = ndims(tilearray_type)
-    spec = array_spec(tilearray_type)
-    dtype = julia_to_tile_dtype!(tt, elem_type)
-    size_elem_type = eltype(fieldtype(tilearray_type, :sizes))
-    scalar_size_type = tile_type_for_julia!(ctx, size_elem_type)
-
-    # Reverse sizes and strides for Tile IR row-major order
-    size_vals = reverse(julia_size_vals)
-    stride_vals = reverse(julia_stride_vals)
-
-    # TensorView type (strides also in Tile IR order: last dim = contiguous)
-    tv_shape = RowMajorShape(fill(DYNAMIC_SHAPE, ndim))
-    tv_strides = compute_tensor_view_strides(spec, ndim)
-    tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
-
-    # Emit AssumeOps for optimization hints
-    if spec !== nothing
-        array_val, size_vals, stride_vals = emit_assume_ops!(ctx, array_val, size_vals, stride_vals, spec, dtype, scalar_size_type; tv_strides)
-    end
-
-    # Filter strides to only pass dynamic ones as operands
-    dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
-
-    # Create tensor view
-    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, array_val, size_vals, dynamic_stride_vals)
-    ctx.tensor_views[key] = (tensor_view, tv_type)
-    return tensor_view, tv_type
-end
-
-"""
     compute_tensor_view_strides(array_spec, ndim) -> Vector{Int64}
 
 Compute the stride values for a TensorView type based on ArraySpec.
@@ -329,38 +207,75 @@ function filter_dynamic_strides(stride_vals::Vector{Value}, tv_strides::Vector{I
 end
 
 # cuda_tile.make_tensor_view
-@intrinsic make_tensor_view(arr::TileArray{T, N}) where {T, N}
-function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view), @nospecialize(arr))
-    t = CC.widenconst(arr)
-    t <: TileArray || return nothing
-    TensorView{eltype(t), ndims(t)}
+#
+# Takes the originating TileArray type plus its destructured pieces (ptr,
+# sizes-tuple, strides-tuple) so the language layer can call it directly with
+# `make_tensor_view(typeof(arr), arr.ptr, arr.sizes, arr.strides)`. The Tile
+# IR `MakeTensorViewOp` consumes the destructured pieces as separate operands;
+# this matches that 1:1 (no aggregate side-table). The TileArray type carries
+# the `ArraySpec` (alignment, contiguity, per-axis divisibility) needed for
+# AssumeOp emission.
+#
+# Each call emits a fresh `MakeTensorViewOp` (with its own AssumeOp chain).
+# `cuda_tile_translate`'s bytecode optimizer is expected to CSE redundant
+# tensor views; AssumeOps are likewise pure and dedup as well.
+@intrinsic make_tensor_view(::Type{T}, ptr, sizes, strides) where {T}
+function tfunc(𝕃, ::typeof(Intrinsics.make_tensor_view),
+               @nospecialize(T_arg), @nospecialize args...)
+    T_outer = CC.widenconst(T_arg)
+    T_outer isa DataType && T_outer <: Type || return nothing
+    T = T_outer.parameters[1]
+    T isa Type && T <: TileArray || return nothing
+    TensorView{eltype(T), ndims(T)}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args)
-    array_arg = args[1]
+    cb = ctx.cb
+    tt = ctx.tt
 
-    # Case 1: Direct top-level argument
-    arg_idx = extract_argument_index(array_arg)
-    if arg_idx !== nothing && is_destructured_arg(ctx, arg_idx)
-        haskey(ctx.tensor_views, arg_idx) || throw(IRError("TensorView not found for arg $arg_idx"))
-        tensor_view, tv_type = ctx.tensor_views[arg_idx]
-        tilearray_type = get_arg_type(ctx, arg_idx)
-        result_jltype = TensorView{eltype(tilearray_type), ndims(tilearray_type)}
-        return CGVal(tensor_view, tv_type, result_jltype)
+    T_arg, ptr_arg, sizes_arg, strides_arg = args
+
+    T = @something get_constant(ctx, T_arg) throw(IRError("make_tensor_view: TileArray type must be a compile-time constant"))
+    T isa Type && T <: TileArray ||
+        throw(IRError("make_tensor_view: first arg must be a TileArray type, got $T"))
+
+    elem_T = eltype(T)
+    ndim = ndims(T)
+    spec = array_spec(T)
+    dtype = julia_to_tile_dtype!(tt, elem_T)
+    size_elem_T = eltype(fieldtype(T, :sizes))
+    scalar_size_type = tile_type_for_julia!(ctx, size_elem_T)
+
+    # Resolve operands. ptr is a single Value; sizes/strides expand to N values.
+    ptr_tv = emit_value!(ctx, ptr_arg)
+    ptr_tv === nothing && throw(IRError("make_tensor_view: cannot resolve ptr"))
+    base_ptr = ptr_tv.v::Value
+
+    size_tvs = resolve_tuple(ctx, sizes_arg, "make_tensor_view: sizes")
+    stride_tvs = resolve_tuple(ctx, strides_arg, "make_tensor_view: strides")
+    length(size_tvs) == ndim ||
+        throw(IRError("make_tensor_view: expected $ndim sizes, got $(length(size_tvs))"))
+    length(stride_tvs) == ndim ||
+        throw(IRError("make_tensor_view: expected $ndim strides, got $(length(stride_tvs))"))
+
+    # Julia column-major order: (stride/size for dim 1, dim 2, ...). Reverse to
+    # Tile IR's row-major order at the IR boundary.
+    size_vals = reverse!(Value[tv.v for tv in size_tvs])
+    stride_vals = reverse!(Value[tv.v for tv in stride_tvs])
+
+    tv_shape = RowMajorShape(fill(DYNAMIC_SHAPE, ndim))
+    tv_strides = compute_tensor_view_strides(spec, ndim)
+    tv_type = tensor_view_type!(tt, dtype, tv_shape, tv_strides)
+
+    if spec !== nothing
+        base_ptr, size_vals, stride_vals = emit_assume_ops!(ctx, base_ptr, size_vals, stride_vals,
+                                                            spec, dtype, scalar_size_type; tv_strides)
     end
 
-    # Case 2: Lazy arg ref (nested TileArray, or slice result)
-    tv = emit_value!(ctx, array_arg)
-    if tv !== nothing && is_arg_ref(tv)
-        arg_idx, chain = tv.arg_ref
-        key = tensor_view_key(arg_idx, chain)
-        haskey(ctx.tensor_views, key) || throw(IRError("TensorView not found for arg $arg_idx at path $chain"))
-        tensor_view, tv_type = ctx.tensor_views[key]
-        ta_type = CC.widenconst(tv.jltype)
-        result_jltype = TensorView{eltype(ta_type), ndims(ta_type)}
-        return CGVal(tensor_view, tv_type, result_jltype)
-    end
+    dynamic_stride_vals = filter_dynamic_strides(stride_vals, tv_strides)
 
-    throw(IRError("make_tensor_view() requires a TileArray argument (direct or nested)"))
+    tensor_view = encode_MakeTensorViewOp!(cb, tv_type, base_ptr, size_vals, dynamic_stride_vals)
+    result_jltype = TensorView{elem_T, ndim}
+    return CGVal(tensor_view, tv_type, result_jltype)
 end
 
 # cuda_tile.store_view_tko

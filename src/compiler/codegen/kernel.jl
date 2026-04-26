@@ -116,7 +116,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
             # Promote scalar kernel args to 0D tile jltype at the boundary.
             # sci.argtypes retains the Julia signature (Int32), but the IR
             # body is uniformly tile-typed after scalar_elim_pass!.
-            jltype = argtype <: Number ? Tile{argtype, Tuple{}} : sci.argtypes[arg_idx]
+            jltype = boundary_jltype(argtype)
             tv = CGVal(val, type_id, jltype)
             ctx[SlotNumber(arg_idx)] = tv
             ctx[Argument(arg_idx)] = tv
@@ -152,11 +152,6 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         ctx[Argument(arg_idx)] = tv
     end
 
-    # Create TensorViews for all TileArray arguments at kernel entry
-    for (arg_idx, argtype) in ctx.arg_types
-        create_tensor_views!(ctx, arg_idx, argtype, Int[])
-    end
-
     # Hoist early returns BEFORE token ordering — hoist_returns! rewrites
     # ReturnNode terminators to YieldOp, which the token pass then extends.
     hoist_returns!(ctx.sci.entry)
@@ -171,24 +166,6 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     emit_block!(ctx, ctx.sci.entry)
 
     finalize_function!(func_buf, cb, writer.debug_info)
-end
-
-"""
-    create_tensor_views!(ctx, arg_idx, T, path)
-
-Walk the type tree and create TensorViews for all nested TileArrays.
-"""
-function create_tensor_views!(ctx::CGCtx, arg_idx::Int, @nospecialize(T), path::Vector{Int})
-    if T <: TileArray
-        cache_tensor_view!(ctx, arg_idx, path, T)
-    else
-        for fi in 1:fieldcount(T)
-            ftype = fieldtype(T, fi)
-            (is_ghost_type(ftype) || isprimitivetype(ftype)) && continue
-            field_path = [path..., fi]
-            create_tensor_views!(ctx, arg_idx, ftype, field_path)
-        end
-    end
 end
 
 """
@@ -342,7 +319,7 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
 
     # Helper to promote scalar arg types to 0D tile at the boundary.
     # sci.argtypes retains the Julia signature; the IR body is tile-typed.
-    _arg_jltype(T) = let U = CC.widenconst(T); U <: Number ? Tile{U, Tuple{}} : T end
+    _arg_jltype(T) = boundary_jltype(CC.widenconst(T))
 
     if mi.def.isva
         # Varargs: fixed argtypes are 1:n_argtypes-1, last is the varargs tuple.
