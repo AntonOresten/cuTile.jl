@@ -256,22 +256,24 @@ any scalar function element-wise over tiles: `sqrt.(tile)`, `max.(a, b)`,
 
 | Operation | Description |
 |-----------|-------------|
-| `rand()` | Random `Float32` scalar (uses `Random.default_rng()`) |
-| `rand(T)` | Random scalar of type `T` |
-| `rand(T, dims)` / `rand(dims)` | Random tile |
+| `rand()` | Uniform `Float32` scalar in `[0, 1)` (uses `Random.default_rng()`) |
+| `rand(T)` / `rand(T, dims)` / `rand(dims)` | Uniform scalar or tile |
+| `randn()` / `randn(T)` / `randn(T, dims)` | Standard normal scalar or tile (Box-Muller) |
+| `randexp()` / `randexp(T)` / `randexp(T, dims)` | Standard exponential scalar or tile (`-log(U)`) |
 | `ct.DeviceRNG()` | Open an independent RNG stream |
-| `Random.rand(rng, ...)` | Explicit-stream variants |
+| `Random.rand(rng, ...)` / `Random.randn(rng, ...)` / `Random.randexp(rng, ...)` | Explicit-stream variants |
 | `Random.seed!(rng, seed)` | Re-seed a stream |
 
-cuTile uses a tile-vectorised Philox2x32-7 generator. Supported output types
-include all of `Int{8,16,32,64}`, `UInt{8,16,32,64}`, `Float16`, `BFloat16`,
-`Float32` and `Float64`. Different `DeviceRNG()` call sites yield independent
-streams, all keyed on a per-launch host seed for cross-launch divergence.
+cuTile uses a tile-vectorised Philox2x32-7 generator. `rand` supports all of
+`Int{8,16,32,64}`, `UInt{8,16,32,64}`, `Float16`, `BFloat16`, `Float32` and
+`Float64`; `randn` and `randexp` cover the four floating-point types. Different
+`DeviceRNG()` call sites yield independent streams, all keyed on a per-launch
+host seed for cross-launch divergence.
 
 ```julia
 function noise(out)
     pid = ct.bid(1)
-    t = rand(Float32, (256,))          # default RNG
+    t = randn(Float32, (256,))         # default RNG, standard normal
     ct.store(out; index=pid, tile=t)
     return
 end
@@ -684,7 +686,7 @@ Works with 1D through N-dimensional arrays.
 ### Random Number Generation
 
 `cuTile.RNG` fills `CuArray`s on the device using the same Philox2x32-7
-generator as the in-kernel `rand`:
+generator as the in-kernel `rand` / `randn` / `randexp`:
 
 ```julia
 using CUDA
@@ -692,16 +694,21 @@ import cuTile as ct
 
 A = CUDA.zeros(Float32, 1024)
 rng = ct.RNG(42)
-rand!(rng, A)                  # `Random.rand!`, in-place
+rand!(rng, A)                  # `Random.rand!`, uniform in-place
+randn!(rng, A)                 # `Random.randn!`, standard normal
+randexp!(rng, A)               # `Random.randexp!`, standard exponential
 B = rand(rng, Float64, 16)     # out-of-place
+N = randn(rng, Float32, 1024)  # out-of-place normal
 
-# Or via the global helper (matches CUDA.rand! / CUDA.seed!)
+# Or via the global helpers (match CUDA.rand! / CUDA.seed!)
 ct.rand!(A)
+ct.randn!(A)
+ct.randexp!(A)
 ct.seed!(0xdeadbeef)
 ```
 
 Supports the same output types as the in-kernel API. The counter is
-auto-advanced after each `rand!`, so consecutive calls on the same `RNG`
+auto-advanced after each fill, so consecutive calls on the same `RNG`
 produce disjoint streams.
 
 
