@@ -252,6 +252,31 @@ any scalar function element-wise over tiles: `sqrt.(tile)`, `max.(a, b)`,
 | `ceil(x)`, `floor(x)` | Rounding |
 | `ct.@fpmode rounding_mode=ct.Rounding.Approx flush_to_zero=true begin ... end` | Scoped FP rounding mode and flush-to-zero |
 
+### Random Numbers
+
+| Operation | Description |
+|-----------|-------------|
+| `rand()` | Random `Float32` scalar (uses `Random.default_rng()`) |
+| `rand(T)` | Random scalar of type `T` |
+| `rand(T, dims)` / `rand(dims)` | Random tile |
+| `ct.DeviceRNG()` | Open an independent RNG stream |
+| `Random.rand(rng, ...)` | Explicit-stream variants |
+| `Random.seed!(rng, seed)` | Re-seed a stream |
+
+cuTile uses a tile-vectorised Philox2x32-7 generator. Supported output types
+include all of `Int{8,16,32,64}`, `UInt{8,16,32,64}`, `Float16`, `BFloat16`,
+`Float32` and `Float64`. Different `DeviceRNG()` call sites yield independent
+streams, all keyed on a per-launch host seed for cross-launch divergence.
+
+```julia
+function noise(out)
+    pid = ct.bid(1)
+    t = rand(Float32, (256,))          # default RNG
+    ct.store(out; index=pid, tile=t)
+    return
+end
+```
+
 ### Comparison
 | Operation | Description |
 |-----------|-------------|
@@ -655,6 +680,29 @@ D = ct.@. A + B
 The entire broadcast expression is fused into a single cuTile kernel. Tile sizes
 are automatically chosen based on array dimensions (power-of-2, budget-based).
 Works with 1D through N-dimensional arrays.
+
+### Random Number Generation
+
+`cuTile.RNG` fills `CuArray`s on the device using the same Philox2x32-7
+generator as the in-kernel `rand`:
+
+```julia
+using CUDA
+import cuTile as ct
+
+A = CUDA.zeros(Float32, 1024)
+rng = ct.RNG(42)
+rand!(rng, A)                  # `Random.rand!`, in-place
+B = rand(rng, Float64, 16)     # out-of-place
+
+# Or via the global helper (matches CUDA.rand! / CUDA.seed!)
+ct.rand!(A)
+ct.seed!(0xdeadbeef)
+```
+
+Supports the same output types as the in-kernel API. The counter is
+auto-advanced after each `rand!`, so consecutive calls on the same `RNG`
+produce disjoint streams.
 
 
 ## Acknowledgments
