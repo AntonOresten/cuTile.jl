@@ -280,7 +280,7 @@ BroadcastStyle(::cuTile.TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = cuTile.T
 =============================================================================#
 
 import Random
-using cuTile: RNG, RandTypes
+using cuTile: RNG, RandTypes, RandnTypes
 
 function Random.rand!(rng::RNG, A::CuArray{T}) where {T<:RandTypes}
     n = length(A)
@@ -304,6 +304,25 @@ Random.rand(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:RandTy
 Random.rand(rng::RNG, dims::Dims) = Random.rand(rng, Float32, dims)
 Random.rand(rng::RNG, d1::Integer, dims::Integer...) = Random.rand(rng, Dims((d1, dims...)))
 
+# `randn!` mirrors `rand!`: same per-block tile, same counter accounting.
+# The device-side `randn_tile` matches `rand`'s T-agnostic "advance by element
+# count" scheme, so the host bookkeeping is identical.
+function Random.randn!(rng::RNG, A::CuArray{T}) where {T<:RandnTypes}
+    n = length(A)
+    n == 0 && return A
+    n_blocks = cld(n, cuTile.RAND_FILL_TILE)
+    cuTile.launch(cuTile.randn_fill_kernel, n_blocks, A, rng.seed, rng.counter)
+    cuTile.advance_counter!(rng, UInt32(n_blocks * cuTile.RAND_FILL_TILE))
+    return A
+end
+
+Random.randn(rng::RNG, ::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randn!(rng, CuArray{T}(undef, dims))
+Random.randn(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randn(rng, T, Dims((d1, dims...)))
+Random.randn(rng::RNG, dims::Dims) = Random.randn(rng, Float32, dims)
+Random.randn(rng::RNG, d1::Integer, dims::Integer...) = Random.randn(rng, Dims((d1, dims...)))
+
 # `cuTile.rand` / `cuTile.rand!` aliases, mirroring `CUDA.rand` / `CUDA.rand!`.
 cuTile.rand(::Type{T}, dims::Dims) where {T<:RandTypes} =
     Random.rand(cuTile.get_global_rng(), T, dims)
@@ -314,5 +333,16 @@ cuTile.rand(d1::Integer, dims::Integer...) = cuTile.rand(Dims((d1, dims...)))
 
 cuTile.rand!(A::CuArray{<:RandTypes}) =
     Random.rand!(cuTile.get_global_rng(), A)
+
+# `cuTile.randn` / `cuTile.randn!` aliases, mirroring `CUDA.randn` / `CUDA.randn!`.
+cuTile.randn(::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randn(cuTile.get_global_rng(), T, dims)
+cuTile.randn(::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    cuTile.randn(T, Dims((d1, dims...)))
+cuTile.randn(dims::Dims) = cuTile.randn(Float32, dims)
+cuTile.randn(d1::Integer, dims::Integer...) = cuTile.randn(Dims((d1, dims...)))
+
+cuTile.randn!(A::CuArray{<:RandnTypes}) =
+    Random.randn!(cuTile.get_global_rng(), A)
 
 end

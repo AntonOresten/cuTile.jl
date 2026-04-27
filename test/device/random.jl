@@ -223,6 +223,259 @@ end
 end
 
 
+# Bin counts under the standard normal CDF — used for distribution-shape
+# checks below. Bin edges are (-∞, -1], (-1, 0], (0, 1], (1, ∞), giving
+# expected probabilities (Φ(-1), Φ(0)-Φ(-1), Φ(1)-Φ(0), 1-Φ(1)) ≈
+# (0.1587, 0.3413, 0.3413, 0.1587).
+function normal_bin_counts(v)
+    counts = zeros(Int, 4)
+    for x in v
+        x_f = Float64(x)
+        idx = x_f <= -1 ? 1 : x_f <= 0 ? 2 : x_f <= 1 ? 3 : 4
+        counts[idx] += 1
+    end
+    counts
+end
+
+const NORMAL_BIN_PROBS = (0.1587, 0.3413, 0.3413, 0.1587)
+
+@testset "device randn" begin
+
+@testset "typed randn surfaces (T=$T, dims=$dims)" for (T, dims) in
+        ((Float32, (16,)), (Float32, (32,)), (Float32, (64,)),
+         (Float64, (16,)),
+         (Float16, (16,)), (ct.BFloat16, (16,)))
+
+    # Same surface coverage as the typed-rand testset: scalar, NTuple-typed
+    # tile, and explicit-RNG variadic form. Each surface writes to its own
+    # output array; the explicit-RNG path also exercises a `DeviceRNG()`
+    # stream allocation distinct from the default stream.
+    function k_typed_surfaces(o1::ct.TileArray{T, 1},
+                              o2::ct.TileArray{T, 1},
+                              o3::ct.TileArray{T, 1},
+                              ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+        pid = ct.bid(1)
+        rng = ct.DeviceRNG(); Random.seed!(rng, 1)
+        o1[pid] = randn(T)
+        ct.store(o2, pid, randn(T, dims))
+        ct.store(o3, pid, randn(rng, T, prod(dims)))
+        return
+    end
+
+    n_blocks = 64
+    m = prod(dims)
+    o1 = CUDA.zeros(T, n_blocks)
+    o2 = CUDA.zeros(T, n_blocks * m)
+    o3 = CUDA.zeros(T, n_blocks * m)
+    ct.launch(k_typed_surfaces, n_blocks, o1, o2, o3, T, ct.Constant(dims))
+
+    # Type and finiteness on every surface. `o1` is `n_blocks = 64` scalar
+    # draws — too small for distribution-shape testing, so we only check
+    # eltype/finiteness here.
+    for v in (Array(o1), Array(o2), Array(o3))
+        @test eltype(v) === T
+        @test all(isfinite, v)
+    end
+
+    # Distribution-shape check on the larger draws (N=1024..4096). With 4
+    # bins under the standard normal CDF, the smallest bin (p≈0.16) has
+    # σ ≈ √(N·0.13). A 10%-of-N tolerance covers ≥5σ at N=1024, so the
+    # check is flake-free across the per-launch-randomized default-stream
+    # seed. Mean/std are a coarse second sanity at the same scale.
+    for v in (Array(o2), Array(o3))
+        counts = normal_bin_counts(v)
+        N = length(v)
+        for (i, p) in enumerate(NORMAL_BIN_PROBS)
+            @test abs(counts[i] - N * p) < N * 0.1
+        end
+
+        v_f64 = Float64.(v)
+        sample_mean = sum(v_f64) / N
+        sample_std  = sqrt(sum((v_f64 .- sample_mean).^2) / N)
+        # SE/√N at N=1024 is ~0.031 (mean) and ~0.022 (std); 5σ ≈ 0.16 and
+        # 0.11. Widen for narrow floats whose rounding bias dominates.
+        tol_mean = T <: Union{Float16, ct.BFloat16} ? 0.20 : 0.15
+        tol_std  = T <: Union{Float16, ct.BFloat16} ? 0.15 : 0.10
+        @test abs(sample_mean) < tol_mean
+        @test abs(sample_std - 1) < tol_std
+    end
+end
+
+@testset "untyped randn defaults to Float32" begin
+    # Untyped surfaces all default to Float32 — overlay choice diverges from
+    # stdlib's Float64 (matches the rand testset's same-shaped Float32
+    # default). Bare `randn()`, `randn(NTuple)`, variadic + explicit RNG,
+    # and the multi-dim variadic + reshape path are all routed through the
+    # Float32 default.
+    function k_untyped_surfaces(o1::ct.TileArray{Float32, 1},
+                                o2::ct.TileArray{Float32, 1},
+                                o3::ct.TileArray{Float32, 1},
+                                o4::ct.TileArray{Float32, 1})
+        pid = ct.bid(1)
+        rng = ct.DeviceRNG(); Random.seed!(rng, 1)
+        o1[pid] = randn()
+        ct.store(o2, pid, randn((16,)))
+        ct.store(o3, pid, randn(rng, 16))
+        ct.store(o4, pid, ct.reshape(randn(Float32, 4, 4), (16,)))
+        return
+    end
+
+    n_blocks = 64
+    o1 = CUDA.zeros(Float32, n_blocks)
+    o2 = CUDA.zeros(Float32, n_blocks * 16)
+    o3 = CUDA.zeros(Float32, n_blocks * 16)
+    o4 = CUDA.zeros(Float32, n_blocks * 16)
+    ct.launch(k_untyped_surfaces, n_blocks, o1, o2, o3, o4)
+    for v in (Array(o1), Array(o2), Array(o3), Array(o4))
+        @test eltype(v) === Float32
+        @test all(isfinite, v)
+    end
+    # Bin-count distribution check on the tile draws (N=1024) — same
+    # rationale as the typed-surfaces testset.
+    for o in (o2, o3, o4)
+        counts = normal_bin_counts(Array(o))
+        N = length(o)
+        for (i, p) in enumerate(NORMAL_BIN_PROBS)
+            @test abs(counts[i] - N * p) < N * 0.1
+        end
+    end
+end
+
+@testset "in-kernel `Random.seed!` is deterministic across launches (randn)" begin
+    # randn analog of the rand determinism check: `Random.seed!` re-keys
+    # the default stream, and `randn_tile` reads that same stream, so
+    # two launches with the same in-kernel seed must agree.
+    function k(out::ct.TileArray{Float32, 1}, seed::UInt32)
+        Random.seed!(Random.default_rng(), seed)
+        pid = ct.bid(1)
+        ct.store(out, pid, randn(Float32, (16,)))
+        return
+    end
+    n_blocks = 16
+    out1 = CUDA.zeros(Float32, n_blocks * 16)
+    out2 = CUDA.zeros(Float32, n_blocks * 16)
+    ct.launch(k, n_blocks, out1, UInt32(42))
+    ct.launch(k, n_blocks, out2, UInt32(42))
+    @test Array(out1) == Array(out2)
+end
+
+@testset "in-kernel `Random.seed!` matches host RNG output (randn)" begin
+    # The randn analog of the rand-side equality test: in-kernel
+    # `Random.seed!(default_rng(), s)` and host-side `cuTile.RNG(s, 0)`
+    # share the same `(seed, counter)` plumbing, so a single-block randn
+    # draw of equal size must be byte-identical.
+    function k(out::ct.TileArray{Float32, 1})
+        Random.seed!(Random.default_rng(), UInt32(42))
+        pid = ct.bid(1)
+        ct.store(out, pid, randn(Float32, (512,)))
+        return
+    end
+    out = CUDA.zeros(Float32, 512); ct.launch(k, 1, out)
+    expected = Array(Random.randn(ct.RNG(UInt32(42), UInt32(0)), Float32, 512))
+    @test Array(out) == expected
+end
+
+end
+
+
+@testset "host randn" begin
+    N = 4096
+
+    @testset "randn! basics + auto-counter advance" begin
+        rng = ct.RNG(42)
+        A = CUDA.zeros(Float32, N)
+        Random.randn!(rng, A)
+        v = Array(A)
+        @test all(isfinite, v)
+        @test rng.counter == UInt32(N)
+        # Mean / std sanity. SE/√N for N=4096 is ~0.016, so 5σ tolerance
+        # is ~0.08 — a 0.1 margin gives >6σ headroom.
+        @test abs(sum(v) / N) < 0.1
+        sample_std = sqrt(sum((v .- sum(v)/N).^2) / N)
+        @test abs(sample_std - 1) < 0.05
+    end
+
+    @testset "determinism + Philox re-keying" begin
+        # Same seed → byte-identical output.
+        a = Array(Random.randn(ct.RNG(123), Float32, N))
+        b = Array(Random.randn(ct.RNG(123), Float32, N))
+        @test a == b
+
+        # Different seeds re-key Philox so the streams are uncorrelated.
+        # Float32 randn has ~24 effective bits per sample (post-Box-Muller
+        # the LSBs are jittered), so the set-disjoint check is robust.
+        c = Array(Random.randn(ct.RNG(42),  Float32, N))
+        d = Array(Random.randn(ct.RNG(100), Float32, N))
+        @test isempty(intersect(Set(c), Set(d)))
+    end
+
+    @testset "consecutive randn! disjoint; seed! resets counter" begin
+        rng = ct.RNG(7)
+        A1 = Array(Random.randn(rng, Float32, N))
+        A2 = Array(Random.randn(rng, Float32, N))
+        # Two consecutive draws use disjoint counter ranges, so the
+        # underlying Philox outputs are disjoint and post-BM samples
+        # collide only via Float32 birthday flake (negligible at this N).
+        @test isempty(intersect(Set(A1), Set(A2)))
+
+        Random.seed!(rng, 7)
+        @test rng.counter == UInt32(0)
+    end
+
+    @testset "ct.randn / ct.randn! aliases default to Float32" begin
+        # Float32 in-range and shape check. The device Float32 path is
+        # covered by the surfaces testsets above.
+        v = Array(ct.randn(Float32, N))
+        @test eltype(v) === Float32
+        @test all(isfinite, v)
+        @test abs(sum(v)/N) < 0.1
+        B = CUDA.zeros(Float32, N); ct.randn!(B)
+        @test all(isfinite, Array(B))
+        @test eltype(ct.randn(N)) === Float32
+    end
+
+    @testset "host randn! covers RandnTypes (T=$T)" for T in
+            (Float16, ct.BFloat16, Float32, Float64)
+        # End-to-end host fill for every supported float type. Verifies
+        # the generic `randn_fill_kernel` specializes correctly per T and
+        # produces values with the expected distribution shape.
+        v = Array(Random.randn(ct.RNG(13), T, N))
+        @test eltype(v) === T
+        @test all(isfinite, v)
+        v_f64 = Float64.(v)
+        sample_mean = sum(v_f64) / N
+        sample_std  = sqrt(sum((v_f64 .- sample_mean).^2) / N)
+        tol_mean = T <: Union{Float16, ct.BFloat16} ? 0.15 : 0.1
+        tol_std  = T <: Union{Float16, ct.BFloat16} ? 0.10 : 0.05
+        @test abs(sample_mean) < tol_mean
+        @test abs(sample_std - 1) < tol_std
+
+        counts = normal_bin_counts(v)
+        for (i, p) in enumerate(NORMAL_BIN_PROBS)
+            @test abs(counts[i] - N * p) < N * 0.1
+        end
+    end
+
+    @testset "arbitrary length (partial last tile)" begin
+        # `store_partition_view` clips OOB writes, so `length(A)` can be any
+        # value. Mirrors the rand-side partial-tile testset: the host
+        # advances by `n_blocks * RAND_FILL_TILE`, not `length(A)`, so
+        # consecutive partial-length calls remain disjoint.
+        rng = ct.RNG(0)
+        A = CUDA.zeros(Float32, 513)
+        Random.randn!(rng, A)
+        v = Array(A)
+        @test all(isfinite, v)
+        @test rng.counter == UInt32(2 * cuTile.RAND_FILL_TILE)
+
+        rng2 = ct.RNG(0)
+        A1 = Array(Random.randn(rng2, Float32, 100))
+        A2 = Array(Random.randn(rng2, Float32, 100))
+        @test isempty(intersect(Set(A1), Set(A2)))
+    end
+end
+
+
 @testset "host rand" begin
     N = 2048
 

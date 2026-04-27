@@ -57,15 +57,26 @@
 #
 # Limitations:
 #  - Output types: `RandTypes` (8/16/32/64-bit ints + F16/BF16/F32/F64).
-#  - No `randn` / `randexp` yet. The two-layer split above extends to
-#    `randn` cleanly: `underlying_normal` overrides narrow floats to
-#    UInt32 (Box-Muller's polynomial approximations need ≥23-bit input);
-#    a `randn_finalize_tile` does pair → boxmuller → cat. Same Philox
-#    core, no new intrinsics.
+#  - No `randexp` yet (Ziggurat's tables aren't device-accessible; rejection
+#    loops would warp-diverge).
+#
+# === randn ================================================================
+#
+# `randn` reuses the Philox core and adds a Box-Muller transform that maps a
+# pair of uniform samples to a pair of standard normals. Each Philox call
+# emits two UInt32s — exactly the input that Box-Muller consumes — so a tile
+# of `n` normals costs `n/2` Philox calls (Float16/BFloat16/Float32) or `n`
+# calls (Float64, where one normal needs a UInt64 of entropy). The cyclic
+# tile distribution makes the final `cat((n1, n2), 1)` a register-level
+# no-op, just like in `rand`.
+#
+# Float16/BFloat16 randn computes the Box-Muller in Float32, then converts:
+# log/sin/cos accuracy at narrow-float input would dominate the output error,
+# so we do the math at Float32 precision and narrow at the end.
 
 using Random
 
-public rand, DeviceRNG
+public rand, randn, DeviceRNG
 
 # `KernelState` (carrying the per-launch `seed`) is defined in
 # `language/kernel_state.jl`; `lower_rng_state!` seeds the default stream from
@@ -336,6 +347,149 @@ rand_scalar(stream, ::Type{T}) where {T} =
     Intrinsics.to_scalar(rand_tile(stream, T, ()))
 
 #=============================================================================
+ Box-Muller transform — uniform pair → standard-normal pair
+=============================================================================#
+
+const RandnTypes = Union{Float16, BFloat16, Float32, Float64}
+
+# Float32 path: HW log/sin/cos/sqrt operate at Float32 precision; matches the
+# Box-Muller used by GPUArrays/CUDA.jl. `u01(Float32, ::UInt32)` keeps the
+# log argument in (0, 1] (lower bound 2^-33), so log(...) ∈ [-22.87, 0] and
+# the sqrt argument is non-negative — no rejection loop needed.
+function boxmuller_f32_core(u1::Tile{UInt32, S}, u2::Tile{UInt32, S}) where {S}
+    shape = size(u1)
+    f1 = u01(Float32, u1)
+    f2 = u01(Float32, u2)
+    log_f2 = Intrinsics.log(f2)
+    r = Intrinsics.sqrt(fill(Float32(-2), shape) .* log_f2)
+    angle = fill(Float32(2π), shape) .* f1
+    s = Intrinsics.sin(angle)
+    c = Intrinsics.cos(angle)
+    (r .* s, r .* c)
+end
+
+# Float64 path: needs UInt64 inputs (each = 2 Philox UInt32s). u01(Float64)
+# uses the bit-pattern construction that avoids the expensive
+# Float64(::UInt64) conversion on consumer GPUs.
+function boxmuller_f64_core(u1::Tile{UInt64, S}, u2::Tile{UInt64, S}) where {S}
+    shape = size(u1)
+    f1 = u01(Float64, u1)
+    f2 = u01(Float64, u2)
+    log_f1 = Intrinsics.log(f1)
+    r = Intrinsics.sqrt(fill(-2.0, shape) .* log_f1)
+    angle = fill(Float64(2π), shape) .* f2
+    s = Intrinsics.sin(angle)
+    c = Intrinsics.cos(angle)
+    (r .* s, r .* c)
+end
+
+# Float32: identity finalize.
+boxmuller_tile(::Type{Float32}, u1::Tile{UInt32, S}, u2::Tile{UInt32, S}) where {S} =
+    boxmuller_f32_core(u1, u2)
+# Narrow floats: compute in Float32, narrow at the end. Doing the math at
+# Float16/BFloat16 precision would lose more bits than the BM transform's
+# inherent accuracy floor.
+function boxmuller_tile(::Type{T}, u1::Tile{UInt32, S}, u2::Tile{UInt32, S}) where {T<:Union{Float16, BFloat16}, S}
+    n1, n2 = boxmuller_f32_core(u1, u2)
+    (convert(Tile{T}, n1), convert(Tile{T}, n2))
+end
+boxmuller_tile(::Type{Float64}, u1::Tile{UInt64, S}, u2::Tile{UInt64, S}) where {S} =
+    boxmuller_f64_core(u1, u2)
+
+#=============================================================================
+ Tile-randn implementation
+=============================================================================#
+
+# Pack two UInt32 lanes into a single UInt64 (`lo | hi << 32`). Mirrors the
+# UInt64 packing in `rand_uint64_tile`.
+function pack_uint64(lo::Tile{UInt32, S}, hi::Tile{UInt32, S}) where {S}
+    shape = size(lo)
+    Intrinsics.ori(convert(Tile{UInt64}, lo),
+                   Intrinsics.shli(convert(Tile{UInt64}, hi), fill(UInt64(32), shape)))
+end
+
+# Float32-class randn (Float16/BFloat16/Float32): each Philox call gives the
+# (u1, u2) pair Box-Muller needs, halving Philox work vs the rand_uint32 path.
+# For `n ≥ 2` we run `n/2` Philox calls and `cat((n1, n2), 1)` the two BM
+# lanes; for `n == 1` (0D scalar) we keep the single-call form and discard
+# the second BM output. The host counter advances by `n` to match `rand`'s
+# T-agnostic advance scheme.
+function randn_f32class_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:Union{Float16, BFloat16, Float32}, N}
+    n = prod(dims)
+    k_scalar = rng_key(stream)
+    c_base   = Intrinsics.rng_counter(stream)
+    Intrinsics.rng_advance(stream, n)
+    if n == 1
+        # 0D / scalar: one Philox call, take n1 only.
+        k_tile   = fill(k_scalar, dims)
+        counters = counter_tile(c_base, dims)
+        ctr2     = fill(UInt32(0), dims)
+        c1, c2   = philox2x_rounds(Val(7), counters, ctr2, k_tile)
+        n1, _n2  = boxmuller_tile(T, c1, c2)
+        return n1
+    else
+        half     = n >> 1
+        k_tile   = fill(k_scalar, half)
+        counters = counter_tile(c_base, (half,))
+        ctr2     = fill(UInt32(0), half)
+        c1, c2   = philox2x_rounds(Val(7), counters, ctr2, k_tile)
+        n1, n2   = boxmuller_tile(T, c1, c2)
+        return reshape(cat((n1, n2), 1), dims)
+    end
+end
+
+# Float64 randn: each BM pair needs 2 UInt64s = 4 UInt32s = 2 Philox calls,
+# so `n` outputs cost `n` Philox calls. We split the calls into two halves —
+# the first produces `u1`, the second produces `u2` — and pack each half's
+# (c1, c2) lanes into UInt64 via `pack_uint64`. For `n == 1` we still need
+# 2 Philox calls (one per BM input) and advance the counter by 2 to keep
+# subsequent draws disjoint.
+function randn_f64_tile(stream, dims::NTuple{N, Int}) where {N}
+    n = prod(dims)
+    k_scalar = rng_key(stream)
+    c_base   = Intrinsics.rng_counter(stream)
+
+    if n == 1
+        Intrinsics.rng_advance(stream, 2)
+        k_tile = fill(k_scalar, dims)
+        ctr2   = fill(UInt32(0), dims)
+        c1_a, c2_a = philox2x_rounds(Val(7), c_base, ctr2, k_tile)
+        c_b        = c_base .+ fill(UInt32(1), dims)
+        c1_b, c2_b = philox2x_rounds(Val(7), c_b, ctr2, k_tile)
+        u1 = pack_uint64(c1_a, c2_a)
+        u2 = pack_uint64(c1_b, c2_b)
+        n1, _n2 = boxmuller_tile(Float64, u1, u2)
+        return n1
+    else
+        Intrinsics.rng_advance(stream, n)
+        half   = n >> 1
+        k_tile = fill(k_scalar, half)
+        ctr2   = fill(UInt32(0), half)
+        # u1: counters [c_base, c_base + half).
+        ctr_a = counter_tile(c_base, (half,))
+        c1_a, c2_a = philox2x_rounds(Val(7), ctr_a, ctr2, k_tile)
+        # u2: counters [c_base + half, c_base + 2 * half).
+        ctr_b = fill(c_base, (half,)) .+ fill(UInt32(half), (half,)) .+
+                Intrinsics.iota((half,), UInt32)
+        c1_b, c2_b = philox2x_rounds(Val(7), ctr_b, ctr2, k_tile)
+        u1 = pack_uint64(c1_a, c2_a)
+        u2 = pack_uint64(c1_b, c2_b)
+        n1, n2 = boxmuller_tile(Float64, u1, u2)
+        return reshape(cat((n1, n2), 1), dims)
+    end
+end
+
+# Public dispatch — split between the 32-bit and 64-bit Box-Muller paths.
+randn_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:Union{Float16, BFloat16, Float32}, N} =
+    randn_f32class_tile(stream, T, dims)
+randn_tile(stream, ::Type{Float64}, dims::NTuple{N, Int}) where {N} =
+    randn_f64_tile(stream, dims)
+
+# Scalar form: produce a 0D tile, extract via to_scalar.
+randn_scalar(stream, ::Type{T}) where {T<:RandnTypes} =
+    Intrinsics.to_scalar(randn_tile(stream, T, ()))
+
+#=============================================================================
  Handle + DeviceRNG types; Random API overlays
 =============================================================================#
 
@@ -394,6 +548,27 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(dims::NTuple
 Base.Experimental.@consistent_overlay cuTileMethodTable Random.rand(dims::Integer...) =
     Random.rand(Dims(dims))
 
+# Bare randn / randn(T) / randn(T, dims) — route through the default stream.
+# Like `rand`, the untyped surfaces default to `Float32` (overriding stdlib's
+# `Float64`) since Float32 dominates GPU workloads and Float64 has 1:64
+# throughput on consumer Blackwell.
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn(::Type{T}) where {T<:RandnTypes} =
+    randn_scalar(Intrinsics.rng_default(), T)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn() =
+    randn_scalar(Intrinsics.rng_default(), Float32)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn(::Type{T}, dims::NTuple{N, Int}) where {T<:RandnTypes, N} =
+    randn_tile(Intrinsics.rng_default(), T, dims)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn(dims::NTuple{N, Int}) where {N} =
+    randn_tile(Intrinsics.rng_default(), Float32, dims)
+# Variadic Integer dims: stdlib's `randn(T, ::Integer...)` and
+# `randn(rng, T, ::Integer...)` route through `Array{T}(undef, ...)`, which
+# is illegal in a kernel. Reroute to the Dims-typed methods (mirroring how
+# stdlib's `rand` already handles this for free).
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn(dims::Integer...) =
+    Random.randn(Dims(dims))
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn(::Type{T}, dim::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randn(T, Dims((dim, dims...)))
+
 function Random.seed!(rng::DeviceRNG, seed::Integer)
     Intrinsics.rng_set_seed(rng.stream, UInt32(seed))
     return rng
@@ -410,11 +585,27 @@ Random.rand(rng::DeviceRNG, dims::NTuple{N, Int}) where {N} =
 Random.rand(rng::DeviceRNG, dims::Integer...) =
     Random.rand(rng, Dims(dims))
 
+# Explicit-stream randn(rng, ...) variants — unwrap and pass the stream ID.
+# The variadic `(rng, T, ::Integer...)` form mirrors the overlay above:
+# stdlib's `randn(rng, T, dim, dims...)` constructs an Array directly, so
+# we reroute through Dims here too.
+Random.randn(rng::DeviceRNG, ::Type{T}) where {T<:RandnTypes} =
+    randn_scalar(rng.stream, T)
+Random.randn(rng::DeviceRNG) = randn_scalar(rng.stream, Float32)
+Random.randn(rng::DeviceRNG, ::Type{T}, dims::NTuple{N, Int}) where {T<:RandnTypes, N} =
+    randn_tile(rng.stream, T, dims)
+Random.randn(rng::DeviceRNG, dims::NTuple{N, Int}) where {N} =
+    randn_tile(rng.stream, Float32, dims)
+Random.randn(rng::DeviceRNG, dims::Integer...) =
+    Random.randn(rng, Dims(dims))
+Random.randn(rng::DeviceRNG, ::Type{T}, dim::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randn(rng, T, Dims((dim, dims...)))
+
 #=============================================================================
  Host-level RNG wrapper
 =============================================================================#
 
-public RNG, rand
+public RNG, rand, randn
 
 """
     cuTile.RNG([seed::Integer])
@@ -479,6 +670,19 @@ function rand_fill_kernel(out::TileArray{T, 1}, seed::UInt32, counter::UInt32) w
     return
 end
 
+function randn_fill_kernel(out::TileArray{T, 1}, seed::UInt32, counter::UInt32) where {T}
+    # Same threading scheme as `rand_fill_kernel` — `randn_tile` advances the
+    # default-stream counter by `RAND_FILL_TILE` per block (matching the rand
+    # T-agnostic advance), so the host-side counter accounting stays the same
+    # for both fills.
+    Random.seed!(Random.default_rng(), seed)
+    Intrinsics.rng_advance(Intrinsics.rng_default(), counter)
+    pid = bid(1)
+    t = Random.randn(T, (RAND_FILL_TILE,))
+    store(out, pid, t)
+    return
+end
+
 # Global RNG handle lazily created on first use. The methods that actually
 # dispatch on `CuArray` live in `ext/CUDAExt.jl` because `CuArray` is a weak
 # dependency.
@@ -500,7 +704,10 @@ function seed!(seed::Integer=Base.rand(Random.RandomDevice(), UInt32))
     return
 end
 
-# `cuTile.rand` / `cuTile.rand!` stubs — the real implementations live in the
-# CUDAExt extension. Calling without CUDA.jl loaded raises a helpful error.
+# `cuTile.rand` / `cuTile.rand!` / `cuTile.randn` / `cuTile.randn!` stubs — the
+# real implementations live in the CUDAExt extension. Calling without CUDA.jl
+# loaded raises a helpful error.
 function rand end
 function rand! end
+function randn end
+function randn! end
