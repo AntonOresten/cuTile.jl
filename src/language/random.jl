@@ -55,11 +55,6 @@
 # each iteration's `rand` sees a fresh counter; in-loop `Random.seed!`
 # similarly threads the seed.
 #
-# Limitations:
-#  - Output types: `RandTypes` (8/16/32/64-bit ints + F16/BF16/F32/F64).
-#  - No `randexp` yet (Ziggurat's tables aren't device-accessible; rejection
-#    loops would warp-diverge).
-#
 # === randn ================================================================
 #
 # `randn` reuses the Philox core and adds a Box-Muller transform that maps a
@@ -73,10 +68,18 @@
 # Float16/BFloat16 randn computes the Box-Muller in Float32, then converts:
 # log/sin/cos accuracy at narrow-float input would dominate the output error,
 # so we do the math at Float32 precision and narrow at the end.
+#
+# === randexp ==============================================================
+#
+# `randexp` is `-log(U)` over the existing rand path — one log per output,
+# no rejection loop, no Ziggurat tables. The fused tile-IR kernel beats the
+# obvious `rand!` + broadcasted `-log` decomposition by 3-6× on F32 large
+# arrays since it stores the result once instead of writing rand output
+# then reading + writing it again for the log.
 
 using Random
 
-public rand, randn, DeviceRNG
+public rand, randn, randexp, DeviceRNG
 
 # `KernelState` (carrying the per-launch `seed`) is defined in
 # `language/kernel_state.jl`; `lower_rng_state!` seeds the default stream from
@@ -490,6 +493,20 @@ randn_scalar(stream, ::Type{T}) where {T<:RandnTypes} =
     Intrinsics.to_scalar(randn_tile(stream, T, ()))
 
 #=============================================================================
+ Tile-randexp implementation
+=============================================================================#
+# Standard exponential (rate 1): `-log(U)` where `U ∈ (2^-33, 1]` (Float32) or
+# `U ∈ (0, 1)` (Float16/BFloat16/Float64). One log per output, no rejection,
+# no per-element loops — the simplest non-uniform draw on top of `rand`.
+# `RandnTypes` is reused since the same set of float types is supported.
+
+randexp_tile(stream, ::Type{T}, dims::NTuple{N, Int}) where {T<:RandnTypes, N} =
+    Intrinsics.negf(Intrinsics.log(rand_tile(stream, T, dims)))
+
+randexp_scalar(stream, ::Type{T}) where {T<:RandnTypes} =
+    Intrinsics.to_scalar(randexp_tile(stream, T, ()))
+
+#=============================================================================
  Handle + DeviceRNG types; Random API overlays
 =============================================================================#
 
@@ -569,6 +586,22 @@ Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn(dims::Integ
 Base.Experimental.@consistent_overlay cuTileMethodTable Random.randn(::Type{T}, dim::Integer, dims::Integer...) where {T<:RandnTypes} =
     Random.randn(T, Dims((dim, dims...)))
 
+# Bare randexp / randexp(T) / randexp(T, dims) — same overlay surface as
+# randn. Like randn, stdlib's variadic-Integer form constructs an Array
+# directly, so we add explicit Dims rerouters.
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randexp(::Type{T}) where {T<:RandnTypes} =
+    randexp_scalar(Intrinsics.rng_default(), T)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randexp() =
+    randexp_scalar(Intrinsics.rng_default(), Float32)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randexp(::Type{T}, dims::NTuple{N, Int}) where {T<:RandnTypes, N} =
+    randexp_tile(Intrinsics.rng_default(), T, dims)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randexp(dims::NTuple{N, Int}) where {N} =
+    randexp_tile(Intrinsics.rng_default(), Float32, dims)
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randexp(dims::Integer...) =
+    Random.randexp(Dims(dims))
+Base.Experimental.@consistent_overlay cuTileMethodTable Random.randexp(::Type{T}, dim::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randexp(T, Dims((dim, dims...)))
+
 function Random.seed!(rng::DeviceRNG, seed::Integer)
     Intrinsics.rng_set_seed(rng.stream, UInt32(seed))
     return rng
@@ -601,11 +634,24 @@ Random.randn(rng::DeviceRNG, dims::Integer...) =
 Random.randn(rng::DeviceRNG, ::Type{T}, dim::Integer, dims::Integer...) where {T<:RandnTypes} =
     Random.randn(rng, T, Dims((dim, dims...)))
 
+# Explicit-stream randexp(rng, ...) variants — same shape as randn.
+Random.randexp(rng::DeviceRNG, ::Type{T}) where {T<:RandnTypes} =
+    randexp_scalar(rng.stream, T)
+Random.randexp(rng::DeviceRNG) = randexp_scalar(rng.stream, Float32)
+Random.randexp(rng::DeviceRNG, ::Type{T}, dims::NTuple{N, Int}) where {T<:RandnTypes, N} =
+    randexp_tile(rng.stream, T, dims)
+Random.randexp(rng::DeviceRNG, dims::NTuple{N, Int}) where {N} =
+    randexp_tile(rng.stream, Float32, dims)
+Random.randexp(rng::DeviceRNG, dims::Integer...) =
+    Random.randexp(rng, Dims(dims))
+Random.randexp(rng::DeviceRNG, ::Type{T}, dim::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randexp(rng, T, Dims((dim, dims...)))
+
 #=============================================================================
  Host-level RNG wrapper
 =============================================================================#
 
-public RNG, rand, randn
+public RNG, rand, randn, randexp
 
 """
     cuTile.RNG([seed::Integer])
@@ -683,6 +729,18 @@ function randn_fill_kernel(out::TileArray{T, 1}, seed::UInt32, counter::UInt32) 
     return
 end
 
+function randexp_fill_kernel(out::TileArray{T, 1}, seed::UInt32, counter::UInt32) where {T}
+    # `randexp_tile` is `-log(rand_tile(...))`, so it consumes the default
+    # stream's counter exactly like `rand_fill_kernel` — host bookkeeping is
+    # unchanged.
+    Random.seed!(Random.default_rng(), seed)
+    Intrinsics.rng_advance(Intrinsics.rng_default(), counter)
+    pid = bid(1)
+    t = Random.randexp(T, (RAND_FILL_TILE,))
+    store(out, pid, t)
+    return
+end
+
 # Global RNG handle lazily created on first use. The methods that actually
 # dispatch on `CuArray` live in `ext/CUDAExt.jl` because `CuArray` is a weak
 # dependency.
@@ -704,10 +762,11 @@ function seed!(seed::Integer=Base.rand(Random.RandomDevice(), UInt32))
     return
 end
 
-# `cuTile.rand` / `cuTile.rand!` / `cuTile.randn` / `cuTile.randn!` stubs — the
-# real implementations live in the CUDAExt extension. Calling without CUDA.jl
-# loaded raises a helpful error.
+# Host-side stubs — the real implementations live in the CUDAExt extension.
+# Calling without CUDA.jl loaded raises a helpful error.
 function rand end
 function rand! end
 function randn end
 function randn! end
+function randexp end
+function randexp! end

@@ -323,6 +323,24 @@ Random.randn(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:Randn
 Random.randn(rng::RNG, dims::Dims) = Random.randn(rng, Float32, dims)
 Random.randn(rng::RNG, d1::Integer, dims::Integer...) = Random.randn(rng, Dims((d1, dims...)))
 
+# `randexp!` mirrors `rand!`/`randn!`: same per-block tile, same counter
+# accounting (one log per output, no per-element loops).
+function Random.randexp!(rng::RNG, A::CuArray{T}) where {T<:RandnTypes}
+    n = length(A)
+    n == 0 && return A
+    n_blocks = cld(n, cuTile.RAND_FILL_TILE)
+    cuTile.launch(cuTile.randexp_fill_kernel, n_blocks, A, rng.seed, rng.counter)
+    cuTile.advance_counter!(rng, UInt32(n_blocks * cuTile.RAND_FILL_TILE))
+    return A
+end
+
+Random.randexp(rng::RNG, ::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randexp!(rng, CuArray{T}(undef, dims))
+Random.randexp(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randexp(rng, T, Dims((d1, dims...)))
+Random.randexp(rng::RNG, dims::Dims) = Random.randexp(rng, Float32, dims)
+Random.randexp(rng::RNG, d1::Integer, dims::Integer...) = Random.randexp(rng, Dims((d1, dims...)))
+
 # `cuTile.rand` / `cuTile.rand!` aliases, mirroring `CUDA.rand` / `CUDA.rand!`.
 cuTile.rand(::Type{T}, dims::Dims) where {T<:RandTypes} =
     Random.rand(cuTile.get_global_rng(), T, dims)
@@ -344,5 +362,16 @@ cuTile.randn(d1::Integer, dims::Integer...) = cuTile.randn(Dims((d1, dims...)))
 
 cuTile.randn!(A::CuArray{<:RandnTypes}) =
     Random.randn!(cuTile.get_global_rng(), A)
+
+# `cuTile.randexp` / `cuTile.randexp!` aliases.
+cuTile.randexp(::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randexp(cuTile.get_global_rng(), T, dims)
+cuTile.randexp(::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    cuTile.randexp(T, Dims((d1, dims...)))
+cuTile.randexp(dims::Dims) = cuTile.randexp(Float32, dims)
+cuTile.randexp(d1::Integer, dims::Integer...) = cuTile.randexp(Dims((d1, dims...)))
+
+cuTile.randexp!(A::CuArray{<:RandnTypes}) =
+    Random.randexp!(cuTile.get_global_rng(), A)
 
 end
