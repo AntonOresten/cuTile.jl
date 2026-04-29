@@ -54,10 +54,20 @@ cuTile backend for `@cuda backend=...`. Routes the call through
 returns a [`TileKernel`](@ref) for launch.
 
 ```julia
+@cuda backend=cuTile blocks=N my_kernel(a, b, c)        # via DefaultBackend()
 @cuda backend=cuTile.TileBackend() blocks=N my_kernel(a, b, c)
 ```
 """
 struct TileBackend <: AbstractBackend end
+
+"""
+    DefaultBackend() -> TileBackend
+
+The default cuTile backend, looked up by `@cuda backend=cuTile`. Returns a
+[`TileBackend`](@ref). Provided as the module-level resolution hook for
+`CUDACore`'s `@cuda` dispatch.
+"""
+DefaultBackend() = TileBackend()
 
 CUDACore.kernel_convert(::TileBackend, x) = cuTileconvert(x)
 
@@ -338,7 +348,7 @@ const _MAX_GRID_DIM = (1 << 24) - 1
 # `@cuda` passes `convert=Val(false)` because args were already converted at
 # expansion time. We always treat args as already-converted — direct
 # `kernel(args...)` calls without the macro should pass converted args.
-function (k::TileKernel)(args::Vararg{Any, N}; blocks, threads=1,
+function (k::TileKernel)(args::Vararg{Any, N}; blocks=1, threads=1,
                          convert=Val(false), kwargs...) where {N}
     state = KernelState()
 
@@ -366,7 +376,7 @@ end
 
 #=============================================================================
  launch: high-level convenience wrapper, retained as the function-call entry
- point alongside `@cuda backend=cuTile.TileBackend() …`.
+ point alongside `@cuda backend=cuTile …`.
 =============================================================================#
 
 """
@@ -375,7 +385,7 @@ end
 
 Compile and launch a Tile IR kernel. `args` are converted via
 `cuTileconvert` (CuArray → TileArray, Type → Constant). Equivalent to
-`@cuda backend=cuTile.TileBackend() blocks=grid f(args...)` modulo
+`@cuda backend=cuTile blocks=grid f(args...)` modulo
 slight kwarg naming.
 
 # Example

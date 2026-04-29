@@ -85,6 +85,7 @@ include("broadcast.jl")
 include("mapreduce.jl")
 include("launch.jl")
 
-public launch, Tiled, ByTarget, @compiler_options, @fpmode, @.
+public launch, TileBackend, DefaultBackend, Tiled, ByTarget,
+       @compiler_options, @fpmode, @.
 
 end # module cuTile
