@@ -8,6 +8,38 @@
 using CUDACore: CuArray, CuModule, CuFunction, cudacall, device, capability
 using CUDA_Compiler_jll
 
+using Adapt: Adapt, adapt
+
+"""
+    KernelAdaptor
+
+`Adapt.jl` adaptor used to convert host-side launch arguments into their
+kernel-side counterparts. `AbstractArray`s become `TileArray`s; `Type`
+values become `Constant`s. User-defined structs containing arrays compose
+naturally via `Adapt.adapt_structure`.
+
+This is the cuTile analogue of `CUDACore.KernelAdaptor`.
+"""
+struct KernelAdaptor end
+
+Adapt.adapt_storage(::KernelAdaptor, arr::AbstractArray) = TileArray(arr)
+Adapt.adapt_storage(::KernelAdaptor, t::Type) = Constant(t)
+
+# Adapt's default `adapt_structure(to, ::PermutedDimsArray)` recurses by
+# rebuilding `PermutedDimsArray(adapt(parent), perm)`. We can't follow that
+# pattern because `TileArray` isn't `<:AbstractArray` — strided-wrapper
+# state is absorbed into its `sizes`/`strides` fields directly. Short-circuit
+# the recursion so the whole wrapper becomes a single TileArray.
+Adapt.adapt_structure(::KernelAdaptor, arr::PermutedDimsArray) = TileArray(arr)
+
+"""
+    cuTileconvert(x)
+
+Convert a launch argument to its kernel-side form via `Adapt.adapt` with
+`KernelAdaptor()`. Mirrors `CUDACore.cudaconvert`.
+"""
+cuTileconvert(x) = adapt(KernelAdaptor(), x)
+
 function run_and_collect(cmd)
     stdout = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
@@ -176,7 +208,7 @@ function launch(@nospecialize(f), grid, args...;
     resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
 
     # Convert CuArray -> TileArray (and other conversions)
-    tile_args = map(to_tile_arg, args)
+    tile_args = map(cuTileconvert, args)
 
     # Unwrap Constant{T,V} → T for MI lookup (kernel sees plain types)
     unwrapped_types = map(tile_args) do arg
@@ -246,14 +278,3 @@ Get the compute capability of the current CUDA device as a VersionNumber.
 Returns e.g. `v"12.0"` for compute capability 12.0.
 """
 default_sm_arch() = capability(device())
-
-"""
-    to_tile_arg(x)
-
-Convert launch arguments to their kernel argument form.
-AbstractArrays (like CuArray) are converted to TileArray for metadata.
-Other values pass through unchanged.
-"""
-to_tile_arg(x) = x
-to_tile_arg(arr::AbstractArray) = TileArray(arr)
-to_tile_arg(t::Type) = Constant(t)

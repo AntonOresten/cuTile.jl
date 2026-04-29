@@ -7,6 +7,7 @@ authors = ["Tim Besard <tim.besard@gmail.com>"]
 projects = ["test", "examples"]
 
 [deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
 CUDA_Compiler_jll = "d1e2174e-dfdc-576e-b43e-73b79eb1aca8"
@@ -24,6 +25,7 @@ DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 DLFP8TypesExt = "DLFP8Types"
 
 [compat]
+Adapt = "4.4"
 BFloat16s = "0.6"
 CUDACore = "6"
 CUDA_Compiler_jll = "0.4"
