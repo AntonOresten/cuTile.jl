@@ -344,33 +344,75 @@ end
 # Tile IR has a 24-bit grid limit per dimension.
 const _MAX_GRID_DIM = (1 << 24) - 1
 
+# Recursively expand `val_expr::T` into a flat list of (expr, type) pairs that
+# match the kernel's flat scalar parameter signature: TileArray expands to
+# (ptr, sizes..., strides...), ghost types contribute nothing, primitives pass
+# through, structs recurse field-by-field. Used by the `@generated` launch path
+# to fold the flatten step into compile-time call construction.
+function _flatten_static!(arg_exprs, type_exprs, @nospecialize(T), val_expr)
+    if T <: TileArray
+        push!(arg_exprs, :($val_expr.ptr))
+        push!(type_exprs, fieldtype(T, :ptr))
+        sizes_T = fieldtype(T, :sizes)
+        for i in 1:fieldcount(sizes_T)
+            push!(arg_exprs, :($val_expr.sizes[$i]))
+            push!(type_exprs, fieldtype(sizes_T, i))
+        end
+        strides_T = fieldtype(T, :strides)
+        for i in 1:fieldcount(strides_T)
+            push!(arg_exprs, :($val_expr.strides[$i]))
+            push!(type_exprs, fieldtype(strides_T, i))
+        end
+    elseif is_ghost_type(T)
+        # contribute nothing
+    elseif isprimitivetype(T)
+        push!(arg_exprs, val_expr)
+        push!(type_exprs, T)
+    else
+        for i in 1:fieldcount(T)
+            field_T = fieldtype(T, i)
+            _flatten_static!(arg_exprs, type_exprs, field_T,
+                             :(getfield($val_expr, $i)))
+        end
+    end
+    return
+end
+
 # `convert=Val(...)` is the AbstractKernel callable convention from CUDACore;
 # `@cuda` passes `convert=Val(false)` because args were already converted at
 # expansion time. We always treat args as already-converted — direct
 # `kernel(args...)` calls without the macro should pass converted args.
-function (k::TileKernel)(args::Vararg{Any, N}; blocks=1, threads=1,
-                         convert=Val(false), kwargs...) where {N}
-    state = KernelState()
-
-    # Flatten args for cudacall — Tile IR uses flat scalar parameter signatures,
-    # so each TileArray expands to (ptr, sizes..., strides...). Constant returns
-    # () so ghost types disappear. Trailing `flatten(state)` matches the implicit
-    # KernelState slot at the end of the bytecode kernel signature.
-    flat_args = (Iterators.flatten(map(flatten, args))..., flatten(state)...)
-    flat_types = Tuple{map(typeof, flat_args)...}
-
-    grid_dims = blocks isa Integer ? (blocks,) : blocks
-    for (i, dim) in enumerate(grid_dims)
-        if dim > _MAX_GRID_DIM
-            error("Grid[$i] exceeds 24-bit limit: max=$_MAX_GRID_DIM, got=$dim. " *
-                  "Use multiple kernel launches for larger workloads.")
-        end
+#
+# `@generated` so the flatten/typeof work folds to a direct cudacall expression
+# at compile time. Mirrors the LLVM `HostKernel` generated callable in CUDACore;
+# without it, runtime `Iterators.flatten` + `map(typeof, ...)` + tuple splatting
+# costs ~400 ns per launch even for trivial kernels.
+@generated function (k::TileKernel)(args::Vararg{Any, N}; blocks=1, threads=1,
+                                    convert=Val(false), kwargs...) where {N}
+    arg_exprs = Any[]
+    type_exprs = Any[]
+    for i in 1:N
+        _flatten_static!(arg_exprs, type_exprs, args[i], :(args[$i]))
     end
+    # Trailing implicit KernelState slot — matches the bytecode kernel signature.
+    push!(arg_exprs, :(state.seed))
+    push!(type_exprs, UInt32)
 
-    # Note: threads=1 lets the driver use the cubin's EIATTR_REQNTID metadata
-    # which specifies the actual thread count (typically 128 for Tile kernels).
-    cudacall(k.fun, flat_types, flat_args...; blocks=grid_dims, threads, kwargs...)
-    return nothing
+    quote
+        state = KernelState()
+        grid_dims = blocks isa Integer ? (blocks,) : blocks
+        for (i, dim) in enumerate(grid_dims)
+            if dim > _MAX_GRID_DIM
+                error("Grid[$i] exceeds 24-bit limit: max=$_MAX_GRID_DIM, got=$dim. " *
+                      "Use multiple kernel launches for larger workloads.")
+            end
+        end
+        # Note: threads=1 lets the driver use the cubin's EIATTR_REQNTID metadata
+        # which specifies the actual thread count (typically 128 for Tile kernels).
+        cudacall(k.fun, Tuple{$(type_exprs...)}, $(arg_exprs...);
+                 blocks=grid_dims, threads, kwargs...)
+        return nothing
+    end
 end
 
 
