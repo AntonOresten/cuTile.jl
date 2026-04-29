@@ -113,10 +113,14 @@ function silu_and_mul_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 2},
     tb = convert(ct.Tile{Float32}, ct.load(B; index=(Int32(1), bid_m), shape=(TILE_N, 1)))
 
     # SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
-    denom = 1.0f0 .+ exp.(.-ta)
-    sigmoid_ta = 1.0f0 ./ denom
-    silu_ta = ta .* sigmoid_ta
-    tc = silu_ta .* tb
+    ct.@fpmode flush_to_zero=true begin
+        denom = 1.0f0 .+ exp.(.-ta)
+        sigmoid_ta = ct.@fpmode rounding_mode=ct.Rounding.Approx begin
+            1.0f0 ./ denom
+        end
+        silu_ta = ta .* sigmoid_ta
+        tc = silu_ta .* tb
+    end
 
     ct.store(C; index=(Int32(1), bid_m), tile=convert(ct.Tile{T}, tc))
     return nothing
