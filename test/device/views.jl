@@ -14,7 +14,7 @@ using CUDA
     end
     a = CUDA.rand(Float32, 8, 4)
     b = CUDA.zeros(Float32, 4, 4)
-    ct.launch(kern, 1, a, b)
+    @cuda backend=cuTile kern(a, b)
     @test Array(b) == permutedims(Array(a), (2, 1))[1:4, 1:4]
 end
 
@@ -27,7 +27,7 @@ end
     end
     a = CUDA.rand(Float32, 8, 4)
     b = CUDA.zeros(Float32, 4, 4)
-    ct.launch(kern, 1, a, b)
+    @cuda backend=cuTile kern(a, b)
     @test Array(b) == permutedims(Array(a), (2, 1))[1:4, 1:4]
 end
 
@@ -41,7 +41,7 @@ end
     end
     a = CUDA.rand(Float32, 16)
     b = CUDA.zeros(Float32, 4, 4)
-    ct.launch(kern, 1, a, b)
+    @cuda backend=cuTile kern(a, b)
     @test Array(b) == reshape(Array(a), 4, 4)
 end
 
@@ -55,7 +55,7 @@ end
     end
     a = CUDA.rand(Float32, 4, 4)
     b = CUDA.zeros(Float32, 16)
-    ct.launch(kern, 1, a, b)
+    @cuda backend=cuTile kern(a, b)
     @test Array(b) == reshape(Array(a), 16)
 end
 
@@ -69,7 +69,7 @@ end
     end
     a = CUDA.rand(Float32, 4, 4, 4)
     b = CUDA.zeros(Float32, 4, 4, 4)
-    ct.launch(kern, 1, a, b)
+    @cuda backend=cuTile kern(a, b)
     expected = permutedims(Array(a), (3, 1, 2))
     @test Array(b)[1:2, 1:2, 1:2] == expected[1:2, 1:2, 1:2]
 end

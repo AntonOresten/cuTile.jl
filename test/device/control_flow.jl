@@ -17,7 +17,7 @@ using CUDA
 
     a = CUDA.rand(Float32, 64)
     b = CUDA.zeros(Float32, 64)
-    ct.launch(early_return_skip, 4, a, b, Int32(0))
+    @cuda backend=cuTile blocks=4 early_return_skip(a, b, Int32(0))
     @test all(Array(b) .== 0.0f0)
 end
 
@@ -34,7 +34,7 @@ end
 
     a = CUDA.rand(Float32, 64)
     b = CUDA.zeros(Float32, 64)
-    ct.launch(early_return_store, 4, a, b, Int32(1))
+    @cuda backend=cuTile blocks=4 early_return_store(a, b, Int32(1))
     @test Array(b) ≈ Array(a) .* 2.0f0
 end
 
@@ -56,15 +56,15 @@ end
     a = CUDA.rand(Float32, 64)
 
     b1 = CUDA.zeros(Float32, 64)
-    ct.launch(multi_early_return, 4, a, b1, Int32(1), Int32(1))
+    @cuda backend=cuTile blocks=4 multi_early_return(a, b1, Int32(1), Int32(1))
     @test Array(b1) ≈ Array(a) .* 2.0f0
 
     b2 = CUDA.zeros(Float32, 64)
-    ct.launch(multi_early_return, 4, a, b2, Int32(0), Int32(1))
+    @cuda backend=cuTile blocks=4 multi_early_return(a, b2, Int32(0), Int32(1))
     @test all(Array(b2) .== 0.0f0)
 
     b3 = CUDA.zeros(Float32, 64)
-    ct.launch(multi_early_return, 4, a, b3, Int32(1), Int32(0))
+    @cuda backend=cuTile blocks=4 multi_early_return(a, b3, Int32(1), Int32(0))
     @test all(Array(b3) .== 0.0f0)
 end
 
@@ -91,7 +91,7 @@ end
     lengths = CuArray(n_tiles)
     out = CUDA.zeros(Float32, 48)
 
-    ct.launch(scalar_index_loop_kernel, 3, data, lengths, out)
+    @cuda backend=cuTile blocks=3 scalar_index_loop_kernel(data, lengths, out)
 
     data_cpu = Array(data)
     out_cpu = Array(out)
@@ -121,7 +121,7 @@ end
     data = CUDA.rand(Float32, 64)   # 4 tiles of 16
     out = CUDA.zeros(Float32, 16)
 
-    ct.launch(for_loop_acc_kernel, 1, data, out, n_iters)
+    @cuda backend=cuTile for_loop_acc_kernel(data, out, n_iters)
 
     data_cpu = Array(data)
     expected = sum(reshape(data_cpu, 16, 4); dims=2)[:, 1]
@@ -144,7 +144,7 @@ end
     data = CUDA.rand(Float32, 48)   # 3 tiles of 16
     out = CUDA.zeros(Float32, 16)
 
-    ct.launch(for_loop_const_kernel, 1, data, out, ct.Constant(3))
+    @cuda backend=cuTile for_loop_const_kernel(data, out, ct.Constant(3))
 
     data_cpu = Array(data)
     expected = sum(reshape(data_cpu, 16, 3); dims=2)[:, 1]
@@ -167,7 +167,7 @@ end
     # 5 tiles of 16; step=2 selects tiles 1, 3, 5
     data = CUDA.rand(Float32, 80)
     out = CUDA.zeros(Float32, 16)
-    ct.launch(for_loop_step_kernel, 1, data, out, Int32(5))
+    @cuda backend=cuTile for_loop_step_kernel(data, out, Int32(5))
 
     data_cpu = Array(data)
     expected = data_cpu[1:16] .+ data_cpu[33:48] .+ data_cpu[65:80]
@@ -190,7 +190,7 @@ end
     # 3 tiles; decrement from 3 to 1 should sum all tiles
     data = CUDA.rand(Float32, 48)
     out = CUDA.zeros(Float32, 16)
-    ct.launch(for_loop_decr_kernel, 1, data, out, Int32(3))
+    @cuda backend=cuTile for_loop_decr_kernel(data, out, Int32(3))
 
     data_cpu = Array(data)
     expected = sum(reshape(data_cpu, 16, 3); dims=2)[:, 1]
@@ -214,7 +214,7 @@ end
     inp = CUDA.ones(Float32, 32)    # 2 tiles of 16, all ones
     out = CUDA.zeros(Float32, 16)
 
-    ct.launch(for_loop_store_kernel, 1, inp, out, n_iters)
+    @cuda backend=cuTile for_loop_store_kernel(inp, out, n_iters)
 
     @test all(Array(out) .≈ 2.0f0)
 end

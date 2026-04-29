@@ -9,6 +9,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 using CUDA, NVTX
+using cuTile: cuTile
 import cuTile as ct
 using Test
 using FFTW
@@ -233,24 +234,14 @@ function run(data; nruns::Int=1, warmup::Int=0)
     grid = (batch, 1, 1)
 
     CUDA.@sync for _ in 1:warmup
-        ct.launch(fft_kernel, grid,
-                  x_packed, y_packed,
-                  W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
-                  ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2),
-                  ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2),
-                  ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
+        @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2), ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
     end
 
     times = Float64[]
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed ct.launch(fft_kernel, grid,
-                                            x_packed, y_packed,
-                                            W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu,
-                                            ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2),
-                                            ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2),
-                                            ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
+                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2), ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
                 push!(times, t * 1000)  # ms
             end
         end

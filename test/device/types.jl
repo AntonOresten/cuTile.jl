@@ -18,7 +18,7 @@ using CUDA
     b = CUDA.rand(Float64, n)
     c = CUDA.zeros(Float64, n)
 
-    ct.launch(vadd_f64, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vadd_f64(a, b, c)
 
     @test Array(c) ≈ Array(a) + Array(b)
 end
@@ -39,7 +39,7 @@ end
     b = CUDA.rand(Float16, n)
     c = CUDA.zeros(Float16, n)
 
-    ct.launch(vadd_f16, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vadd_f16(a, b, c)
 
     @test Array(c) ≈ Array(a) + Array(b)
 end
@@ -60,7 +60,7 @@ end
     b = CUDA.rand(ct.BFloat16, n)
     c = CUDA.zeros(ct.BFloat16, n)
 
-    ct.launch(vadd_bf16, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vadd_bf16(a, b, c)
 
     @test Array(c) ≈ Array(a) + Array(b)
 
@@ -78,7 +78,7 @@ end
     end
 
     d = CUDA.zeros(ct.BFloat16, n)
-    ct.launch(vsub_bf16_bcast, cld(n, tile_size), a, b, d)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vsub_bf16_bcast(a, b, d)
 
     @test Array(d) ≈ Array(a) .- Array(b)
 end

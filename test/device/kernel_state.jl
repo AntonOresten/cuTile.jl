@@ -2,7 +2,7 @@ using CUDA
 
 # `Intrinsics.kernel_state()` returns the implicit per-launch `KernelState`
 # struct. The host appends a fresh `RandomDevice`-derived seed to every
-# `cuTile.launch`, so two consecutive launches see distinct seeds, while
+# `@cuda backend=cuTile`, so two consecutive launches see distinct seeds, while
 # every block within a single launch sees the same seed.
 
 @testset "kernel_state seed: distinct per launch, shared per block" begin
@@ -16,8 +16,8 @@ using CUDA
     n = 64
     out1 = CUDA.zeros(UInt32, n)
     out2 = CUDA.zeros(UInt32, n)
-    ct.launch(k, n, out1)
-    ct.launch(k, n, out2)
+    @cuda backend=cuTile blocks=n k(out1)
+    @cuda backend=cuTile blocks=n k(out2)
     v1 = Array(out1)
     v2 = Array(out2)
 

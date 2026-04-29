@@ -13,7 +13,7 @@ using CUDA
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(sum_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m sum_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -35,7 +35,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(sum_axis1_kernel, n, a, b)
+    @cuda backend=cuTile blocks=n sum_axis1_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -57,7 +57,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(maximum_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m maximum_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -79,7 +79,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(minimum_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m minimum_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -102,7 +102,7 @@ end
     a = CuArray(rand(Float32, m, n) .* 0.1f0 .+ 0.95f0)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(prod_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m prod_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -124,7 +124,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(custom_reduce_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m custom_reduce_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -146,7 +146,7 @@ end
     a = CUDA.rand(Float32, m, n) .- 0.5f0
     b = CUDA.zeros(Float32, m, n)
 
-    ct.launch(map_abs_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m map_abs_kernel(a, b)
 
     @test Array(b) ≈ abs.(Array(a)) rtol=1e-5
 end
@@ -164,7 +164,7 @@ end
     a = CUDA.rand(Float32, m, n) .- 0.5f0
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(mapreduce_abs_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m mapreduce_abs_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -186,7 +186,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(mapreduce_sq_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m mapreduce_sq_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -211,7 +211,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(dropdims_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m dropdims_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -235,7 +235,7 @@ end
     a = CUDA.rand(Float32, N)
     b = CUDA.zeros(Float32, N)
 
-    ct.launch(cumsum_1d_kernel, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) cumsum_1d_kernel(a, b, ct.Constant(sz))
 
     # Per-tile cumulative sum
     a_cpu = Array(a)
@@ -258,7 +258,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m, n)
 
-    ct.launch(cumsum_2d_axis1_kernel, cld(m, 4), a, b)
+    @cuda backend=cuTile blocks=cld(m, 4) cumsum_2d_axis1_kernel(a, b)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -286,7 +286,7 @@ end
     a = CUDA.rand(Float32, N)
     b = CUDA.zeros(Float32, N)
 
-    ct.launch(reverse_cumsum_kernel, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) reverse_cumsum_kernel(a, b, ct.Constant(sz))
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -311,7 +311,7 @@ end
     a = CuArray(rand(Float32, N) .* 0.1f0 .+ 0.95f0)
     b = CUDA.zeros(Float32, N)
 
-    ct.launch(cumprod_1d_kernel, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) cumprod_1d_kernel(a, b, ct.Constant(sz))
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -369,7 +369,7 @@ end
         end
         b_gpu = CUDA.zeros(elType, cld(N, TILE_SIZE))
 
-        ct.launch(gpu_kernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
+        @cuda backend=cuTile blocks=cld(N, TILE_SIZE) gpu_kernel(a_gpu, b_gpu, ct.Constant(TILE_SIZE))
 
         a_cpu = Array(a_gpu)
         b_cpu = Array(b_gpu)
@@ -406,7 +406,7 @@ end
         end
         b_gpu = CUDA.zeros(elType, N)
 
-        ct.launch(scan_kernel, cld(N, TILE_SIZE), a_gpu, b_gpu, ct.Constant(TILE_SIZE))
+        @cuda backend=cuTile blocks=cld(N, TILE_SIZE) scan_kernel(a_gpu, b_gpu, ct.Constant(TILE_SIZE))
 
         a_cpu = Array(a_gpu)
         b_cpu = Array(b_gpu)
@@ -451,8 +451,8 @@ end
     a_pos = CUDA.ones(Float32, N)
     b_any = CUDA.zeros(Int32, n_blocks)
     b_all = CUDA.zeros(Int32, n_blocks)
-    ct.launch(any_kernel, n_blocks, a_pos, b_any, ct.Constant(TILE_SIZE))
-    ct.launch(all_kernel, n_blocks, a_pos, b_all, ct.Constant(TILE_SIZE))
+    @cuda backend=cuTile blocks=n_blocks any_kernel(a_pos, b_any, ct.Constant(TILE_SIZE))
+    @cuda backend=cuTile blocks=n_blocks all_kernel(a_pos, b_all, ct.Constant(TILE_SIZE))
     @test all(Array(b_any) .== 1)
     @test all(Array(b_all) .== 1)
 
@@ -460,8 +460,8 @@ end
     a_neg = CUDA.fill(Float32(-1), N)
     b_any = CUDA.zeros(Int32, n_blocks)
     b_all = CUDA.zeros(Int32, n_blocks)
-    ct.launch(any_kernel, n_blocks, a_neg, b_any, ct.Constant(TILE_SIZE))
-    ct.launch(all_kernel, n_blocks, a_neg, b_all, ct.Constant(TILE_SIZE))
+    @cuda backend=cuTile blocks=n_blocks any_kernel(a_neg, b_any, ct.Constant(TILE_SIZE))
+    @cuda backend=cuTile blocks=n_blocks all_kernel(a_neg, b_all, ct.Constant(TILE_SIZE))
     @test all(Array(b_any) .== 0)
     @test all(Array(b_all) .== 0)
 
@@ -475,8 +475,8 @@ end
     a_mix = CuArray(a_mix_cpu)
     b_any = CUDA.zeros(Int32, n_blocks)
     b_all = CUDA.zeros(Int32, n_blocks)
-    ct.launch(any_kernel, n_blocks, a_mix, b_any, ct.Constant(TILE_SIZE))
-    ct.launch(all_kernel, n_blocks, a_mix, b_all, ct.Constant(TILE_SIZE))
+    @cuda backend=cuTile blocks=n_blocks any_kernel(a_mix, b_any, ct.Constant(TILE_SIZE))
+    @cuda backend=cuTile blocks=n_blocks all_kernel(a_mix, b_all, ct.Constant(TILE_SIZE))
     @test all(Array(b_any) .== 1)
     @test all(Array(b_all) .== 0)
 end
@@ -505,7 +505,7 @@ end
     a = CuArray(a_cpu)
     b = CUDA.zeros(Int32, n_blocks)
 
-    ct.launch(count_kernel, n_blocks, a, b, ct.Constant(TILE_SIZE))
+    @cuda backend=cuTile blocks=n_blocks count_kernel(a, b, ct.Constant(TILE_SIZE))
 
     @test all(Array(b) .== 3)
 end
@@ -539,8 +539,8 @@ end
     b_max = CUDA.zeros(Int32, m, 1)
     b_min = CUDA.zeros(Int32, m, 1)
 
-    ct.launch(argmax_kernel, 1, a, b_max)
-    ct.launch(argmin_kernel, 1, a, b_min)
+    @cuda backend=cuTile argmax_kernel(a, b_max)
+    @cuda backend=cuTile argmin_kernel(a, b_min)
 
     b_max_cpu = Array(b_max)
     b_min_cpu = Array(b_min)
@@ -555,8 +555,8 @@ end
     b_max_rand = CUDA.zeros(Int32, m, 1)
     b_min_rand = CUDA.zeros(Int32, m, 1)
 
-    ct.launch(argmax_kernel, 1, a_rand, b_max_rand)
-    ct.launch(argmin_kernel, 1, a_rand, b_min_rand)
+    @cuda backend=cuTile argmax_kernel(a_rand, b_max_rand)
+    @cuda backend=cuTile argmin_kernel(a_rand, b_min_rand)
 
     a_rand_cpu = Array(a_rand)
     # Compare with CPU argmax/argmin (Julia returns CartesianIndex, extract column)
@@ -578,7 +578,7 @@ end
     sz = 32; N = 1024
     a = CUDA.rand(Float32, N)
     b = CUDA.zeros(Float32, cld(N, sz))
-    ct.launch(sum_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) sum_no_dims_1d(a, b, ct.Constant(sz))
 
     a_cpu = reshape(Array(a), sz, :)
     @test Array(b) ≈ vec(sum(a_cpu; dims=1)) rtol=1e-3
@@ -595,7 +595,7 @@ end
     m, n = 64, 128
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m)
-    ct.launch(sum_no_dims_2d, m, a, b)
+    @cuda backend=cuTile blocks=m sum_no_dims_2d(a, b)
 
     a_cpu = Array(a)
     for i in 1:m
@@ -614,7 +614,7 @@ end
     sz = 32; N = 1024
     a = CUDA.rand(Float32, N) .- 0.5f0  # some positive, some negative
     b = CUDA.zeros(Int32, cld(N, sz))
-    ct.launch(any_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) any_no_dims_1d(a, b, ct.Constant(sz))
 
     a_cpu = reshape(Array(a), sz, :)
     for i in 1:cld(N, sz)
@@ -632,7 +632,7 @@ end
     sz = 32; N = 1024
     a = CUDA.rand(Float32, N)  # all positive
     b = CUDA.zeros(Int32, cld(N, sz))
-    ct.launch(all_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) all_no_dims_1d(a, b, ct.Constant(sz))
 
     a_cpu = reshape(Array(a), sz, :)
     for i in 1:cld(N, sz)
@@ -656,7 +656,7 @@ end
     M, N = 128, 4
     X = CUDA.randn(Float32, M, N)
     Y = similar(X)
-    ct.launch(scalar_reduce_div, N, X, Y, ct.Constant(M), ct.Constant(M))
+    @cuda backend=cuTile blocks=N scalar_reduce_div(X, Y, ct.Constant(M), ct.Constant(M))
 
     X_cpu = Array(X)
     Y_cpu = Array(Y)
@@ -678,7 +678,7 @@ end
     d1, d2, d3 = 4, 8, 16
     a = CUDA.rand(Float32, d1, d2, d3)
     b = CUDA.zeros(Float32, d1)
-    ct.launch(sum_no_dims_3d, d1, a, b)
+    @cuda backend=cuTile blocks=d1 sum_no_dims_3d(a, b)
 
     a_cpu = Array(a)
     for i in 1:d1
@@ -697,7 +697,7 @@ end
     d1, d2, d3 = 4, 8, 16
     a = CUDA.rand(Float32, d1, d2, d3)
     b = CUDA.zeros(Float32, d1)
-    ct.launch(maximum_no_dims_3d, d1, a, b)
+    @cuda backend=cuTile blocks=d1 maximum_no_dims_3d(a, b)
 
     a_cpu = Array(a)
     for i in 1:d1
@@ -715,7 +715,7 @@ end
     sz = 32; N = 1024
     a = CUDA.rand(Float32, N) .- 0.5f0
     b = CUDA.zeros(Int32, cld(N, sz))
-    ct.launch(count_no_dims_1d, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) count_no_dims_1d(a, b, ct.Constant(sz))
 
     a_cpu = reshape(Array(a), sz, :)
     for i in 1:cld(N, sz)

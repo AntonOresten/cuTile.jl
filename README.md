@@ -49,7 +49,7 @@ grid = (blocks, 1, 1)
 a, b = CUDA.rand(Float32, vector_size), CUDA.rand(Float32, vector_size)
 c = CUDA.zeros(Float32, vector_size)
 
-ct.launch(vadd, grid, a, b, c, ct.Constant(tile_size))
+@cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(tile_size))
 
 @assert c == a .+ b
 ```
@@ -69,7 +69,7 @@ Since these types can be verbose, and are derived from the runtime properties
 of arrays, it's often easier to use the `@code_tiled` macro instead:
 
 ```julia-repl
-julia> ct.@code_tiled ct.launch(vadd, (cld(vector_size, tile_size), 1, 1), a, b, c, ct.Constant(tile_size))
+julia> ct.@code_tiled @cuda backend=cuTile blocks=(cld(vector_size, tile_size), 1, 1) vadd(a, b, c, ct.Constant(tile_size))
 // vadd(cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1}(128, true, (0,), (32,))}, cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1}(128, true, (0,), (32,))}, cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1}(128, true, (0,), (32,))}, cuTile.Constant{Int64, 16})
 
 cuda_tile.module @kernels {
@@ -380,8 +380,8 @@ Values can be plain scalars or `ct.ByTarget(...)` for per-architecture dispatch.
 ct.@compiler_options num_ctas=ct.ByTarget(v"10.0" => 4, v"12.0" => 2; default=1)
 ```
 
-Hints can also be passed as keyword arguments to `ct.launch` or `ct.code_tiled`,
-which take precedence over `@compiler_options`.
+Hints can also be passed as keyword arguments to `@cuda backend=cuTile` or
+`ct.code_tiled`, which take precedence over `@compiler_options`.
 
 #### Load/store hints
 
@@ -416,12 +416,12 @@ These are debugging aids and are not optimized for performance.
 ### Code Inspection
 
 Beyond `ct.code_tiled` and `ct.@code_tiled` shown above, cuTile.jl provides
-`@device_code_*` macros that intercept compilation during `ct.launch`:
+`@device_code_*` macros that intercept compilation during a kernel launch:
 
 ```julia
-ct.@device_code_tiled ct.launch(vadd, grid, a, b, c, ct.Constant(16))
-ct.@device_code_typed ct.launch(vadd, grid, a, b, c, ct.Constant(16))
-ct.@device_code_structured ct.launch(vadd, grid, a, b, c, ct.Constant(16))
+ct.@device_code_tiled @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(16))
+ct.@device_code_typed @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(16))
+ct.@device_code_structured @cuda backend=cuTile blocks=grid vadd(a, b, c, ct.Constant(16))
 ```
 
 | Macro | Output |
@@ -498,7 +498,7 @@ ct.launch(cp.cuda.get_current_stream(), grid, vadd, (a, b, c))
 
 ```julia
 # Julia
-ct.launch(vadd, grid, a, b, c)
+@cuda backend=cuTile blocks=grid vadd(a, b, c)
 ```
 
 ### 1-Based Indexing
@@ -541,7 +541,7 @@ function kernel(a, b, tile_size::Int)
     tile = ct.load(a; index=1, shape=(tile_size,))
 end
 
-ct.launch(kernel, grid, a, b, ct.Constant(16))
+@cuda backend=cuTile blocks=grid kernel(a, b, ct.Constant(16))
 ```
 
 `ct.Constant` arguments generate no kernel parameter; the value is embedded directly in

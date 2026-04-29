@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 using CUDA, NVTX
+using cuTile: cuTile
 import cuTile as ct
 
 # 1D kernel
@@ -71,16 +72,14 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
         grid = (cld(m, tile_x), cld(n, tile_y))
 
         CUDA.@sync for _ in 1:warmup
-            ct.launch(vec_add_kernel_2d, grid, a, b, c,
-                      ct.Constant(tile_x), ct.Constant(tile_y))
+            @cuda backend=cuTile blocks=grid vec_add_kernel_2d(a, b, c, ct.Constant(tile_x), ct.Constant(tile_y))
         end
 
         times = Float64[]
         NVTX.@range "cuTile" begin
             for i in 1:nruns
                 NVTX.@range "run $i" begin
-                    t = CUDA.@elapsed ct.launch(vec_add_kernel_2d, grid, a, b, c,
-                                                ct.Constant(tile_x), ct.Constant(tile_y))
+                    t = CUDA.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_2d(a, b, c, ct.Constant(tile_x), ct.Constant(tile_y))
                     push!(times, t * 1000)  # ms
                 end
             end
@@ -90,18 +89,33 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
         n = shape[1]
         tile_val = tile isa Tuple ? tile[1] : tile
         grid = cld(n, tile_val)
-        kernel = use_gather ? vec_add_kernel_1d_gather : vec_add_kernel_1d
 
-        CUDA.@sync for _ in 1:warmup
-            ct.launch(kernel, grid, a, b, c, ct.Constant(tile_val))
-        end
+        if use_gather
+            CUDA.@sync for _ in 1:warmup
+                @cuda backend=cuTile blocks=grid vec_add_kernel_1d_gather(a, b, c, ct.Constant(tile_val))
+            end
 
-        times = Float64[]
-        NVTX.@range "cuTile" begin
-            for i in 1:nruns
-                NVTX.@range "run $i" begin
-                    t = CUDA.@elapsed ct.launch(kernel, grid, a, b, c, ct.Constant(tile_val))
-                    push!(times, t * 1000)  # ms
+            times = Float64[]
+            NVTX.@range "cuTile" begin
+                for i in 1:nruns
+                    NVTX.@range "run $i" begin
+                        t = CUDA.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_1d_gather(a, b, c, ct.Constant(tile_val))
+                        push!(times, t * 1000)  # ms
+                    end
+                end
+            end
+        else
+            CUDA.@sync for _ in 1:warmup
+                @cuda backend=cuTile blocks=grid vec_add_kernel_1d(a, b, c, ct.Constant(tile_val))
+            end
+
+            times = Float64[]
+            NVTX.@range "cuTile" begin
+                for i in 1:nruns
+                    NVTX.@range "run $i" begin
+                        t = CUDA.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_1d(a, b, c, ct.Constant(tile_val))
+                        push!(times, t * 1000)  # ms
+                    end
                 end
             end
         end

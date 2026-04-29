@@ -16,13 +16,13 @@ using CUDA
     b = CUDA.zeros(Float32, n)
 
     # First launch triggers compilation
-    ct.launch(cached_kernel, cld(n, tile_size), a, b)
+    @cuda backend=cuTile blocks=cld(n, tile_size) cached_kernel(a, b)
     @test Array(b) ≈ Array(a)
 
     # Second launch should use cached CuFunction
     a2 = CUDA.rand(Float32, n)
     b2 = CUDA.zeros(Float32, n)
-    ct.launch(cached_kernel, cld(n, tile_size), a2, b2)
+    @cuda backend=cuTile blocks=cld(n, tile_size) cached_kernel(a2, b2)
     @test Array(b2) ≈ Array(a2)
 end
 
@@ -44,7 +44,7 @@ end
     b = CUDA.ones(Float32, 1024)
     c = CUDA.zeros(Float32, 1024)
 
-    ct.launch(mod.vadd_kernel, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 mod.vadd_kernel(a, b, c)
     @test Array(c) ≈ Array(a) + Array(b)
 
     @eval mod begin
@@ -57,7 +57,7 @@ end
         end
     end
 
-    ct.launch(mod.vadd_kernel, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 mod.vadd_kernel(a, b, c)
     @test Array(c) ≈ Array(a) + Array(b) * 2
 end
 
@@ -78,12 +78,12 @@ end
     b = CUDA.ones(Float32, 1024)
     c = CUDA.zeros(Float32, 1024)
 
-    ct.launch(mod.vadd_kernel, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 mod.vadd_kernel(a, b, c)
     @test Array(c) ≈ Array(a) + Array(b)
 
     @eval mod combine(a, b) = a + b * 2
 
-    ct.launch(mod.vadd_kernel, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 mod.vadd_kernel(a, b, c)
     @test Array(c) ≈ Array(a) + Array(b) * 2
 end
 
@@ -104,13 +104,13 @@ end
     a = CUDA.ones(Float32, m, n)
     b = CUDA.zeros(Float32, m)
 
-    ct.launch(mod.reduce_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m mod.reduce_kernel(a, b)
     @test all(Array(b) .≈ Float32(n))
 
     # Redefine to max (associative+commutative, tree-order independent)
     @eval mod combine(a, b) = max(a, b)
 
-    ct.launch(mod.reduce_kernel, m, a, b)
+    @cuda backend=cuTile blocks=m mod.reduce_kernel(a, b)
     @test all(Array(b) .≈ 1.0f0)
 end
 
@@ -131,14 +131,14 @@ end
     a = CUDA.ones(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(mod.scan_kernel, 1, a, b)
+    @cuda backend=cuTile mod.scan_kernel(a, b)
     expected = Float32.(cumsum(ones(Float32, n)))
     @test Array(b) ≈ expected
 
     # Redefine to max (associative+commutative, tree-order independent)
     @eval mod combine(a, b) = max(a, b)
 
-    ct.launch(mod.scan_kernel, 1, a, b)
+    @cuda backend=cuTile mod.scan_kernel(a, b)
     # Running max over [1,1,...,1] with init=0 gives [1,1,...,1]
     @test all(Array(b) .≈ 1.0f0)
 end
@@ -169,7 +169,7 @@ end # invalidations
         @check "addf"
         @check "store_view"
         buf = IOBuffer()
-        ct.@device_code_tiled io=buf ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        ct.@device_code_tiled io=buf @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
         String(take!(buf))
     end
     @test Array(c) ≈ Array(a) + Array(b)
@@ -182,7 +182,7 @@ end # invalidations
         @check "addf"
         @check "store_partition_view"
         buf = IOBuffer()
-        ct.@device_code_structured io=buf ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        ct.@device_code_structured io=buf @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
         String(take!(buf))
     end
 
@@ -194,7 +194,7 @@ end # invalidations
         @check "addf"
         @check "store_partition_view"
         buf = IOBuffer()
-        ct.@device_code_typed io=buf ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        ct.@device_code_typed io=buf @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
         String(take!(buf))
     end
 
@@ -206,14 +206,14 @@ end # invalidations
         @check_dag "callsite"
         @check_dag "name = \"reflect_vadd\""
         buf = IOBuffer()
-        ct.@device_code_tiled io=buf debuginfo=true ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        ct.@device_code_tiled io=buf debuginfo=true @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
         String(take!(buf))
     end
 
     # @device_code_sass has source location annotations
     @test @filecheck begin
         @check "; Location"
-        CUDA.@device_code_sass ct.launch(reflect_vadd, cld(n, 16), a, b, c)
+        CUDA.@device_code_sass @cuda backend=cuTile blocks=cld(n, 16) reflect_vadd(a, b, c)
     end
 
     # @device_code_tiled with Constant arguments
@@ -232,8 +232,7 @@ end # invalidations
         @check "load_view"
         @check "addf"
         @check "store_view"
-        ct.@device_code_tiled ct.launch(reflect_const_vadd, cld(n, 16), a, b, c2,
-                                        ct.Constant(16))
+        ct.@device_code_tiled @cuda backend=cuTile blocks=cld(n, 16) reflect_const_vadd(a, b, c2, ct.Constant(16))
     end
     @test Array(c2) ≈ Array(a) + Array(b)
 
@@ -256,7 +255,7 @@ end # invalidations
         @check "load_view"
         @check "addf"
         @check "store_view"
-        ct.@device_code_tiled ct.launch(reflect_type_vadd, cld(n, 16), a, b, c3, Float32)
+        ct.@device_code_tiled @cuda backend=cuTile blocks=cld(n, 16) reflect_type_vadd(a, b, c3, Float32)
     end
     @test Array(c3) ≈ Array(a) + Array(b)
 
@@ -279,7 +278,7 @@ end # invalidations
         @check "reduce"
         @check "addf"
         buf = IOBuffer()
-        ct.@device_code_tiled io=buf ct.launch(reflect_reduce, m, a2d, b1d)
+        ct.@device_code_tiled io=buf @cuda backend=cuTile blocks=m reflect_reduce(a2d, b1d)
         String(take!(buf))
     end
 end
@@ -295,7 +294,7 @@ end
         end
 
         a = CUDA.ones(Float32, 1024)
-        ct.launch(assert_msg_kernel, cld(1024, 128), a, ct.Constant(128))
+        @cuda backend=cuTile blocks=cld(1024, 128) assert_msg_kernel(a, ct.Constant(128))
         CUDA.synchronize()
         @test all(Array(a) .== 1.0f0)
     end
@@ -310,7 +309,7 @@ end
         end
 
         a = CUDA.ones(Float32, 1024)
-        ct.launch(assert_nomsg_kernel, cld(1024, 128), a, ct.Constant(128))
+        @cuda backend=cuTile blocks=cld(1024, 128) assert_nomsg_kernel(a, ct.Constant(128))
         CUDA.synchronize()
         @test all(Array(a) .== 1.0f0)
     end
@@ -319,7 +318,7 @@ end
         # Failed assertions crash the CUDA context, so we must test in a subprocess
         # (following the same pattern as cuTile Python's test_assert.py)
         script = """
-        using CUDA
+        using CUDA, cuTile
         import cuTile as ct
 
         function assert_fail_kernel(a::ct.TileArray{Float32,1}, tile_size::Int)
@@ -331,7 +330,7 @@ end
         end
 
         a = CUDA.ones(Float32, 1024)
-        ct.launch(assert_fail_kernel, cld(1024, 128), a, ct.Constant(128))
+        @cuda backend=cuTile blocks=cld(1024, 128) assert_fail_kernel(a, ct.Constant(128))
         CUDA.synchronize()
         """
         cmd = `$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`
@@ -364,7 +363,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_const_tile, cld(n, tile_size), a, b, c, ct.Constant(tile_size))
+    @cuda backend=cuTile blocks=cld(n, tile_size) vadd_const_tile(a, b, c, ct.Constant(tile_size))
 
     @test Array(c) ≈ Array(a) + Array(b)
 end
@@ -387,8 +386,7 @@ end
     b = CUDA.rand(Float32, m, n)
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(madd_const_tiles, (cld(m, tile_x), cld(n, tile_y)), a, b, c,
-              ct.Constant(tile_x), ct.Constant(tile_y))
+    @cuda backend=cuTile blocks=(cld(m, tile_x), cld(n, tile_y)) madd_const_tiles(a, b, c, ct.Constant(tile_x), ct.Constant(tile_y))
 
     @test Array(c) ≈ Array(a) + Array(b)
 end
@@ -405,7 +403,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(const_nothing_kernel, cld(n, 16), a, b, ct.Constant(nothing))
+    @cuda backend=cuTile blocks=cld(n, 16) const_nothing_kernel(a, b, ct.Constant(nothing))
 
     @test Array(b) ≈ Array(a)
 end
@@ -425,7 +423,7 @@ end
     b = CUDA.rand(Float16, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_type_param, cld(n, tile_size), a, b, c, ct.Constant(tile_size), Float32)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vadd_type_param(a, b, c, ct.Constant(tile_size), Float32)
 
     @test Array(c) ≈ Float32.(Array(a)) + Float32.(Array(b))
 end
@@ -448,7 +446,7 @@ end
     dst = CUDA.zeros(Float32, n)
 
     # Pass CuArrays directly - should auto-convert
-    ct.launch(copy_kernel, cld(n, tile_size), src, dst)
+    @cuda backend=cuTile blocks=cld(n, tile_size) copy_kernel(src, dst)
 
     @test Array(dst) ≈ Array(src)
 end
@@ -473,7 +471,7 @@ const _EXEC_TEST_GLOBAL_CONST = Float32(1 / log(2))
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(global_const_arith_kernel, cld(n, tile_size), a, b, scale)
+    @cuda backend=cuTile blocks=cld(n, tile_size) global_const_arith_kernel(a, b, scale)
 
     @test Array(b) ≈ Array(a) .* (scale * _EXEC_TEST_GLOBAL_CONST)
 end
@@ -482,7 +480,7 @@ end
     function kernel!()
         return
     end
-    ct.launch(kernel!, 1)
+    @cuda backend=cuTile kernel!()
 end
 
 @testset "inlined Unicode operator in debug info" begin
@@ -500,7 +498,7 @@ end
     n = 256
     src = CUDA.rand(Float32, n)
     dst = CUDA.zeros(Float32, n)
-    ct.launch(unicode_op_kernel, cld(n, 16), src, dst)
+    @cuda backend=cuTile blocks=cld(n, 16) unicode_op_kernel(src, dst)
     @test Array(dst) ≈ 2 .* Array(src)
 end
 
@@ -516,7 +514,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(ghost_nothing_kernel, cld(n, 16), a, b, nothing)
+    @cuda backend=cuTile blocks=cld(n, 16) ghost_nothing_kernel(a, b, nothing)
 
     @test Array(b) ≈ Array(a)
 end
@@ -533,7 +531,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(ghost_val_kernel, cld(n, 16), a, b, Val(16))
+    @cuda backend=cuTile blocks=cld(n, 16) ghost_val_kernel(a, b, Val(16))
 
     @test Array(b) ≈ Array(a)
 end
@@ -542,7 +540,7 @@ end
     # `Base.identity` is `@nospecialize`'d, so the runtime dispatch cache stores
     # an MI widened to `(typeof(identity), Any)`. cufunction must re-specialize
     # to recover the concrete `Nothing` arg type for codegen.
-    ct.launch(identity, 1, nothing)
+    @cuda backend=cuTile identity(nothing)
 end
 
 @testset "struct destructuring" begin
@@ -561,8 +559,7 @@ end
 
         A = CUDA.fill(Float32(3), 64)
         B = CUDA.zeros(Float32, 64)
-        ct.launch(scale_kernel, 1, ct.TileArray(B),
-                  ArrayWithScale(ct.TileArray(A), Float32(2)), ct.Constant((64,)))
+        @cuda backend=cuTile scale_kernel(ct.TileArray(B), ArrayWithScale(ct.TileArray(A), Float32(2)), ct.Constant((64,)))
         @test all(Array(B) .≈ 6.0f0)
     end
 
@@ -583,8 +580,7 @@ end
         X = CUDA.fill(Float32(2), 64)
         Y = CUDA.fill(Float32(3), 64)
         Z = CUDA.zeros(Float32, 64)
-        ct.launch(add_two_kernel, 1, ct.TileArray(Z),
-                  TwoArrays(ct.TileArray(X), ct.TileArray(Y)), ct.Constant((64,)))
+        @cuda backend=cuTile add_two_kernel(ct.TileArray(Z), TwoArrays(ct.TileArray(X), ct.TileArray(Y)), ct.Constant((64,)))
         @test all(Array(Z) .≈ 5.0f0)
     end
 
@@ -607,8 +603,7 @@ end
 
         A = CUDA.fill(Float32(1), 64)
         B = CUDA.zeros(Float32, 64)
-        ct.launch(nested_kernel, 1, ct.TileArray(B),
-                  OuterLayer(InnerLayer(ct.TileArray(A), Float32(2)), Float32(3)), ct.Constant((64,)))
+        @cuda backend=cuTile nested_kernel(ct.TileArray(B), OuterLayer(InnerLayer(ct.TileArray(A), Float32(2)), Float32(3)), ct.Constant((64,)))
         @test all(Array(B) .≈ 9.0f0)
     end
 
@@ -625,8 +620,7 @@ end
 
         A = CUDA.fill(Float32(4), 64)
         B = CUDA.zeros(Float32, 64)
-        ct.launch(scalar_struct_kernel, 1, ct.TileArray(B), ct.TileArray(A),
-                  ScalarPair(Float32(2), Float32(1)), ct.Constant((64,)))
+        @cuda backend=cuTile scalar_struct_kernel(ct.TileArray(B), ct.TileArray(A), ScalarPair(Float32(2), Float32(1)), ct.Constant((64,)))
         @test all(Array(B) .≈ 9.0f0)
     end
 
@@ -644,8 +638,7 @@ end
 
         A = CUDA.ones(Float32, 64)
         B = CUDA.ones(Float32, 64)
-        ct.launch(het_tuple_kernel, 1, ct.TileArray(A),
-                  HetTupleWrapper(ct.TileArray(B), Int32(5)), ct.Constant((64,)))
+        @cuda backend=cuTile het_tuple_kernel(ct.TileArray(A), HetTupleWrapper(ct.TileArray(B), Int32(5)), ct.Constant((64,)))
         @test all(Array(A) .≈ 6.0f0)
     end
 end

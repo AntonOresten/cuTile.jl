@@ -188,7 +188,7 @@ Print the Tile IR (MLIR) for all kernels compiled while evaluating the expressio
 
 # Example
 ```julia
-@device_code_tiled launch(vadd, grid, a, b, c)
+@device_code_tiled @cuda backend=cuTile blocks=grid vadd(a, b, c)
 ```
 """
 macro device_code_tiled(ex...)
@@ -208,7 +208,7 @@ Print the StructuredIRCode for all kernels compiled while evaluating the express
 
 # Example
 ```julia
-@device_code_structured launch(vadd, grid, a, b, c)
+@device_code_structured @cuda backend=cuTile blocks=grid vadd(a, b, c)
 ```
 """
 macro device_code_structured(ex...)
@@ -228,7 +228,7 @@ Print the typed Julia IR for all kernels compiled while evaluating the expressio
 
 # Example
 ```julia
-@device_code_typed launch(vadd, grid, a, b, c)
+@device_code_typed @cuda backend=cuTile blocks=grid vadd(a, b, c)
 ```
 """
 macro device_code_typed(ex...)

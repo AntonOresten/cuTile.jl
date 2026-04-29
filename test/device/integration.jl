@@ -23,7 +23,7 @@ using CUDA
 
     grid_x = cld(M, 32)
     grid_y = cld(N, 32)
-    ct.launch(matmul_kernel, (grid_x, grid_y, 1), a, b, c)
+    @cuda backend=cuTile blocks=(grid_x, grid_y, 1) matmul_kernel(a, b, c)
 
     # Verify against CPU reference
     a_cpu = Array(a)

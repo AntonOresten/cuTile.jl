@@ -14,7 +14,7 @@ using CUDA
     a = CUDA.ones(Float32, 16)
     @test @filecheck begin
         @check "hello world"
-        ct.launch(print_const_kernel, 1, a)
+        @cuda backend=cuTile print_const_kernel(a)
         CUDA.synchronize()
     end
 end
@@ -32,7 +32,7 @@ end
     @test @filecheck begin
         @check "tile=["
         @check "1.000000"
-        ct.launch(print_tile_kernel, 1, a)
+        @cuda backend=cuTile print_tile_kernel(a)
         CUDA.synchronize()
     end
 end
@@ -49,7 +49,7 @@ end
     a = CUDA.ones(Float32, 16)
     @test @filecheck begin
         @check "bid=1"
-        ct.launch(print_bid_kernel, 1, a)
+        @cuda backend=cuTile print_bid_kernel(a)
         CUDA.synchronize()
     end
 end
@@ -66,7 +66,7 @@ end
     a = CUDA.ones(Float32, 16)
     @test @filecheck begin
         @check "bid=1"
-        ct.launch(interp_kernel, 1, a)
+        @cuda backend=cuTile interp_kernel(a)
         CUDA.synchronize()
     end
 end
@@ -85,7 +85,7 @@ end
     @test @filecheck begin
         @check "first"
         @check "second"
-        ct.launch(multi_print_kernel, 1, a)
+        @cuda backend=cuTile multi_print_kernel(a)
         CUDA.synchronize()
     end
 end
