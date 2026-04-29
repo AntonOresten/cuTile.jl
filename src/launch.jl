@@ -6,7 +6,7 @@
 # `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, bytecode_version)`.
 
 using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
-                AbstractBackend, AbstractKernel, kernel_convert, kernel_compile
+                AbstractBackend, AbstractKernel, kernel_convert, kernel_compile, PerDevice
 using CUDA_Compiler_jll
 
 using Adapt: Adapt, adapt
@@ -82,6 +82,8 @@ function run_and_collect(cmd)
     return proc, log
 end
 
+const tile_ir_support = PerDevice{Union{Nothing, VersionNumber}}()
+
 """
     check_tile_ir_support()
 
@@ -90,33 +92,46 @@ Result is cached per `(capability, cuda_version)` — checking compute capabilit
 and toolkit version on every kernel launch is wasteful.
 """
 function check_tile_ir_support()
-    if !CUDA_Compiler_jll.is_available()
+    @static if !CUDA_Compiler_jll.is_available()
         error("CUDA_Compiler_jll is not available; cannot compile Tile IR kernels")
     end
 
-    cuda_ver = CUDA_Compiler_jll.cuda_version
-    cap = capability(device())
-    key = (cap, cuda_ver)
+    dev = device()
+    ver = get!(tile_ir_support, dev) do
+        if !CUDA_Compiler_jll.is_available()
+            @error "CUDA_Compiler_jll is not available; cannot compile Tile IR kernels"
+            return nothing
+        end
+        cuda_ver = CUDA_Compiler_jll.cuda_version
+        bytecode_version = VersionNumber(cuda_ver.major, cuda_ver.minor)
 
-    cached = Base.@lock _tile_ir_support_lock get(_tile_ir_support_cache, key, nothing)
-    cached !== nothing && return cached
+        cap = capability(dev)
+        sm_str = format_sm_arch(cap)
+        if cap >= v"10.0"       # Blackwell
+            if cuda_ver < v"13.1"
+                @error "Tile IR on Blackwell ($sm_str) requires CUDA ≥ 13.1, got $cuda_ver"
+                return nothing
+            end
+        elseif cap >= v"9.0"    # Hopper — not supported
+            @error "Tile IR is not supported on Hopper ($sm_str)"
+            return nothing
+        elseif cap >= v"8.0"    # Ampere / Ada
+            if cuda_ver < v"13.2"
+                @error "Tile IR on Ampere/Ada ($sm_str) requires CUDA ≥ 13.2, got $cuda_ver"
+                return nothing
+            end
+        else
+            @error "Tile IR is not supported on compute capability $cap ($sm_str)"
+            return nothing
+        end
 
-    sm_str = format_sm_arch(cap)
-    if cap >= v"10.0"       # Blackwell
-        cuda_ver >= v"13.1" ||
-            error("Tile IR on Blackwell ($sm_str) requires CUDA ≥ 13.1, got $cuda_ver")
-    elseif cap >= v"9.0"    # Hopper — not supported
-        error("Tile IR is not supported on Hopper ($sm_str)")
-    elseif cap >= v"8.0"    # Ampere / Ada
-        cuda_ver >= v"13.2" ||
-            error("Tile IR on Ampere/Ada ($sm_str) requires CUDA ≥ 13.2, got $cuda_ver")
-    else
-        error("Tile IR is not supported on compute capability $cap ($sm_str)")
+        return bytecode_version
     end
 
-    bytecode_version = VersionNumber(cuda_ver.major, cuda_ver.minor)
-    Base.@lock _tile_ir_support_lock _tile_ir_support_cache[key] = bytecode_version
-    return bytecode_version
+    if ver === nothing
+        error("CUDA Tile is not supported on the current device")
+    end
+    return ver::VersionNumber
 end
 
 
