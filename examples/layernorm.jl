@@ -5,7 +5,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA
+using CUDA, NVTX
 import cuTile as ct
 
 #=============================================================================
@@ -313,16 +313,24 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
 
     # Timed forward runs
     times_fwd = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed run_fwd()
-        push!(times_fwd, t * 1000)  # ms
+    NVTX.@range "cuTile Fwd" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed run_fwd()
+                push!(times_fwd, t * 1000)  # ms
+            end
+        end
     end
 
     # Timed backward runs
     times_bwd = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed run_bwd()
-        push!(times_bwd, t * 1000)  # ms
+    NVTX.@range "cuTile Bwd" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed run_bwd()
+                push!(times_bwd, t * 1000)  # ms
+            end
+        end
     end
 
     return (; Y, Mean, Rstd, DX, FINAL_DW, FINAL_DB, times_fwd, times_bwd)

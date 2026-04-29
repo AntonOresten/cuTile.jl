@@ -9,6 +9,7 @@ plus a SiLU-and-mul activation kernel. Based on cuTile Python's MoE.py sample.
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 from math import ceil
 
 ConstInt = ct.Constant[int]
@@ -334,14 +335,16 @@ def run(data, *, nruns=1, warmup=0):
     cp.cuda.runtime.deviceSynchronize()
 
     times = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        out = cutile_moe(hs, w1, w2, tw, ti, tm, tn, tk)
-        end.record(stream)
-        end.synchronize()
-        times.append(cp.cuda.get_elapsed_time(start, end))
+    with nvtx.annotate("cuTile"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                out = cutile_moe(hs, w1, w2, tw, ti, tm, tn, tk)
+                end.record(stream)
+                end.synchronize()
+                times.append(cp.cuda.get_elapsed_time(start, end))
 
     return {"out": out, "times": times}
 

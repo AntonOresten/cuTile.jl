@@ -6,6 +6,7 @@ Matrix Transpose example - cuTile Python
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 
 @ct.kernel
 def transpose_cutile_kernel(input, output, tile_m: ct.Constant[int], tile_n: ct.Constant[int]):
@@ -50,14 +51,16 @@ def run(data, *, tile_m: int = 64, tile_n: int = 64, nruns: int = 1, warmup: int
 
     # Timed runs
     times = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        ct.launch(stream, grid, transpose_cutile_kernel, (input_arr, output_arr, tile_m, tile_n))
-        end.record(stream)
-        end.synchronize()
-        times.append(cp.cuda.get_elapsed_time(start, end))  # ms
+    with nvtx.annotate("cuTile"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                ct.launch(stream, grid, transpose_cutile_kernel, (input_arr, output_arr, tile_m, tile_n))
+                end.record(stream)
+                end.synchronize()
+                times.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
     return {"output": output_arr, "times": times}
 
@@ -93,14 +96,16 @@ def run_others(data, *, nruns: int = 1, warmup: int = 0):
     cp.cuda.runtime.deviceSynchronize()
 
     times_cupy = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        cp.copyto(output_cupy, input_arr.T)
-        end.record(stream)
-        end.synchronize()
-        times_cupy.append(cp.cuda.get_elapsed_time(start, end))
+    with nvtx.annotate("CuPy"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                cp.copyto(output_cupy, input_arr.T)
+                end.record(stream)
+                end.synchronize()
+                times_cupy.append(cp.cuda.get_elapsed_time(start, end))
     results["CuPy"] = times_cupy
 
     return results

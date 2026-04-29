@@ -5,7 +5,7 @@
 # Uses Julia-idiomatic batch-last ordering: A(M, K, Batch), B(K, N, Batch), C(M, N, Batch)
 # This provides optimal memory access with Julia's column-major layout.
 
-using CUDA
+using CUDA, NVTX
 import cuTile as ct
 
 # Batch matrix multiplication kernel
@@ -82,10 +82,14 @@ function run(data; tm::Int=128, tn::Int=128, tk::Int=64, nruns::Int=1, warmup::I
     end
 
     times = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed ct.launch(batch_matmul_kernel, grid, A, B, C,
-                                    ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
-        push!(times, t * 1000)  # ms
+    NVTX.@range "cuTile" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed ct.launch(batch_matmul_kernel, grid, A, B, C,
+                                            ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+                push!(times, t * 1000)  # ms
+            end
+        end
     end
 
     return (; C, times)
@@ -122,9 +126,13 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
     end
     times_cublas = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
-        push!(times_cublas, t * 1000)
+    NVTX.@range "cuBLAS batched" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+                push!(times_cublas, t * 1000)
+            end
+        end
     end
     results["cuBLAS batched"] = times_cublas
 

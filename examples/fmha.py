@@ -9,6 +9,7 @@ style online softmax with tiling for Blackwell GPUs.
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 from math import ceil, sqrt
 from cuda.tile import RoundingMode as RMd
 
@@ -243,15 +244,17 @@ def run(data, *, nruns=1, warmup=0):
 
     times = []
     out = None
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        out = cutile_fmha(Q, K, V, tile_m=tile_m, tile_n=tile_n,
-                          query_group_size=qgs, causal=causal)
-        end.record(stream)
-        end.synchronize()
-        times.append(cp.cuda.get_elapsed_time(start, end))
+    with nvtx.annotate("cuTile"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                out = cutile_fmha(Q, K, V, tile_m=tile_m, tile_n=tile_n,
+                                  query_group_size=qgs, causal=causal)
+                end.record(stream)
+                end.synchronize()
+                times.append(cp.cuda.get_elapsed_time(start, end))
 
     return {"out": out, "times": times}
 

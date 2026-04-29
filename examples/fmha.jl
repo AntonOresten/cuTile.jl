@@ -11,7 +11,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA
+using CUDA, NVTX
 import cuTile as ct
 
 const INV_LOG_2 = Float32(1.0 / log(2.0))
@@ -262,11 +262,15 @@ function run(data; nruns::Int=1, warmup::Int=0)
 
     times = Float64[]
     out = nothing
-    for _ in 1:nruns
-        t = CUDA.@elapsed begin
-            out = cutile_fmha(Q, K, V; tile_m, tile_n, query_group_size, causal)
+    NVTX.@range "cuTile" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed begin
+                    out = cutile_fmha(Q, K, V; tile_m, tile_n, query_group_size, causal)
+                end
+                push!(times, t * 1000)  # ms
+            end
         end
-        push!(times, t * 1000)  # ms
     end
 
     return (; out, times)

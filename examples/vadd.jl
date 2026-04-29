@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA
+using CUDA, NVTX
 import cuTile as ct
 
 # 1D kernel
@@ -76,10 +76,14 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
         end
 
         times = Float64[]
-        for _ in 1:nruns
-            t = CUDA.@elapsed ct.launch(vec_add_kernel_2d, grid, a, b, c,
-                                        ct.Constant(tile_x), ct.Constant(tile_y))
-            push!(times, t * 1000)  # ms
+        NVTX.@range "cuTile" begin
+            for i in 1:nruns
+                NVTX.@range "run $i" begin
+                    t = CUDA.@elapsed ct.launch(vec_add_kernel_2d, grid, a, b, c,
+                                                ct.Constant(tile_x), ct.Constant(tile_y))
+                    push!(times, t * 1000)  # ms
+                end
+            end
         end
     else
         # 1D case
@@ -93,9 +97,13 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
         end
 
         times = Float64[]
-        for _ in 1:nruns
-            t = CUDA.@elapsed ct.launch(kernel, grid, a, b, c, ct.Constant(tile_val))
-            push!(times, t * 1000)  # ms
+        NVTX.@range "cuTile" begin
+            for i in 1:nruns
+                NVTX.@range "run $i" begin
+                    t = CUDA.@elapsed ct.launch(kernel, grid, a, b, c, ct.Constant(tile_val))
+                    push!(times, t * 1000)  # ms
+                end
+            end
         end
     end
 
@@ -141,9 +149,13 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
             c_gpuarrays .= a .+ b
         end
         times_gpuarrays = Float64[]
-        for _ in 1:nruns
-            t = CUDA.@elapsed c_gpuarrays .= a .+ b
-            push!(times_gpuarrays, t * 1000)
+        NVTX.@range "GPUArrays" begin
+            for i in 1:nruns
+                NVTX.@range "run $i" begin
+                    t = CUDA.@elapsed c_gpuarrays .= a .+ b
+                    push!(times_gpuarrays, t * 1000)
+                end
+            end
         end
         results["GPUArrays"] = times_gpuarrays
 
@@ -154,9 +166,13 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
             @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
         end
         times_simt = Float64[]
-        for _ in 1:nruns
-            t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
-            push!(times_simt, t * 1000)
+        NVTX.@range "SIMT" begin
+            for i in 1:nruns
+                NVTX.@range "run $i" begin
+                    t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
+                    push!(times_simt, t * 1000)
+                end
+            end
         end
         results["SIMT"] = times_simt
     end

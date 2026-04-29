@@ -6,6 +6,7 @@ Vector Addition example - cuTile Python
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 
 # 1D kernel
 @ct.kernel
@@ -98,14 +99,16 @@ def run(data, *, tile=1024, nruns: int = 1, warmup: int = 0):
 
     # Timed runs
     times = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        run_kernel()
-        end.record(stream)
-        end.synchronize()
-        times.append(cp.cuda.get_elapsed_time(start, end))  # ms
+    with nvtx.annotate("cuTile"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                run_kernel()
+                end.record(stream)
+                end.synchronize()
+                times.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
     return {"c": c, "times": times}
 
@@ -146,14 +149,16 @@ def run_others(data, *, nruns: int = 1, warmup: int = 0):
         cp.cuda.runtime.deviceSynchronize()
 
         times_cupy = []
-        for _ in range(nruns):
-            start = cp.cuda.Event()
-            end = cp.cuda.Event()
-            start.record(stream)
-            cp.add(a, b, out=c_cupy)
-            end.record(stream)
-            end.synchronize()
-            times_cupy.append(cp.cuda.get_elapsed_time(start, end))
+        with nvtx.annotate("CuPy"):
+            for i in range(nruns):
+                with nvtx.annotate(f"run {i + 1}"):
+                    start = cp.cuda.Event()
+                    end = cp.cuda.Event()
+                    start.record(stream)
+                    cp.add(a, b, out=c_cupy)
+                    end.record(stream)
+                    end.synchronize()
+                    times_cupy.append(cp.cuda.get_elapsed_time(start, end))
         results["CuPy"] = times_cupy
 
     return results

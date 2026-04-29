@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA
+using CUDA, NVTX
 using LinearAlgebra
 import cuTile as ct
 
@@ -81,16 +81,18 @@ function run(data; tm::Int=64, tn::Int=64, tk::Int=64, nruns::Int=1, warmup::Int
     (; A, B, C, M, N, K) = data
     grid = cld(M, tm) * cld(N, tn)
 
-    CUDA.@sync for _ in 1:warmup
-        ct.launch(matmul_kernel, grid, A, B, C,
-                  ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
-    end
+    ct.launch(matmul_kernel, grid, A, B, C,
+              ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
 
     times = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed ct.launch(matmul_kernel, grid, A, B, C,
-                                    ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
-        push!(times, t * 1000)  # ms
+    NVTX.@range "cuTile" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed ct.launch(matmul_kernel, grid, A, B, C,
+                                            ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+                push!(times, t * 1000)  # ms
+            end
+        end
     end
 
     return (; C, times)
@@ -121,9 +123,13 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         mul!(C_gpuarrays, A, B)
     end
     times_gpuarrays = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed mul!(C_gpuarrays, A, B)
-        push!(times_gpuarrays, t * 1000)
+    NVTX.@range "cuBLAS" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed mul!(C_gpuarrays, A, B)
+                push!(times_gpuarrays, t * 1000)
+            end
+        end
     end
     results["cuBLAS"] = times_gpuarrays
 

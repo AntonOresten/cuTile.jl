@@ -6,6 +6,7 @@ FFT (3-stage Cooley-Tukey) example - cuTile Python
 import torch
 import math
 import cuda.tile as ct
+import nvtx
 
 @ct.kernel
 def fft_kernel(x_packed_in, y_packed_out,
@@ -161,15 +162,17 @@ def run(data, *, nruns: int = 1, warmup: int = 0):
 
     # Timed runs
     times = []
-    for _ in range(nruns):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
-                  (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, batch, D))
-        end.record()
-        torch.cuda.synchronize()
-        times.append(start.elapsed_time(end))  # ms
+    with nvtx.annotate("cuTile"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
+                ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
+                          (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, batch, D))
+                end.record()
+                torch.cuda.synchronize()
+                times.append(start.elapsed_time(end))  # ms
 
     output = torch.view_as_complex(y_packed.reshape(batch, N, 2))
 
@@ -203,14 +206,16 @@ def run_others(data, *, nruns: int = 1, warmup: int = 0):
     torch.cuda.synchronize()
 
     times_torch = []
-    for _ in range(nruns):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        torch.fft.fft(input_data, dim=-1)
-        end.record()
-        torch.cuda.synchronize()
-        times_torch.append(start.elapsed_time(end))
+    with nvtx.annotate("cuFFT"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
+                torch.fft.fft(input_data, dim=-1)
+                end.record()
+                torch.cuda.synchronize()
+                times_torch.append(start.elapsed_time(end))
     results["cuFFT"] = times_torch
 
     return results
