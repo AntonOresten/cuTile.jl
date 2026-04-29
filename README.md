@@ -98,17 +98,17 @@ Benchmarks comparing cuTile.jl against cuTile Python on an RTX 5080 (`tileiras` 
 
 | Kernel | Size | Julia | Python | Status |
 |--------|------|-------|--------|--------|
-| Vector Addition | 2^27 f32 | 842 GB/s | 847 GB/s | OK (=) |
-| Matrix Transpose | 8192² f32 | 813 GB/s | 812 GB/s | OK (=) |
-| Layer Norm fwd | 4096² f32 | 931 GB/s | 716 GB/s | +30%* |
-| Layer Norm bwd | 4096² f32 | 245 GB/s | 250 GB/s | OK (-2%) |
-| Matrix Multiplication | 4096³ f32 | 47.0 TFLOPS | 43.3 TFLOPS | +9%** |
-| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.4 TFLOPS | 30.7 TFLOPS | +9%** |
-| FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 592 μs | 562 μs | OK (+5%) |
-| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 18.8 TFLOPS | 20.3 TFLOPS | -7% |
-| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 89.3 TFLOPS | 63.9 TFLOPS | +40%*** |
-| Softmax (TMA) | 4096² f32 | 806 GB/s | 838 GB/s | OK (-4%) |
-| Softmax (Chunked) | 4096² f32 | 1587 GB/s | 1676 GB/s | OK (-5%) |
+| Vector Addition | 2^27 f32 | 842 GB/s | 846 GB/s | OK (=) |
+| Matrix Transpose | 8192² f32 | 806 GB/s | 814 GB/s | OK (-1%) |
+| Layer Norm fwd | 4096² f32 | 925 GB/s | 715 GB/s | +29%* |
+| Layer Norm bwd | 4096² f32 | 242 GB/s | 250 GB/s | OK (-3%) |
+| Matrix Multiplication | 4096³ f32 | 46.9 TFLOPS | 43.4 TFLOPS | +8%** |
+| Batch Matrix Multiply | 1024×512×2048 ×8 f32 | 33.5 TFLOPS | 30.7 TFLOPS | +9%** |
+| FFT (3-stage Cooley-Tukey) | 512-pt ×64 c64 | 628 μs | 562 μs | -12%*** |
+| Mixture of Experts | 256tok 1024h 32e 2048i f16 | 19.1 TFLOPS | 20.1 TFLOPS | OK (-5%) |
+| Attention (FMHA) | 8×16×1024² ×64 f16 causal | 97.3 TFLOPS | 63.1 TFLOPS | +54%**** |
+| Softmax (TMA) | 4096² f32 | 815 GB/s | 828 GB/s | OK (-2%) |
+| Softmax (Chunked) | 4096² f32 | 1609 GB/s | 1655 GB/s | OK (-3%) |
 
 \* The `pow(x, 2)` → `mulf(x, x)` strength reduction eliminates the expensive
 transcendental in the variance computation. Python still emits `pow`.
@@ -116,7 +116,10 @@ transcendental in the variance computation. Python still emits `pow`.
 \*\* Likely because Julia's `for` loop guards give `tileiras` a guarantee that the
 loop body executes at least once, enabling more aggressive warp scheduling.
 
-\*\*\* Likely due to Python's compiler splitting the causal masking loop into two
+\*\*\* `tileiras` picks 128 threads/block for cuTile.jl vs 256 for the cuTile
+Python, despite highly similar Tile IR.
+
+\*\*\*\* Likely due to Python's compiler splitting the causal masking loop into two
 loops, duplicating the loop body. Julia emits a single loop with a conditional.
 
 
