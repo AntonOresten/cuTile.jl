@@ -538,6 +538,13 @@ end
     @test Array(b) ≈ Array(a)
 end
 
+@testset "@nospecialize'd kernel function (identity)" begin
+    # `Base.identity` is `@nospecialize`'d, so the runtime dispatch cache stores
+    # an MI widened to `(typeof(identity), Any)`. cufunction must re-specialize
+    # to recover the concrete `Nothing` arg type for codegen.
+    ct.launch(identity, 1, nothing)
+end
+
 @testset "struct destructuring" begin
     @testset "TileArray + scalar field" begin
         struct ArrayWithScale{T, N, S}

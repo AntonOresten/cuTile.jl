@@ -290,6 +290,10 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
+    if !Base.isdispatchtuple(mi.specTypes)
+        sig = Base.signature_type(f, argtypes)
+        mi = CC.specialize_method(mi.def, sig, mi.sparam_vals)::Core.MethodInstance
+    end
 
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
 
