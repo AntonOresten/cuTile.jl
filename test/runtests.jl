@@ -10,28 +10,23 @@ end
 
 testsuite = find_tests(pwd())
 
-# Add examples
-function find_sources(path::String, sources=String[])
-    if isdir(path)
-        for entry in readdir(path)
-            find_sources(joinpath(path, entry), sources)
-        end
-    elseif endswith(path, ".jl")
-        push!(sources, path)
-    end
-    sources
-end
-examples_dir = joinpath(@__DIR__, "..", "examples")
-examples = find_sources(examples_dir)
-filter!(file -> readline(file) != "# EXCLUDE FROM TESTING", examples)
-for example in examples
-    name = splitext("examples/$(basename(example))")[1]
-    testsuite[name] = quote
-        cd($examples_dir) do
-            mod = @eval module $(gensym()) end
-            @eval mod begin
-                redirect_stdout(devnull) do
-                    include($example)
+# Add examples to the test suite (requires workspaces, a Julia 1.12+ feature)
+examples_root = joinpath(@__DIR__, "..", "examples")
+if VERSION >= v"1.12"
+    for (name, body) in find_tests(examples_root)
+        path = joinpath(examples_root, name * ".jl")
+        readline(path) == "# EXCLUDE FROM TESTING" && continue
+        dir = dirname(path)
+            testsuite["examples/$name"] = quote
+            cd($dir) do
+                project = Base.active_project()
+                Base.set_active_project($dir)
+                try
+                    redirect_stdout(devnull) do
+                        $body
+                    end
+                finally
+                    Base.set_active_project(project)
                 end
             end
         end
