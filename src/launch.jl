@@ -5,7 +5,8 @@
 # CUDA context, and launches it via `cudacall`. Compilation is cached per
 # `(MethodInstance, sm_arch, opt_level, num_ctas, occupancy, bytecode_version)`.
 
-using CUDACore: CuArray, CuModule, CuFunction, cudacall, device, capability
+using CUDACore: CUDACore, CuArray, CuModule, CuFunction, cudacall, device, capability,
+                AbstractBackend, AbstractKernel, kernel_convert, kernel_compile
 using CUDA_Compiler_jll
 
 using Adapt: Adapt, adapt
@@ -40,6 +41,37 @@ Convert a launch argument to its kernel-side form via `Adapt.adapt` with
 """
 cuTileconvert(x) = adapt(KernelAdaptor(), x)
 
+
+#=============================================================================
+ Backend registration — plugs cuTile into CUDACore's `@cuda` dispatch protocol.
+=============================================================================#
+
+"""
+    TileBackend()
+
+cuTile backend for `@cuda backend=...`. Routes the call through
+[`cuTile.cufunction`](@ref) (Tile IR bytecode → tileiras → CUBIN) and
+returns a [`TileKernel`](@ref) for launch.
+
+```julia
+@cuda backend=cuTile.TileBackend() blocks=N my_kernel(a, b, c)
+```
+"""
+struct TileBackend <: AbstractBackend end
+
+CUDACore.kernel_convert(::TileBackend, x) = cuTileconvert(x)
+
+CUDACore.kernel_compile(::TileBackend, f::F, tt::TT=Tuple{}; kwargs...) where {F,TT} =
+    cufunction(f, tt; kwargs...)
+
+
+#=============================================================================
+ Toolkit / device validation (cached: once per `(capability, cuda_version)`).
+=============================================================================#
+
+const _tile_ir_support_cache = Dict{Tuple{VersionNumber, VersionNumber}, VersionNumber}()
+const _tile_ir_support_lock = ReentrantLock()
+
 function run_and_collect(cmd)
     stdout = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
@@ -53,7 +85,9 @@ end
 """
     check_tile_ir_support()
 
-Validate that the current CUDA toolkit version supports Tile IR on the active device.
+Validate that the current CUDA toolkit supports Tile IR on the active device.
+Result is cached per `(capability, cuda_version)` — checking compute capability
+and toolkit version on every kernel launch is wasteful.
 """
 function check_tile_ir_support()
     if !CUDA_Compiler_jll.is_available()
@@ -62,8 +96,12 @@ function check_tile_ir_support()
 
     cuda_ver = CUDA_Compiler_jll.cuda_version
     cap = capability(device())
-    sm_str = format_sm_arch(cap)
+    key = (cap, cuda_ver)
 
+    cached = Base.@lock _tile_ir_support_lock get(_tile_ir_support_cache, key, nothing)
+    cached !== nothing && return cached
+
+    sm_str = format_sm_arch(cap)
     if cap >= v"10.0"       # Blackwell
         cuda_ver >= v"13.1" ||
             error("Tile IR on Blackwell ($sm_str) requires CUDA ≥ 13.1, got $cuda_ver")
@@ -76,9 +114,15 @@ function check_tile_ir_support()
         error("Tile IR is not supported on compute capability $cap ($sm_str)")
     end
 
-    # Return bytecode version matching the toolkit
-    return VersionNumber(cuda_ver.major, cuda_ver.minor)
+    bytecode_version = VersionNumber(cuda_ver.major, cuda_ver.minor)
+    Base.@lock _tile_ir_support_lock _tile_ir_support_cache[key] = bytecode_version
+    return bytecode_version
 end
+
+
+#=============================================================================
+ Compilation: bytecode → CUBIN → CuFunction.
+=============================================================================#
 
 """
     emit_binary!(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
@@ -152,31 +196,148 @@ function emit_function!(cache::CacheView, mi::Core.MethodInstance;
     return cufunc
 end
 
+
+#=============================================================================
+ TileKernel + cufunction: hoisted compilation step.
+
+ Mirrors the `cufunction(f, tt) -> HostKernel` pattern in CUDACore. Once
+ obtained, calling `(::TileKernel)(args...; blocks=…)` skips the MI lookup
+ and CompilerCaching dispatch — only argument flatten + `cudacall` runs.
+=============================================================================#
+
 """
-    launch(f, grid, args...; name=nothing, sm_arch=default_sm_arch(), opt_level=3, num_ctas=nothing, occupancy=nothing)
+    TileKernel{F, TT}
 
-Compile and launch a kernel function with the given grid size and arguments.
+A compiled cuTile kernel. Returned by [`cuTile.cufunction`](@ref) and the
+target of `(::TileKernel)(args...; blocks, …)` calls. Concrete subtype of
+`CUDACore.AbstractKernel`.
+"""
+struct TileKernel{F, TT} <: AbstractKernel{F, TT}
+    f::F
+    fun::CuFunction
+end
 
-Arguments are automatically flattened using `flatten()` - TileArray arguments
-are expanded to their constituent ptr, sizes, and strides parameters.
+"""
+    cuTile.cufunction(f, tt=Tuple{}; sm_arch=nothing, opt_level=nothing,
+                      num_ctas=nothing, occupancy=nothing, name=nothing) -> TileKernel
 
-# Arguments
-- `f`: The kernel function to launch
-- `grid`: Grid size as Int or NTuple for multi-dimensional grids
-- `args...`: Kernel arguments (may include TileArray)
-- `name`: Optional kernel name for debugging
-- `sm_arch`: Target GPU architecture (default: current device's capability)
-- `opt_level`: Optimization level 0-3 (default: 3)
-- `num_ctas`: Number of CTAs in a CGA, 1-16, must be power of 2 (default: nothing)
-- `occupancy`: Expected active CTAs per SM, 1-32 (default: nothing)
+Compile `f` for the cuTile backend. `tt` is the tuple of *converted*
+argument types (i.e. after `cuTileconvert`/`Adapt.adapt(KernelAdaptor(), …)`).
+Compilation is cached; calling `cufunction` repeatedly with the same
+`(f, tt, opts)` is O(1) after the first compile.
+
+Mirrors `CUDACore.cufunction` but produces a [`TileKernel`](@ref). Caching
+is delegated to CompilerCaching: the resulting `TileKernel` is stored in
+the `CuTileResults` attached to the underlying Julia `CodeInstance`, so
+invalidation rides on Julia's normal CI lifecycle.
+"""
+function cufunction(@nospecialize(f), @nospecialize(tt::Type{<:Tuple}=Tuple{});
+                    sm_arch::Union{VersionNumber, Nothing}=nothing,
+                    opt_level::Union{Int, Nothing}=nothing,
+                    num_ctas::Union{Int, Nothing}=nothing,
+                    occupancy::Union{Int, Nothing}=nothing,
+                    name::Union{String, Nothing}=nothing)
+    bytecode_version = check_tile_ir_support()
+    resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
+
+    opts = (sm_arch=resolved_sm_arch, opt_level=opt_level,
+            num_ctas=num_ctas, occupancy=occupancy,
+            bytecode_version=bytecode_version)
+
+    # Unwrap Constant{T, V} → T for MI lookup; build CC.Const(V) for inference.
+    has_consts = any(t -> t <: Constant, tt.parameters)
+    unwrapped_types = map(tt.parameters) do t
+        t <: Constant ? constant_eltype(t) : t
+    end
+    argtypes = Tuple{unwrapped_types...}
+
+    const_argtypes = if has_consts
+        cats = Any[CC.Const(f)]
+        for t in tt.parameters
+            if t <: Constant
+                # Constant{T, V} — extract V from the type parameter.
+                push!(cats, CC.Const(t.parameters[2]))
+            else
+                push!(cats, t)
+            end
+        end
+        cats
+    else
+        nothing
+    end
+
+    world = Base.get_world_counter()
+    mi = method_instance(f, argtypes; world)
+    mi === nothing && throw(MethodError(f, argtypes))
+
+    cache = CacheView{CuTileResults}((:cuTile, opts), world)
+    cufunc = emit_function!(cache, mi; const_argtypes)
+
+    # The cached compilation results are attached to the underlying
+    # `CodeInstance` via CompilerCaching; the `TileKernel` wrapper rides
+    # along in the same `CuTileResults`, so kernel-instance lifecycle
+    # follows the CI's instead of needing a separate global Dict.
+    ci = get(cache, mi)
+    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
+    res.tile_kernel !== nothing && return res.tile_kernel::TileKernel{Core.Typeof(f), tt}
+
+    kernel = TileKernel{Core.Typeof(f), tt}(f, cufunc)
+    res.tile_kernel = kernel
+    return kernel
+end
+
+# Tile IR has a 24-bit grid limit per dimension.
+const _MAX_GRID_DIM = (1 << 24) - 1
+
+# `convert=Val(...)` is the AbstractKernel callable convention from CUDACore;
+# `@cuda` passes `convert=Val(false)` because args were already converted at
+# expansion time. We always treat args as already-converted — direct
+# `kernel(args...)` calls without the macro should pass converted args.
+function (k::TileKernel)(args::Vararg{Any, N}; blocks, threads=1,
+                         convert=Val(false), kwargs...) where {N}
+    state = KernelState()
+
+    # Flatten args for cudacall — Tile IR uses flat scalar parameter signatures,
+    # so each TileArray expands to (ptr, sizes..., strides...). Constant returns
+    # () so ghost types disappear. Trailing `flatten(state)` matches the implicit
+    # KernelState slot at the end of the bytecode kernel signature.
+    flat_args = (Iterators.flatten(map(flatten, args))..., flatten(state)...)
+    flat_types = Tuple{map(typeof, flat_args)...}
+
+    grid_dims = blocks isa Integer ? (blocks,) : blocks
+    for (i, dim) in enumerate(grid_dims)
+        if dim > _MAX_GRID_DIM
+            error("Grid[$i] exceeds 24-bit limit: max=$_MAX_GRID_DIM, got=$dim. " *
+                  "Use multiple kernel launches for larger workloads.")
+        end
+    end
+
+    # Note: threads=1 lets the driver use the cubin's EIATTR_REQNTID metadata
+    # which specifies the actual thread count (typically 128 for Tile kernels).
+    cudacall(k.fun, flat_types, flat_args...; blocks=grid_dims, threads, kwargs...)
+    return nothing
+end
+
+
+#=============================================================================
+ launch: high-level convenience wrapper, retained as the function-call entry
+ point alongside `@cuda backend=cuTile.TileBackend() …`.
+=============================================================================#
+
+"""
+    launch(f, grid, args...; sm_arch=nothing, opt_level=nothing,
+           num_ctas=nothing, occupancy=nothing, name=nothing)
+
+Compile and launch a Tile IR kernel. `args` are converted via
+`cuTileconvert` (CuArray → TileArray, Type → Constant). Equivalent to
+`@cuda backend=cuTile.TileBackend() blocks=grid f(args...)` modulo
+slight kwarg naming.
 
 # Example
 ```julia
 using CUDA, cuTile
 
-a = CUDA.zeros(Float32, 1024)
-b = CUDA.ones(Float32, 1024)
-c = CUDA.zeros(Float32, 1024)
+a = CUDA.zeros(Float32, 1024); b = CUDA.ones(Float32, 1024); c = similar(a)
 
 function vadd_kernel(a::cuTile.TileArray{Float32,1}, b::cuTile.TileArray{Float32,1},
                      c::cuTile.TileArray{Float32,1})
@@ -184,90 +345,22 @@ function vadd_kernel(a::cuTile.TileArray{Float32,1}, b::cuTile.TileArray{Float32
     ta = cuTile.load(a, (pid,), (16,))
     tb = cuTile.load(b, (pid,), (16,))
     cuTile.store(c, (pid,), ta + tb)
-    return nothing
+    return
 end
 
-# CuArrays are automatically converted to TileArray
 cuTile.launch(vadd_kernel, 64, a, b, c)
 ```
 """
 function launch(@nospecialize(f), grid, args...;
-                name::Union{String, Nothing}=nothing,
                 sm_arch::Union{VersionNumber, Nothing}=nothing,
                 opt_level::Union{Int, Nothing}=nothing,
                 num_ctas::Union{Int, Nothing}=nothing,
-                occupancy::Union{Int, Nothing}=nothing)
-    # `KernelState` is internal: a fresh `RandomDevice` seed every launch so
-    # bare `rand()` produces uncorrelated output across launches. Kernels that
-    # need a controlled seed should accept it as a regular argument and call
-    # `Random.seed!(Random.default_rng(), seed)` at entry.
-    state = KernelState()
-    bytecode_version = check_tile_ir_support()
-
-    # Resolve sm_arch: nothing → device capability
-    resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
-
-    # Convert CuArray -> TileArray (and other conversions)
-    tile_args = map(cuTileconvert, args)
-
-    # Unwrap Constant{T,V} → T for MI lookup (kernel sees plain types)
-    unwrapped_types = map(tile_args) do arg
-        arg isa Constant ? constant_eltype(typeof(arg)) : typeof(arg)
-    end
-    argtypes = Tuple{unwrapped_types...}
-
-    # Get world age and method instance
-    # Don't pass method_table - kernel functions are in the global table
-    # The overlay table is only used by the interpreter during inference
-    world = Base.get_world_counter()
-    mi = method_instance(f, argtypes; world)
-    mi === nothing && throw(MethodError(f, argtypes))
-
-    # Build const_argtypes for const-seeded inference
-    has_consts = any(x -> x isa Constant, tile_args)
-    const_argtypes = if has_consts
-        cats = Any[CC.Const(f)]
-        for arg in tile_args
-            push!(cats, arg isa Constant ? CC.Const(arg[]) : typeof(arg))
-        end
-        cats
-    else
-        nothing
-    end
-
-    # Create cache view with compilation options as sharding keys
-    opts = (sm_arch=resolved_sm_arch, opt_level=opt_level,
-            num_ctas=num_ctas, occupancy=occupancy,
-            bytecode_version=bytecode_version)
-    cache = CacheView{CuTileResults}((:cuTile, opts), world)
-
-    # Run cached compilation
-    cufunc = emit_function!(cache, mi; const_argtypes)
-
-    # Flatten arguments for cudacall - Constant returns () so ghost types disappear.
-    # The trailing `flatten(state)` pair matches the implicit KernelState
-    # destructured at the end of the bytecode kernel signature by
-    # `emit_kernel!`.
-    flat_args = (Iterators.flatten(map(flatten, tile_args))..., flatten(state)...)
-    flat_types = Tuple{map(typeof, flat_args)...}
-
-    # Get grid dimensions
-    grid_dims = grid isa Integer ? (grid,) : grid
-
-    # Validate grid dimensions - Tile IR has a 24-bit limit
-    max_grid_dim = (1 << 24) - 1  # 16,777,215
-    for (i, dim) in enumerate(grid_dims)
-        if dim > max_grid_dim
-            error("Grid[$i] exceeds 24-bit limit: max=$max_grid_dim, got=$dim. " *
-                  "Use multiple kernel launches for larger workloads.")
-        end
-    end
-
-    # Launch with cached CuFunction
-    # Note: threads=1 allows the driver to use the cubin's EIATTR_REQNTID metadata
-    # which specifies the actual thread count (typically 128 for Tile kernels)
-    cudacall(cufunc, flat_types, flat_args...; blocks=grid_dims, threads=1)
-
+                occupancy::Union{Int, Nothing}=nothing,
+                name::Union{String, Nothing}=nothing)
+    converted = map(cuTileconvert, args)
+    tt = Tuple{map(Core.Typeof, converted)...}
+    kernel = cufunction(f, tt; sm_arch, opt_level, num_ctas, occupancy, name)
+    kernel(converted...; blocks=grid)
     return nothing
 end
 

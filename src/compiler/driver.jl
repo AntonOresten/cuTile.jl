@@ -190,11 +190,12 @@ end
 
 # Results struct for caching compilation phases
 mutable struct CuTileResults
-    julia_ir::Any    # (StructuredIRCode, rettype)
-    tile_bc::Any     # Vector{UInt8} bytecode
-    cuda_bin::Any    # Vector{UInt8} cubin (populated by CUDAExt)
-    cuda_func::Any   # CuFunction (populated by CUDAExt)
-    CuTileResults() = new(nothing, nothing, nothing, nothing)
+    julia_ir::Any      # (StructuredIRCode, rettype)
+    tile_bc::Any       # Vector{UInt8} bytecode
+    cuda_bin::Any      # Vector{UInt8} cubin
+    cuda_func::Any     # CuFunction
+    tile_kernel::Any   # TileKernel{F, tt} wrapper around cuda_func
+    CuTileResults() = new(nothing, nothing, nothing, nothing, nothing)
 end
 
 # Cached wrappers around the driver's emit_* functions. These check/populate
