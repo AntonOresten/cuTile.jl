@@ -106,6 +106,7 @@ function get_ci(cache::CacheView, mi::Core.MethodInstance;
     return ci
 end
 
+
 # Get the inferred source and return type from a CodeInstance.
 function get_inferred(cache::CacheView{K,V}, ci::Core.CodeInstance,
                       mi::Core.MethodInstance; const_argtypes::Union{Vector{Any},
@@ -198,19 +199,47 @@ mutable struct CuTileResults
     CuTileResults() = new(nothing, nothing, nothing, nothing, nothing)
 end
 
+"""
+    ensure_compiled(cache, mi, const_argtypes) -> (ci::CodeInstance, res::CuTileResults)
+
+Hot-path entry point: single-pass cache `lookup`, falling back to `typeinf!` on
+miss. Hoists the `(ci, res)` pair so the downstream emit_*! chain doesn't have
+to resolve them on every phase.
+"""
+@inline function ensure_compiled(cache::CacheView{K,CuTileResults},
+                                 mi::Core.MethodInstance,
+                                 const_argtypes::Union{Vector{Any}, Nothing}) where {K}
+    # Fast path: already cached
+    hit = const_argtypes === nothing ? lookup(cache, mi) :
+                                       lookup(cache, mi, const_argtypes)
+    hit !== nothing && return hit
+
+    # Slow path: run inference (and const-prop, if requested) and re-resolve.
+    ci = get_ci(cache, mi; const_argtypes)
+    res = const_argtypes === nothing ? results(cache, ci) :
+                                       results(cache, ci, const_argtypes)
+    return (ci, res)
+end
+
 # Cached wrappers around the driver's emit_* functions. These check/populate
 # CuTileResults and are used by the production pipeline (launch → CUDAExt).
 # Reflection APIs (code_tiled, code_structured, etc.) bypass this layer and
 # call the driver directly, so they never pollute the compilation cache.
 
 """
-    emit_structured!(cache, mi; const_argtypes=nothing) -> (StructuredIRCode, rettype, kernel_meta)
+    emit_structured!(cache, mi, ci, res; const_argtypes=nothing) -> (StructuredIRCode, rettype, kernel_meta)
 
 Cached IR phase. Invokes the compile hook (for `@device_code_*` macros),
-checks `CuTileResults.julia_ir`, and delegates to `emit_structured` on cache miss.
+checks `res.julia_ir`, and delegates to `emit_structured` on cache miss.
+
+`ci` and `res` must come from `ensure_compiled(cache, mi, const_argtypes)` —
+i.e. inference is already done. Reflection callers that want the lookup
+implicit can use the convenience `emit_structured!(cache, mi; const_argtypes)`
+overload.
 """
-function emit_structured!(cache::CacheView, mi::Core.MethodInstance;
-                  const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+function emit_structured!(cache::CacheView, mi::Core.MethodInstance,
+                          ci::Core.CodeInstance, res::CuTileResults;
+                          const_argtypes::Union{Vector{Any}, Nothing}=nothing)
     # Invoke compile hook if set (for @device_code_* reflection).
     # Pass (f, tt) tuple to enable direct use with reflection utilities.
     # Reconstruct Constant{T,V} types from const_argtypes so that code_tiled
@@ -233,10 +262,6 @@ function emit_structured!(cache::CacheView, mi::Core.MethodInstance;
         compile_hook[](f, tt)
     end
 
-    ci = get_ci(cache, mi; const_argtypes)
-
-    # Check result cache
-    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
     res.julia_ir !== nothing && return res.julia_ir
 
     # Compute fresh via driver
@@ -246,20 +271,29 @@ function emit_structured!(cache::CacheView, mi::Core.MethodInstance;
     return result
 end
 
+# Convenience overload that resolves (ci, res) on the caller's behalf. Use
+# from non-hot paths (e.g. sub-program compilation in codegen/kernel.jl);
+# the production launch path goes through `ensure_compiled` once at the top
+# and feeds (ci, res) through the chain explicitly.
+function emit_structured!(cache::CacheView, mi::Core.MethodInstance;
+                          const_argtypes::Union{Vector{Any}, Nothing}=nothing)
+    ci, res = ensure_compiled(cache, mi, const_argtypes)
+    return emit_structured!(cache, mi, ci, res; const_argtypes)
+end
+
 """
-    emit_tile!(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
+    emit_tile!(cache, mi, ci, res; const_argtypes=nothing) -> Vector{UInt8}
 
 Cached code phase. Delegates to `emit_structured!` for the IR phase, checks
-`CuTileResults.tile_bc`, and calls the driver's `emit_tile` on cache miss.
+`res.tile_bc`, and calls the driver's `emit_tile` on cache miss.
 """
-function emit_tile!(cache::CacheView, mi::Core.MethodInstance;
+function emit_tile!(cache::CacheView, mi::Core.MethodInstance,
+                    ci::Core.CodeInstance, res::CuTileResults;
                     const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    # Delegate to cached IR phase
-    ir_result = emit_structured!(cache, mi; const_argtypes)
+    # Delegate to cached IR phase — this also fires `compile_hook` for
+    # `@device_code_*` reflection, which must run on every launch.
+    ir_result = emit_structured!(cache, mi, ci, res; const_argtypes)
 
-    # Check code cache
-    ci = get(cache, mi)
-    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
     res.tile_bc !== nothing && return res.tile_bc
 
     # Compute bytecode via driver

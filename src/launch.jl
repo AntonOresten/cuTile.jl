@@ -125,16 +125,18 @@ end
 =============================================================================#
 
 """
-    emit_binary!(cache, mi; const_argtypes=nothing) -> Vector{UInt8}
+    emit_binary!(cache, mi, ci, res; const_argtypes=nothing) -> Vector{UInt8}
 
 Cached binary phase: compile Tile IR bytecode to CUBIN using tileiras.
 """
-function emit_binary!(cache::CacheView, mi::Core.MethodInstance;
+function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
+                      ci::Core.CodeInstance, res::CuTileResults;
                       const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    bytecode = emit_tile!(cache, mi; const_argtypes)
+    # Recurse first — emit_structured! at the bottom of the chain fires
+    # `compile_hook` for `@device_code_*` reflection, which must run on every
+    # launch even when downstream artifacts are fully cached.
+    bytecode = emit_tile!(cache, mi, ci, res; const_argtypes)
 
-    ci = get(cache, mi)
-    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
     res.cuda_bin !== nothing && return res.cuda_bin
 
     opts = cache.owner[2]
@@ -177,16 +179,15 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance;
 end
 
 """
-    emit_function!(cache, mi; const_argtypes=nothing) -> CuFunction
+    emit_function!(cache, mi, ci, res; const_argtypes=nothing) -> CuFunction
 
 Cached function phase: load CUBIN into GPU memory as a CuFunction.
 """
-function emit_function!(cache::CacheView, mi::Core.MethodInstance;
+function emit_function!(cache::CacheView, mi::Core.MethodInstance,
+                        ci::Core.CodeInstance, res::CuTileResults;
                         const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    cubin = emit_binary!(cache, mi; const_argtypes)
+    cubin = emit_binary!(cache, mi, ci, res; const_argtypes)
 
-    ci = get(cache, mi)
-    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
     res.cuda_func !== nothing && return res.cuda_func
 
     kernel_name = sanitize_name(string(mi.def.name))
@@ -271,16 +272,21 @@ function cufunction(@nospecialize(f), @nospecialize(tt::Type{<:Tuple}=Tuple{});
     mi === nothing && throw(MethodError(f, argtypes))
 
     cache = CacheView{CuTileResults}((:cuTile, opts), world)
-    cufunc = emit_function!(cache, mi; const_argtypes)
 
-    # The cached compilation results are attached to the underlying
-    # `CodeInstance` via CompilerCaching; the `TileKernel` wrapper rides
-    # along in the same `CuTileResults`, so kernel-instance lifecycle
+    # Single resolution of (ci, res) up front — threaded through the emit_*!
+    # chain so each phase only does its own short-circuit, not redundant
+    # cache lookups. The cached compilation results are attached to the
+    # underlying `CodeInstance` via CompilerCaching; the `TileKernel` wrapper
+    # rides along in the same `CuTileResults`, so kernel-instance lifecycle
     # follows the CI's instead of needing a separate global Dict.
-    ci = get(cache, mi)
-    res = const_argtypes !== nothing ? results(cache, ci, const_argtypes) : results(cache, ci)
-    res.tile_kernel !== nothing && return res.tile_kernel::TileKernel{Core.Typeof(f), tt}
+    ci, res = ensure_compiled(cache, mi, const_argtypes)
 
+    # Always walk the emit chain (each phase short-circuits on its own cached
+    # field, but `emit_structured!` also fires `compile_hook` for reflection,
+    # which has to run on every launch even when the cube/cufunc is cached).
+    cufunc = emit_function!(cache, mi, ci, res; const_argtypes)
+
+    res.tile_kernel !== nothing && return res.tile_kernel::TileKernel{Core.Typeof(f), tt}
     kernel = TileKernel{Core.Typeof(f), tt}(f, cufunc)
     res.tile_kernel = kernel
     return kernel
