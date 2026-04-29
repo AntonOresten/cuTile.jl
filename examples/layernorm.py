@@ -7,6 +7,7 @@ Forward and backward passes with unified prepare/run/verify pattern.
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 from math import ceil
 
 #=============================================================================
@@ -192,25 +193,29 @@ def run(data, *, tile_n: int = 1024, tile_m: int = 32, nruns: int = 1, warmup: i
 
     # Timed forward runs
     times_fwd = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        run_fwd()
-        end.record(stream)
-        end.synchronize()
-        times_fwd.append(cp.cuda.get_elapsed_time(start, end))  # ms
+    with nvtx.annotate("cuTile Fwd"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                run_fwd()
+                end.record(stream)
+                end.synchronize()
+                times_fwd.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
     # Timed backward runs
     times_bwd = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        run_bwd()
-        end.record(stream)
-        end.synchronize()
-        times_bwd.append(cp.cuda.get_elapsed_time(start, end))  # ms
+    with nvtx.annotate("cuTile Bwd"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                run_bwd()
+                end.record(stream)
+                end.synchronize()
+                times_bwd.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
     return {
         "Y": Y, "Mean": Mean, "Rstd": Rstd,

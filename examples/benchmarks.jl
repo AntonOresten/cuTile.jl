@@ -65,12 +65,15 @@ end
  Benchmark Discovery & Execution
 =============================================================================#
 
-function discover_benchmarks()
+function discover_benchmarks(names...)
     examples = String[]
     for file in readdir(@__DIR__)
         endswith(file, ".jl") || continue
         file == "benchmarks.jl" && continue
         name = replace(file, ".jl" => "")
+        if !isempty(names)
+            name in names || continue
+        end
         push!(examples, name)
     end
     return sort(examples)
@@ -130,7 +133,7 @@ end
  Main
 =============================================================================#
 
-function main()
+function main(args...)
     println("=" ^ 72)
     println("  cuTile.jl Benchmarks")
     println("=" ^ 72)
@@ -139,7 +142,7 @@ function main()
     println("  Runs: $NRUNS (+ $WARMUP warmup)")
     println("  GPU: ", CUDA.name(CUDA.device()))
 
-    for name in discover_benchmarks()
+    for name in discover_benchmarks(args...)
         println("\nBenchmarking $name...")
 
         ret = run_benchmark(name)
@@ -181,5 +184,5 @@ function main()
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    main()
+    main(ARGS...)
 end

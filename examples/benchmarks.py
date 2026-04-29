@@ -7,6 +7,7 @@
 import os
 import importlib.util
 import cupy as cp
+import sys
 
 #=============================================================================
 # Configuration
@@ -64,7 +65,7 @@ def print_table(title: str, results: list):
 # Benchmark Discovery & Execution
 #=============================================================================
 
-def discover_benchmarks():
+def discover_benchmarks(names):
     """Discover all benchmark-enabled examples in the examples directory."""
     examples = []
     examples_dir = os.path.dirname(__file__)
@@ -74,6 +75,8 @@ def discover_benchmarks():
         if file == "benchmarks.py":
             continue
         name = file.replace(".py", "")
+        if names and name not in names:
+            continue
         examples.append(name)
     return examples
 
@@ -133,7 +136,7 @@ def run_benchmark(name: str):
 # Main
 #=============================================================================
 
-def main():
+def main(args):
     import torch  # For GPU name
 
     print("=" * 72)
@@ -144,7 +147,7 @@ def main():
     print(f"  Runs: {NRUNS} (+ {WARMUP} warmup)")
     print(f"  GPU: {torch.cuda.get_device_name()}")
 
-    for name in discover_benchmarks():
+    for name in discover_benchmarks(args):
         print(f"\nBenchmarking {name}...")
 
         ret = run_benchmark(name)
@@ -181,4 +184,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv)

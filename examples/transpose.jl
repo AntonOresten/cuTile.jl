@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA
+using CUDA, NVTX
 import cuTile as ct
 
 # Transpose kernel with TileArray and constant tile sizes
@@ -43,10 +43,14 @@ function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     end
 
     times = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed ct.launch(transpose_kernel, grid, x, y,
-                                    ct.Constant(tm), ct.Constant(tn))
-        push!(times, t * 1000)  # ms
+    NVTX.@range "cuTile" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed ct.launch(transpose_kernel, grid, x, y,
+                                            ct.Constant(tm), ct.Constant(tn))
+                push!(times, t * 1000)  # ms
+            end
+        end
     end
 
     return (; y, times)
@@ -88,9 +92,13 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         permutedims!(y_gpuarrays, x, (2, 1))
     end
     times_gpuarrays = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed permutedims!(y_gpuarrays, x, (2, 1))
-        push!(times_gpuarrays, t * 1000)
+    NVTX.@range "GPUArrays" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed permutedims!(y_gpuarrays, x, (2, 1))
+                push!(times_gpuarrays, t * 1000)
+            end
+        end
     end
     results["GPUArrays"] = times_gpuarrays
 
@@ -101,9 +109,13 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
     end
     times_simt = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
-        push!(times_simt, t * 1000)
+    NVTX.@range "SIMT naive" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
+                push!(times_simt, t * 1000)
+            end
+        end
     end
     results["SIMT naive"] = times_simt
 

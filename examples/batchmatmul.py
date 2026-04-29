@@ -6,6 +6,7 @@ Batch Matrix Multiplication example - cuTile Python
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 from math import ceil
 
 @ct.kernel
@@ -81,14 +82,16 @@ def run(data, *, tm: int = 128, tn: int = 128, tk: int = 64, nruns: int = 1, war
 
     # Timed runs
     times = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        ct.launch(stream, grid, batchmatmul_cutile_kernel, (A, B, C, tm, tn, tk))
-        end.record(stream)
-        end.synchronize()
-        times.append(cp.cuda.get_elapsed_time(start, end))  # ms
+    with nvtx.annotate("cuTile"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                ct.launch(stream, grid, batchmatmul_cutile_kernel, (A, B, C, tm, tn, tk))
+                end.record(stream)
+                end.synchronize()
+                times.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
     return {"C": C, "times": times}
 
@@ -135,14 +138,16 @@ def run_others(data, *, nruns: int = 1, warmup: int = 0):
     torch.cuda.synchronize()
 
     times_torch = []
-    for _ in range(nruns):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        torch.bmm(A_torch, B_torch, out=C_torch)
-        end.record()
-        torch.cuda.synchronize()
-        times_torch.append(start.elapsed_time(end))
+    with nvtx.annotate("PyTorch bmm"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
+                torch.bmm(A_torch, B_torch, out=C_torch)
+                end.record()
+                torch.cuda.synchronize()
+                times_torch.append(start.elapsed_time(end))
     results["PyTorch bmm"] = times_torch
 
     return results

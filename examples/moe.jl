@@ -8,7 +8,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA
+using CUDA, NVTX
 using Random: randperm
 import cuTile as ct
 
@@ -367,12 +367,16 @@ function run(data; nruns::Int=1, warmup::Int=0)
 
     times = Float64[]
     out = nothing
-    for _ in 1:nruns
-        t = CUDA.@elapsed begin
-            out = cutile_moe(hidden_states, w1, w2, topk_weights, topk_ids,
-                             tile_m, tile_n, tile_k)
+    NVTX.@range "cuTile" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed begin
+                    out = cutile_moe(hidden_states, w1, w2, topk_weights, topk_ids,
+                                     tile_m, tile_n, tile_k)
+                end
+                push!(times, t * 1000)  # ms
+            end
         end
-        push!(times, t * 1000)  # ms
     end
 
     return (; out, times)

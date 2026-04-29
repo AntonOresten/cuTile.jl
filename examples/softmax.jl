@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA
+using CUDA, NVTX
 import cuTile as ct
 
 #=============================================================================
@@ -148,16 +148,24 @@ function run(data; tile_tma::Int=next_power_of_2(data.N),
 
     # Timed TMA runs
     times_tma = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed run_tma()
-        push!(times_tma, t * 1000)
+    NVTX.@range "cuTile TMA" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed run_tma()
+                push!(times_tma, t * 1000)
+            end
+        end
     end
 
     # Timed chunked runs
     times_chunked = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed run_chunked()
-        push!(times_chunked, t * 1000)
+    NVTX.@range "cuTile Chunked" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed run_chunked()
+                push!(times_chunked, t * 1000)
+            end
+        end
     end
 
     return (; output_tma, output_chunked,
@@ -210,9 +218,13 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         gpu_softmax!()
     end
     times = Float64[]
-    for _ in 1:nruns
-        t = CUDA.@elapsed gpu_softmax!()
-        push!(times, t * 1000)
+    NVTX.@range "GPUArrays" begin
+        for i in 1:nruns
+            NVTX.@range "run $i" begin
+                t = CUDA.@elapsed gpu_softmax!()
+                push!(times, t * 1000)
+            end
+        end
     end
     results["GPUArrays"] = times
 

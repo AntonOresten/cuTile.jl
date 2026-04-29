@@ -9,6 +9,7 @@ import math
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 
 #=============================================================================
 # TMA Softmax Kernel (single-tile per row, persistent scheduling)
@@ -138,25 +139,29 @@ def run(data, *, tile_tma: int = None, tile_chunked: int = 1024, nruns: int = 1,
 
     # Timed TMA runs
     times_tma = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        run_tma()
-        end.record(stream)
-        end.synchronize()
-        times_tma.append(cp.cuda.get_elapsed_time(start, end))
+    with nvtx.annotate("cuTile TMA"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                run_tma()
+                end.record(stream)
+                end.synchronize()
+                times_tma.append(cp.cuda.get_elapsed_time(start, end))
 
     # Timed chunked runs
     times_chunked = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        run_chunked()
-        end.record(stream)
-        end.synchronize()
-        times_chunked.append(cp.cuda.get_elapsed_time(start, end))
+    with nvtx.annotate("cuTile Chunked"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                run_chunked()
+                end.record(stream)
+                end.synchronize()
+                times_chunked.append(cp.cuda.get_elapsed_time(start, end))
 
     return {
         "output_tma": output_tma,

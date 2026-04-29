@@ -6,6 +6,7 @@ Matrix Multiplication example - cuTile Python
 import cupy as cp
 import numpy as np
 import cuda.tile as ct
+import nvtx
 from math import ceil
 
 def swizzle_2d(M, N, tm, tn, GROUP_SIZE_M):
@@ -84,14 +85,16 @@ def run(data, *, tm: int = 64, tn: int = 64, tk: int = 64, nruns: int = 1, warmu
 
     # Timed runs
     times = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        ct.launch(stream, grid, matmul_cutile_kernel, (A, B, C, tm, tn, tk))
-        end.record(stream)
-        end.synchronize()
-        times.append(cp.cuda.get_elapsed_time(start, end))  # ms
+    with nvtx.annotate("cuTile"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                ct.launch(stream, grid, matmul_cutile_kernel, (A, B, C, tm, tn, tk))
+                end.record(stream)
+                end.synchronize()
+                times.append(cp.cuda.get_elapsed_time(start, end))  # ms
 
     return {"C": C, "times": times}
 
@@ -129,14 +132,16 @@ def run_others(data, *, nruns: int = 1, warmup: int = 0):
     cp.cuda.runtime.deviceSynchronize()
 
     times_cupy = []
-    for _ in range(nruns):
-        start = cp.cuda.Event()
-        end = cp.cuda.Event()
-        start.record(stream)
-        cp.matmul(A, B, out=C_cupy)
-        end.record(stream)
-        end.synchronize()
-        times_cupy.append(cp.cuda.get_elapsed_time(start, end))
+    with nvtx.annotate("cuBLAS"):
+        for i in range(nruns):
+            with nvtx.annotate(f"run {i + 1}"):
+                start = cp.cuda.Event()
+                end = cp.cuda.Event()
+                start.record(stream)
+                cp.matmul(A, B, out=C_cupy)
+                end.record(stream)
+                end.synchronize()
+                times_cupy.append(cp.cuda.get_elapsed_time(start, end))
     results["cuBLAS"] = times_cupy
 
     return results
