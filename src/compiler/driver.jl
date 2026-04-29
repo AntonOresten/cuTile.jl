@@ -298,7 +298,12 @@ function emit_tile!(cache::CacheView, mi::Core.MethodInstance,
 
     # Compute bytecode via driver
     sci, rettype, kernel_meta = ir_result
-    opts = CGOpts(cache.owner[2])
+    key = cache.owner::TileCacheKey
+    opts = CGOpts((sm_arch=unpack_version(key.sm_arch),
+                   opt_level=unpack_hint(key.opt_level),
+                   num_ctas=unpack_hint(key.num_ctas),
+                   occupancy=unpack_hint(key.occupancy),
+                   bytecode_version=unpack_version(key.bytecode_version)))
     bytecode = emit_tile(sci, rettype, kernel_meta;
                          name=sanitize_name(string(mi.def.name)),
                          opts, cache, const_argtypes)

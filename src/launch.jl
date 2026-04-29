@@ -76,6 +76,50 @@ CUDACore.kernel_compile(::TileBackend, f::F, tt::TT=Tuple{}; kwargs...) where {F
 
 
 #=============================================================================
+ Cache sharding key.
+=============================================================================#
+
+# Pack a `VersionNumber` into a `UInt16` as `(major << 8) | minor`. Lossy: drops
+# patch/prerelease/build (none of which we need for SM architectures or Tile IR
+# bytecode versions). Used by `TileCacheKey` to keep the owner isbits.
+@inline pack_version(v::VersionNumber) = (UInt16(v.major) << 8) | UInt16(v.minor)
+@inline unpack_version(x::UInt16) = VersionNumber(Int(x >> 8), Int(x & 0xff))
+
+# isbits sentinel codec for `Union{Int, Nothing}` hint fields (`opt_level`,
+# `num_ctas`, `occupancy`). `-1` is unused as a value, so we use it for `nothing`.
+const _UNSET = -1
+@inline pack_hint(x::Union{Int, Nothing}) = x === nothing ? _UNSET : x
+@inline unpack_hint(x::Int) = x == _UNSET ? nothing : x
+
+"""
+    TileCacheKey
+
+Owner stamped onto every launch-cached `CodeInstance`. `lookup` (called once
+per `cufunction` via `ensure_compiled`) ccalls `jl_rettype_inferred` with the
+owner as `Any`, which forces a heap box; making the owner `isbits` shrinks the
+box from ~80 B (the previous `Tuple{Symbol, NamedTuple{…}}` shape, dominated by
+`VersionNumber`'s non-isbits prerelease/build tuples) to ~32 B.
+
+`VersionNumber` fields are packed into `UInt16` and `Union{Int, Nothing}`
+hint fields use `_UNSET` (`-1`) as the `nothing` sentinel. Decoding back to
+the original types happens once per cache miss in `emit_binary!` /
+`emit_tile!`, never on the hot lookup path.
+"""
+struct TileCacheKey
+    sm_arch::UInt16
+    bytecode_version::UInt16
+    opt_level::Int
+    num_ctas::Int
+    occupancy::Int
+end
+TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
+             opt_level::Union{Int, Nothing}, num_ctas::Union{Int, Nothing},
+             occupancy::Union{Int, Nothing}) =
+    TileCacheKey(pack_version(sm_arch), pack_version(bytecode_version),
+                 pack_hint(opt_level), pack_hint(num_ctas), pack_hint(occupancy))
+
+
+#=============================================================================
  Toolkit / device validation (cached: once per `(capability, cuda_version)`).
 =============================================================================#
 
@@ -200,12 +244,13 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
 
     res.cuda_bin !== nothing && return res.cuda_bin
 
-    opts = cache.owner[2]
+    sm_arch = unpack_version(cache.owner.sm_arch)
 
     # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
     # num_ctas/occupancy are resolved in emit_tile because they're encoded in bytecode.
     _, _, kernel_meta = res.julia_ir
-    opt_level = something(resolve_hint(opts.opt_level, kernel_meta, :opt_level, opts.sm_arch), 3)
+    opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
+                                       kernel_meta, :opt_level, sm_arch), 3)
 
     # Run tileiras to produce CUBIN
     input_path = tempname() * ".tile"
@@ -213,7 +258,7 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     compiled = false
     try
         write(input_path, bytecode)
-        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(opts.sm_arch)) -O$(opt_level) --lineinfo`,
+        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name $(format_sm_arch(sm_arch)) -O$(opt_level) --lineinfo`,
                      "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
         proc, log = run_and_collect(cmd)
         if !success(proc)
@@ -302,9 +347,7 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     bytecode_version = check_tile_ir_support()
     resolved_sm_arch = sm_arch !== nothing ? sm_arch : default_sm_arch()
 
-    opts = (sm_arch=resolved_sm_arch, opt_level=opt_level,
-            num_ctas=num_ctas, occupancy=occupancy,
-            bytecode_version=bytecode_version)
+    key = TileCacheKey(resolved_sm_arch, bytecode_version, opt_level, num_ctas, occupancy)
 
     # Single pass over `tt.parameters`: build the unwrapped argtypes tuple
     # (Constant{T,V} → T for MI lookup) and the const_argtypes vector
@@ -320,7 +363,7 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
         mi = CC.specialize_method(mi.def, sig, mi.sparam_vals)::Core.MethodInstance
     end
 
-    cache = CacheView{CuTileResults}((:cuTile, opts), world)
+    cache = CacheView{CuTileResults}(key, world)
 
     # Single resolution of (ci, res) up front — threaded through the emit_*!
     # chain so each phase only does its own short-circuit, not redundant
