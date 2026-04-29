@@ -51,7 +51,9 @@ function softmax_chunked_kernel(output::ct.TileArray{T,2}, input::ct.TileArray{T
     pid = ct.bid(1)
     num_programs = ct.num_blocks(1)
     M = size(input, 2)
-    num_chunks = (n_elems + TILE_SIZE - Int32(1)) ÷ Int32(TILE_SIZE)
+    # Narrow num_chunks to Int32 so the chunk loop stays in i32 (avoids
+    # i64↔i32 truncation on every offset; matches cuTile Python's IR).
+    num_chunks = Int32((n_elems + TILE_SIZE - Int32(1)) ÷ Int32(TILE_SIZE))
     row_offsets_base = ct.arange(TILE_SIZE)
 
     col_idx = pid
