@@ -741,9 +741,7 @@ function randexp_fill_kernel(out::TileArray{T, 1}, seed::UInt32, counter::UInt32
     return
 end
 
-# Global RNG handle lazily created on first use. The methods that actually
-# dispatch on `CuArray` live in `ext/CUDAExt.jl` because `CuArray` is a weak
-# dependency.
+# Global RNG handle lazily created on first use.
 
 const global_rng = Ref{Union{Nothing, RNG}}(nothing)
 
@@ -762,11 +760,99 @@ function seed!(seed::Integer=Base.rand(Random.RandomDevice(), UInt32))
     return
 end
 
-# Host-side stubs — the real implementations live in the CUDAExt extension.
-# Calling without CUDA.jl loaded raises a helpful error.
-function rand end
-function rand! end
-function randn end
-function randn! end
-function randexp end
-function randexp! end
+#=============================================================================
+ Host-level `cuTile.RNG` methods that dispatch on `CuArray`. The fill kernels
+ themselves are device-side (defined above); these methods drive their launch.
+=============================================================================#
+
+function Random.rand!(rng::RNG, A::CuArray{T}) where {T<:RandTypes}
+    n = length(A)
+    n == 0 && return A
+    # The fill kernel writes RAND_FILL_TILE elements per block via
+    # `store_partition_view`, which silently clips OOB elements when the
+    # last tile doesn't fully fit — so any `n` is supported with no kernel
+    # changes. Each block still consumes a full tile of counters though,
+    # so the host advances by `n_blocks * tile`, not `n`, to keep
+    # consecutive `rand!` calls disjoint.
+    n_blocks = cld(n, RAND_FILL_TILE)
+    launch(rand_fill_kernel, n_blocks, A, rng.seed, rng.counter)
+    advance_counter!(rng, UInt32(n_blocks * RAND_FILL_TILE))
+    return A
+end
+
+Random.rand(rng::RNG, ::Type{T}, dims::Dims) where {T<:RandTypes} =
+    Random.rand!(rng, CuArray{T}(undef, dims))
+Random.rand(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:RandTypes} =
+    Random.rand(rng, T, Dims((d1, dims...)))
+Random.rand(rng::RNG, dims::Dims) = Random.rand(rng, Float32, dims)
+Random.rand(rng::RNG, d1::Integer, dims::Integer...) = Random.rand(rng, Dims((d1, dims...)))
+
+# `randn!` mirrors `rand!`: same per-block tile, same counter accounting.
+# The device-side `randn_tile` matches `rand`'s T-agnostic "advance by element
+# count" scheme, so the host bookkeeping is identical.
+function Random.randn!(rng::RNG, A::CuArray{T}) where {T<:RandnTypes}
+    n = length(A)
+    n == 0 && return A
+    n_blocks = cld(n, RAND_FILL_TILE)
+    launch(randn_fill_kernel, n_blocks, A, rng.seed, rng.counter)
+    advance_counter!(rng, UInt32(n_blocks * RAND_FILL_TILE))
+    return A
+end
+
+Random.randn(rng::RNG, ::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randn!(rng, CuArray{T}(undef, dims))
+Random.randn(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randn(rng, T, Dims((d1, dims...)))
+Random.randn(rng::RNG, dims::Dims) = Random.randn(rng, Float32, dims)
+Random.randn(rng::RNG, d1::Integer, dims::Integer...) = Random.randn(rng, Dims((d1, dims...)))
+
+# `randexp!` mirrors `rand!`/`randn!`: same per-block tile, same counter
+# accounting (one log per output, no per-element loops).
+function Random.randexp!(rng::RNG, A::CuArray{T}) where {T<:RandnTypes}
+    n = length(A)
+    n == 0 && return A
+    n_blocks = cld(n, RAND_FILL_TILE)
+    launch(randexp_fill_kernel, n_blocks, A, rng.seed, rng.counter)
+    advance_counter!(rng, UInt32(n_blocks * RAND_FILL_TILE))
+    return A
+end
+
+Random.randexp(rng::RNG, ::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randexp!(rng, CuArray{T}(undef, dims))
+Random.randexp(rng::RNG, ::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    Random.randexp(rng, T, Dims((d1, dims...)))
+Random.randexp(rng::RNG, dims::Dims) = Random.randexp(rng, Float32, dims)
+Random.randexp(rng::RNG, d1::Integer, dims::Integer...) = Random.randexp(rng, Dims((d1, dims...)))
+
+# `cuTile.rand` / `cuTile.rand!` aliases, mirroring `CUDA.rand` / `CUDA.rand!`.
+rand(::Type{T}, dims::Dims) where {T<:RandTypes} =
+    Random.rand(get_global_rng(), T, dims)
+rand(::Type{T}, d1::Integer, dims::Integer...) where {T<:RandTypes} =
+    rand(T, Dims((d1, dims...)))
+rand(dims::Dims) = rand(Float32, dims)
+rand(d1::Integer, dims::Integer...) = rand(Dims((d1, dims...)))
+
+rand!(A::CuArray{<:RandTypes}) =
+    Random.rand!(get_global_rng(), A)
+
+# `cuTile.randn` / `cuTile.randn!` aliases, mirroring `CUDA.randn` / `CUDA.randn!`.
+randn(::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randn(get_global_rng(), T, dims)
+randn(::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    randn(T, Dims((d1, dims...)))
+randn(dims::Dims) = randn(Float32, dims)
+randn(d1::Integer, dims::Integer...) = randn(Dims((d1, dims...)))
+
+randn!(A::CuArray{<:RandnTypes}) =
+    Random.randn!(get_global_rng(), A)
+
+# `cuTile.randexp` / `cuTile.randexp!` aliases.
+randexp(::Type{T}, dims::Dims) where {T<:RandnTypes} =
+    Random.randexp(get_global_rng(), T, dims)
+randexp(::Type{T}, d1::Integer, dims::Integer...) where {T<:RandnTypes} =
+    randexp(T, Dims((d1, dims...)))
+randexp(dims::Dims) = randexp(Float32, dims)
+randexp(d1::Integer, dims::Integer...) = randexp(Dims((d1, dims...)))
+
+randexp!(A::CuArray{<:RandnTypes}) =
+    Random.randexp!(get_global_rng(), A)

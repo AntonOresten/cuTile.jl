@@ -15,6 +15,8 @@ const CC = Core.Compiler
 
 using CUDA_Tile_jll
 
+using CUDACore: CUDACore, CuArray
+
 using BFloat16s: BFloat16
 using EnumX
 public BFloat16
@@ -81,8 +83,8 @@ include("utils.jl")
 include("tiled.jl")
 include("broadcast.jl")
 include("mapreduce.jl")
+include("launch.jl")
 
 public launch, Tiled, ByTarget, @compiler_options, @fpmode, @.
-launch(args...) = error("Please import CUDA.jl before using `cuTile.launch`.")
 
 end # module cuTile

@@ -1,4 +1,5 @@
 import Base.Broadcast: BroadcastStyle, Broadcasted
+import CUDACore: CuArrayStyle
 
 ## broadcast style
 
@@ -7,9 +8,10 @@ TiledStyle{M}(::Val{N}) where {N,M} = TiledStyle{N}()
 
 BroadcastStyle(::Type{<:Tiled{A}}) where A = TiledStyle{ndims(A)}()
 
-# TiledStyle wins over DefaultArrayStyle
+# TiledStyle wins over DefaultArrayStyle and CuArrayStyle
 BroadcastStyle(::TiledStyle{N}, ::Base.Broadcast.DefaultArrayStyle{M}) where {N,M} = TiledStyle{max(N,M)}()
 BroadcastStyle(::TiledStyle{N}, ::TiledStyle{M}) where {N,M} = TiledStyle{max(N,M)}()
+BroadcastStyle(::TiledStyle{N}, ::CuArrayStyle{M}) where {N,M} = TiledStyle{max(N,M)}()
 
 
 ## broadcast interface
