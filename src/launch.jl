@@ -121,6 +121,42 @@ end
 
 
 #=============================================================================
+ Argument-type unwrapping for cufunction.
+=============================================================================#
+
+"""
+    unwrap_argtypes(f, tt) -> (argtypes::Type{<:Tuple}, const_argtypes::Union{Vector{Any},Nothing})
+
+Compile-time-specialized derivation of:
+- `argtypes::Type{<:Tuple}` — concrete dispatch tuple for `method_instance(f, argtypes)`,
+  with `Constant{T,V}` slots unwrapped to `T`.
+- `const_argtypes::Vector{Any}` — `[CC.Const(f), ...args]` with `Constant{T,V}` slots
+  replaced by `CC.Const(V)`, for const-prop inference. `nothing` when no `Constant`
+  arguments are present (skips the const-seeding pipeline entirely).
+
+`@generated` so the unwrapped `Tuple` type and the `Constant`-vs-not branching
+fold to constants at the call site. Only the `Vector{Any}` allocation and the
+`CC.Const(...)` boxes for runtime values survive to runtime.
+"""
+@generated function unwrap_argtypes(@nospecialize(f), ::Type{TT}) where TT <: Tuple
+    unwrapped = map(t -> t <: Constant ? constant_eltype(t) : t, TT.parameters)
+    argtypes_T = Tuple{unwrapped...}
+    has_consts = any(t -> t <: Constant, TT.parameters)
+    has_consts || return :(($argtypes_T, nothing))
+
+    cats_exprs = Any[:(CC.Const(f))]
+    for t in TT.parameters
+        if t <: Constant
+            push!(cats_exprs, :(CC.Const($(t.parameters[2]))))
+        else
+            push!(cats_exprs, t)
+        end
+    end
+    return :(($argtypes_T, Any[$(cats_exprs...)]))
+end
+
+
+#=============================================================================
  Compilation: bytecode → CUBIN → CuFunction.
 =============================================================================#
 
@@ -232,7 +268,7 @@ is delegated to CompilerCaching: the resulting `TileKernel` is stored in
 the `CuTileResults` attached to the underlying Julia `CodeInstance`, so
 invalidation rides on Julia's normal CI lifecycle.
 """
-function cufunction(@nospecialize(f), @nospecialize(tt::Type{<:Tuple}=Tuple{});
+function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
                     sm_arch::Union{VersionNumber, Nothing}=nothing,
                     opt_level::Union{Int, Nothing}=nothing,
                     num_ctas::Union{Int, Nothing}=nothing,
@@ -245,27 +281,11 @@ function cufunction(@nospecialize(f), @nospecialize(tt::Type{<:Tuple}=Tuple{});
             num_ctas=num_ctas, occupancy=occupancy,
             bytecode_version=bytecode_version)
 
-    # Unwrap Constant{T, V} → T for MI lookup; build CC.Const(V) for inference.
-    has_consts = any(t -> t <: Constant, tt.parameters)
-    unwrapped_types = map(tt.parameters) do t
-        t <: Constant ? constant_eltype(t) : t
-    end
-    argtypes = Tuple{unwrapped_types...}
-
-    const_argtypes = if has_consts
-        cats = Any[CC.Const(f)]
-        for t in tt.parameters
-            if t <: Constant
-                # Constant{T, V} — extract V from the type parameter.
-                push!(cats, CC.Const(t.parameters[2]))
-            else
-                push!(cats, t)
-            end
-        end
-        cats
-    else
-        nothing
-    end
+    # Single pass over `tt.parameters`: build the unwrapped argtypes tuple
+    # (Constant{T,V} → T for MI lookup) and the const_argtypes vector
+    # (Constant{T,V} → CC.Const(V) for inference) together. cufunction
+    # specializes on `tt`, so this loop unrolls per kernel signature.
+    argtypes, const_argtypes = unwrap_argtypes(f, tt)
 
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
