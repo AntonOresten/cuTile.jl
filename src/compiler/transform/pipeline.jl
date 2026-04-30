@@ -59,14 +59,6 @@ function same_const(keys::Symbol...)
     end
 end
 
-# Guard factory: check that the binding resolves to the constant scalar `c`.
-function const_eq(key::Symbol, c::Number)
-    (match, driver) -> begin
-        v = const_value(driver.constants, match.bindings[key])
-        v !== nothing && v == c
-    end
-end
-
 """Commute addi/subi past a transparent op (reshape or broadcast) by recreating
 the constant at the pre-transparent shape. The transparent op is determined from
 the matched intermediate instruction, so one function handles both reshape and
@@ -167,8 +159,8 @@ const ALGEBRA_RULES = RewriteRule[
     # wide vector (`STG.E.128`) stores. Mirrors Python cuTile's
     # `_gather_scatter_pointer_and_mask` static-stride skip
     # (`if static_stride == 1: offset_delta = ind`).
-    @rewrite(Intrinsics.muli(~x, ~c) => ~x, const_eq(:c, 1))
-    @rewrite(Intrinsics.muli(~c, ~x) => ~x, const_eq(:c, 1))
+    @rewrite Intrinsics.muli(~x, $(1)) => ~x
+    @rewrite Intrinsics.muli($(1), ~x) => ~x
 ]
 
 algebra_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, ALGEBRA_RULES)
