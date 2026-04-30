@@ -302,14 +302,28 @@ mutable struct CGCtx
     # Kernel linkage name (for debug info subprogram)
     linkage_name::String
 
-    # Per-make_tensor_view assume predicates, populated by `run_passes!`
-    # via `analyze_assume_info`. `nothing` when no pipeline ran (e.g.
-    # tests building a CGCtx by hand). Queried by `make_tensor_view`'s
-    # codegen; see `analysis/assume.jl`.
+    # Dataflow analyses, populated by `run_passes!`. `nothing` when no
+    # pipeline ran (e.g. tests building a CGCtx by hand). Queried by
+    # `op_predicates` (analysis/assume.jl) at consumer sites
+    # (`make_tensor_view`, `load_ptr_tko`, `store_ptr_tko`) to derive
+    # per-operand `AssumePredicate` chains on demand.
     #
-    # Untyped (vs. `Union{AssumeInfo, Nothing}`) because `AssumeInfo` is
-    # defined in `analysis/assume.jl`, included after this file.
-    assume_info::Any
+    # Untyped (vs. `Union{DivByInfo, Nothing}` etc.) because the result
+    # types are defined in `analysis/`, included after this file.
+    divby_info::Any
+    bounds_info::Any
+
+    # Per-`Value` `AssumeOp` wrap cache. The first consumer that wraps a
+    # given `Value` records the result here; subsequent consumers reuse
+    # it instead of emitting a parallel `AssumeOp` chain. Mirrors cuTile
+    # Python's `var_map` dedup in `_passes/propagate_divby.py`. Reset
+    # per kernel by `CGCtx`'s constructor.
+    assume_wrapped::Dict{Value, Value}
+
+    # Block currently being emitted. Set by `emit_block!` per region so
+    # `tuple_element_source` and other parent-walking queries can start
+    # from the right scope. `nothing` when no block has been entered yet.
+    current_block::Any
 end
 
 function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
@@ -338,7 +352,10 @@ function CGCtx(; cb::CodeBuilder, tt::TypeTable, sci::StructuredIRCode,
         FPMode[],                        # fpmode_stack
         debug_emitter,
         linkage_name,
-        nothing,                         # assume_info — set by run_passes!
+        nothing,                         # divby_info  — set by run_passes!
+        nothing,                         # bounds_info — set by run_passes!
+        Dict{Value, Value}(),            # assume_wrapped
+        nothing,                         # current_block — set by emit_block!
     )
 end
 

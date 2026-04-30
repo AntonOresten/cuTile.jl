@@ -99,6 +99,23 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     # Set up argument values
     arg_values = make_block_args!(cb, length(param_types))
 
+    # Hoist early returns BEFORE token ordering — hoist_returns! rewrites
+    # ReturnNode terminators to YieldOp, which the token pass then extends.
+    hoist_returns!(ctx.sci.entry)
+
+    # Run the pass pipeline (normalize, optimize, token ordering, DCE).
+    # Returns the dataflow results consumed at consumer codegen sites.
+    ctx.divby_info, ctx.bounds_info = run_passes!(sci)
+
+    # Wrap each TileArray-derived flat kernel-arg `Value` with the
+    # `AssumeOp` chain its `ArraySpec` justifies, *before* any consumer
+    # reads it. This puts the spec.alignment proof on the base pointer
+    # at kernel entry — gather/scatter offset chains downstream
+    # inherit it, which is what tileiras's vectorizer needs to lower
+    # to `STG.E.128` / `LDG.E.128` (the post-offset operand alone gives
+    # only the lane-stride alignment, not the base alignment).
+    apply_arg_assume_predicates!(ctx, arg_values, param_mapping, param_types, sci)
+
     # Build arg_flat_values map. User args and the trailing KernelState
     # pieces land here — they go through the same `param_mapping`-keyed path.
     # `kernel_state()` resolves to a lazy arg_ref into this map.
@@ -164,14 +181,6 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
         ctx[Argument(arg_idx)] = tv
     end
 
-    # Hoist early returns BEFORE token ordering — hoist_returns! rewrites
-    # ReturnNode terminators to YieldOp, which the token pass then extends.
-    hoist_returns!(ctx.sci.entry)
-
-    # Run the pass pipeline (normalize, optimize, token ordering, DCE).
-    # Returns the AssumeInfo sidecar consumed by `make_tensor_view` codegen.
-    ctx.assume_info = run_passes!(sci)
-
     # Cache the token bytecode type for codegen
     ctx.token_type = Token(tt)
 
@@ -179,6 +188,45 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
     emit_block!(ctx, ctx.sci.entry)
 
     finalize_function!(func_buf, cb, writer.debug_info)
+end
+
+"""
+    apply_arg_assume_predicates!(ctx, arg_values, param_mapping, param_types, sci)
+
+Wrap each `TileArray`-derived flat kernel-arg `Value` in `arg_values`
+with the `AssumeOp` chain its `ArraySpec` implies. Mutates `arg_values`
+in place. The slot path (`[1]` is `ptr`, `[2, i]` is `sizes[i]`,
+`[3, i]` is `strides[i]`) maps to a chain via `arg_chain` (analysis/
+assume.jl).
+
+After wrapping, the `wrapped` `Value` is recorded as a fixed point in
+`ctx.assume_wrapped`: a consumer-side `wrap_for(ctx, wrapped, ...)`
+hits the cache and returns `wrapped` unchanged, so a kernel-arg ptr
+consumed by both an MTV and a gather is wrapped *exactly once* across
+the kernel.
+"""
+function apply_arg_assume_predicates!(ctx::CGCtx, arg_values::Vector{Value},
+                                       param_mapping::Vector{Tuple{Int, Vector{Int}}},
+                                       param_types::Vector{TypeId},
+                                       sci::StructuredIRCode)
+    for param_idx in eachindex(arg_values)
+        arg_idx, path = param_mapping[param_idx]
+        # Trailing `KernelState` arg has no Julia argtype entry.
+        arg_idx > length(sci.argtypes) && continue
+        argT = CC.widenconst(sci.argtypes[arg_idx])
+        argT <: TileArray || continue
+        chain = arg_chain(argT, path)
+        isempty(chain) && continue
+        original = arg_values[param_idx]
+        wrapped = original
+        for p in chain
+            wrapped = encode_AssumeOp!(ctx.cb, param_types[param_idx], wrapped, p)
+        end
+        arg_values[param_idx] = wrapped
+        # Mark the wrapped `Value` as a fixed point so subsequent
+        # consumer wraps don't re-emit the same predicates.
+        ctx.assume_wrapped[wrapped] = wrapped
+    end
 end
 
 """
@@ -316,14 +364,15 @@ function emit_subprogram!(ctx::CGCtx, func, arg_types::Vector,
     end
 
     # 2b. Run the pass pipeline on subprogram IR
-    sub_assume_info = run_passes!(sci)
+    sub_divby, sub_bounds = run_passes!(sci)
 
     # 3. Create sub-context (inherits active fpmode from caller)
     sub_ctx = CGCtx(; ctx.cb, ctx.tt, sci,
                       ctx.token_type,
                       ctx.type_cache, ctx.sm_arch,
                       ctx.cache)
-    sub_ctx.assume_info = sub_assume_info
+    sub_ctx.divby_info = sub_divby
+    sub_ctx.bounds_info = sub_bounds
     append!(sub_ctx.fpmode_stack, ctx.fpmode_stack)
 
     # Inherit kernel-state flat values from the parent. Subprograms compile

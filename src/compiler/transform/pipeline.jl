@@ -145,6 +145,22 @@ const ALGEBRA_RULES = RewriteRule[
     @rewriter Intrinsics.addi(Intrinsics.reshape(~x, ~s), ~c) => commute_arith_transparent
     @rewriter Intrinsics.subi(Intrinsics.broadcast(~x, ~s), ~c) => commute_arith_transparent
     @rewriter Intrinsics.addi(Intrinsics.broadcast(~x, ~s), ~c) => commute_arith_transparent
+
+    # muli identity: x * 1 → x. Drives the contiguous-axis stride fold in
+    # gather/scatter offset chains: for a `TileArray` with `ArraySpec`
+    # `contiguous=true`, `getfield(getfield(arg, :strides), 1)` is statically
+    # `1` (recognised by `analyze_constants`), and constant analysis
+    # propagates through `broadcast`/`reshape`/`from_scalar`. The fold drops
+    # the `muli(idx, broadcast(1))` so the surviving offset has the
+    # `idx + idx_other_axis * stride_other` shape that tileiras's
+    # auto-vectorizer matches against — without it, the contiguous-axis
+    # stride is a runtime value and consecutive lanes' addresses differ by
+    # an unknown scalar, forcing scalar (`STG.E.U16`) stores instead of
+    # wide vector (`STG.E.128`) stores. Mirrors Python cuTile's
+    # `_gather_scatter_pointer_and_mask` static-stride skip
+    # (`if static_stride == 1: offset_delta = ind`).
+    @rewrite Intrinsics.muli(~x, $(1)) => ~x
+    @rewrite Intrinsics.muli($(1), ~x) => ~x
 ]
 
 algebra_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, ALGEBRA_RULES)
@@ -236,12 +252,14 @@ const OPTIMIZATION_RULES = RewriteRule[
 =============================================================================#
 
 """
-    run_passes!(sci::StructuredIRCode) -> AssumeInfo
+    run_passes!(sci::StructuredIRCode) -> (DivByInfo, BoundsInfo)
 
 Run the full pass pipeline on a StructuredIRCode. Called for both
-kernel and subprogram compilation. Returns the `AssumeInfo` aggregator
-that codegen consumes when emitting `make_tensor_view` operands; the
-caller stores it on the `CGCtx`.
+kernel and subprogram compilation. Returns the divisibility / bounds
+dataflow results; the caller stores them on the `CGCtx` so consumer-op
+codegen (`make_tensor_view`, `load_ptr_tko`, `store_ptr_tko`) can
+derive per-operand `AssumePredicate` chains on demand via
+`op_predicates` (analysis/assume.jl).
 """
 function run_passes!(sci::StructuredIRCode)
     canonicalize!(sci)
@@ -257,8 +275,8 @@ function run_passes!(sci::StructuredIRCode)
     # before alias analysis so the alias map is built over the
     # deduplicated form. The dedup naturally extends to TileViews and
     # the `getfield(arg, :ptr|:sizes|:strides)` chains that feed them,
-    # which is what the downstream `analyze_assume_info` and
-    # `licm_pass!` benefit from most.
+    # which is what downstream consumers (codegen assume wraps, LICM)
+    # benefit from most.
     cse_pass!(sci)
 
     alias_info = analyze_aliases(sci)
@@ -270,24 +288,21 @@ function run_passes!(sci::StructuredIRCode)
 
     licm_pass!(sci)
 
-    # Build the assume sidecar for codegen. Runs after LICM so the
-    # dataflow analyses see the post-LICM form. Pure analysis: does
-    # *not* mutate the SCI — `make_tensor_view` codegen reads the
-    # result and emits `AssumeOp`s on the per-element bytecode `Value`s
-    # that `resolve_tuple` produces.
-    divby = analyze_divisibility(sci)
-    bnds  = analyze_bounds(sci)
-    assume_info = analyze_assume_info(sci, divby, bnds)
+    # Run dataflow analyses. Pure: does *not* mutate the SCI — the
+    # codegen consumer ops query these on demand to derive each
+    # operand's `AssumePredicate` chain.
+    divby_info  = analyze_divisibility(sci)
+    bounds_info = analyze_bounds(sci)
 
     # Attach `no_signed_wrap` / `no_unsigned_wrap` flags to integer
     # arithmetic where the bounds analysis proves the result fits in
-    # the destination width. Reuses the same `bnds` result; mutates
-    # `addi`/`subi`/`muli` Exprs in place by appending an
+    # the destination width. Reuses the same `bounds_info` result;
+    # mutates `addi`/`subi`/`muli` Exprs in place by appending an
     # `IntegerOverflow.T` operand that the codegen forwards as the
     # encoder's overflow kwarg.
-    no_wrap_pass!(sci, bnds)
+    no_wrap_pass!(sci, bounds_info)
 
     dce_pass!(sci)
 
-    return assume_info
+    return divby_info, bounds_info
 end

@@ -8,22 +8,32 @@ All SSA values use original Julia SSA indices (no local renumbering).
 Values are stored in ctx.values by their original index.
 """
 function emit_block!(ctx::CGCtx, block::Block; skip_terminator::Bool=false)
-    for inst in instructions(block)
-        # Set debug location for this instruction
-        if ctx.debug_emitter !== nothing
-            ln = isempty(ctx.linkage_name) ? nothing : ctx.linkage_name
-            ctx.cb.cur_debug_attr = resolve_debug_attr!(
-                ctx.debug_emitter, ctx.sci, inst.ssa_idx; linkage_name=ln)
+    # Track the current block so consumer-op codegen can perform parent-
+    # walking queries (e.g. `tuple_element_source` for MTV size/stride
+    # operands) starting from the right scope. Restored on exit so a
+    # caller still in an outer block sees its own context.
+    prev_block = ctx.current_block
+    ctx.current_block = block
+    try
+        for inst in instructions(block)
+            # Set debug location for this instruction
+            if ctx.debug_emitter !== nothing
+                ln = isempty(ctx.linkage_name) ? nothing : ctx.linkage_name
+                ctx.cb.cur_debug_attr = resolve_debug_attr!(
+                    ctx.debug_emitter, ctx.sci, inst.ssa_idx; linkage_name=ln)
+            end
+            s = inst[:stmt]
+            if s isa ControlFlowOp
+                emit_control_flow_op!(ctx, s, value_type(inst), inst.ssa_idx)
+            else
+                emit_statement!(ctx, s, inst.ssa_idx, value_type(inst))
+            end
         end
-        s = inst[:stmt]
-        if s isa ControlFlowOp
-            emit_control_flow_op!(ctx, s, value_type(inst), inst.ssa_idx)
-        else
-            emit_statement!(ctx, s, inst.ssa_idx, value_type(inst))
+        if !skip_terminator && terminator(block) !== nothing
+            emit_terminator!(ctx, terminator(block))
         end
-    end
-    if !skip_terminator && terminator(block) !== nothing
-        emit_terminator!(ctx, terminator(block))
+    finally
+        ctx.current_block = prev_block
     end
 end
 

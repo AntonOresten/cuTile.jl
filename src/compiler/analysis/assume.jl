@@ -1,223 +1,146 @@
-# Assume Aggregation
+# Assume Helpers
 #
-# Read-only aggregator that bundles `DivByAnalysis` and `BoundsAnalysis`
-# results with `ArraySpec` lookup, projection (pow2 + bound clamping),
-# and tuple-element-source resolution into a per-`make_tensor_view`
-# predicate bundle. Codegen consumes one bundle per call:
-# `predicates_for(ctx.assume_info, mtv_ssa)` returns an `MTVPredicates`
-# struct with `ptr` / `sizes[i]` / `strides[i]` chains ready to wrap
-# the corresponding bytecode `Value`s.
+# `DivByAnalysis` and `BoundsAnalysis` propagate per-anchor facts; this
+# file is the projection layer that turns those facts (plus the
+# operand's `ArraySpec`) into the `AssumePredicate` chains that codegen
+# wraps `Value`s with. There's no precomputed sidecar — the analyses'
+# results live on the `CGCtx` and consumer-op codegen calls
+# `op_predicates` / `arg_chain` on demand for each operand it cares
+# about.
 #
-# This replaces the prior `assume_pass!` (transform/assume.jl). The
-# difference is that the aggregator does *not* mutate the SCI: no
-# `Intrinsics.assume` ops are inserted, no `Core.tuple` SSAs are rebuilt,
-# no `getfield` SSAs are synthesised. The "where do I attach this fact"
-# step happens at bytecode emission, where per-element `Value`s already
-# exist as a natural product of `resolve_tuple` (which the
-# `make_tensor_view` codegen had to do anyway to feed
-# `encode_MakeTensorViewOp!` its flat operands).
+# Mirrors cuTile Python's `_passes/propagate_divby.py`: same
+# `_OPS_NEED_ASSUME = (MakeTensorView, LoadPointer, StorePointer)`
+# consumer set, same per-consumer derivation. Where Python mutates the
+# IR (inserts `AssumeDivBy` ops with a `var_map` to dedup), we wrap at
+# bytecode emission time and the per-`Value` cache on `CGCtx`
+# (`assume_wrapped`) plays the role of `var_map`, ensuring a `Value`
+# reused across consumers — e.g. a kernel-arg pointer threaded through
+# both an MTV and a gather — is wrapped exactly once.
 #
-# Tuple-element-source navigation (the recovery of per-axis SCI handles
-# from a tuple-typed operand) lives in `tuple_element_source` and is
-# entirely an analysis-internal concern — codegen requests "facts for
-# this make_tensor_view" and gets back tuple-shaped chains it can
-# consume positionally.
-#
-# Mirrors cuTile Python's `add_divby_pass` + inline `assume_bounded(0,
-# None)` emission, but as a sidecar query rather than an IR-mutation pass.
-# Their MakeTensorView has variadic per-axis operands so attaching is a
-# per-slot operand swap; ours has tuple-typed operands so the bytecode
-# emission is the natural attachment point.
-
-#=============================================================================
- AssumeInfo
-=============================================================================#
-
-"""
-    MTVPredicates
-
-Per-operand `AssumePredicate` chains for one `make_tensor_view` call.
-- `ptr`: chain to wrap the base-pointer operand.
-- `sizes[i]`: chain to wrap the i-th size operand (Julia/column-major order).
-- `strides[i]`: chain to wrap the i-th stride operand.
-
-`sizes` and `strides` always have length `N` (the TileArray rank);
-slots that produce no useful fact (literal element, contiguous-axis
-static stride) carry an empty chain. Empty chains mean "emit no
-`AssumeOp`" — same observable result as omitting the entry.
-"""
-struct MTVPredicates
-    ptr::Vector{AssumePredicate}
-    sizes::Vector{Vector{AssumePredicate}}
-    strides::Vector{Vector{AssumePredicate}}
-end
+# Pure analysis: does not mutate the SCI.
 
 const EMPTY_PREDS = AssumePredicate[]
 
-"""
-    AssumeInfo
-
-Sidecar carrying per-`make_tensor_view` predicate bundles. Built by
-`analyze_assume_info` from `DivByInfo` + `BoundsInfo` + the operand
-TileArray's `ArraySpec`; queried by codegen via `predicates_for`.
-
-Each entry collapses ptr / per-axis sizes / per-axis strides for one
-make_tensor_view into a single `MTVPredicates` struct, so codegen sees
-the tuple-shaped result directly rather than reconstructing it from
-flat indexed lookups. The walk from a tuple operand to its per-element
-sources lives in `tuple_element_source` — the cost of recovering
-"per-field facts on a tuple-valued operand" stays inside the analysis.
-"""
-struct AssumeInfo
-    predicates::Dict{Int, MTVPredicates}
-end
-
-AssumeInfo() = AssumeInfo(Dict{Int, MTVPredicates}())
-
-"""
-    predicates_for(info, mtv_ssa) -> Union{MTVPredicates, Nothing}
-
-Return the predicate bundle for the `make_tensor_view` at SSA index
-`mtv_ssa`, or `nothing` if no entry exists (e.g. the analysis didn't
-run, or the make_tensor_view's TileArray type was unresolvable).
-Codegen treats `nothing` as "no assumes" — same as all-empty chains.
-"""
-@inline predicates_for(info::AssumeInfo, mtv_ssa::Int) =
-    get(info.predicates, mtv_ssa, nothing)
-
-predicates_for(::Nothing, ::Int) = nothing
-
 #=============================================================================
- Analysis driver
+ Per-operand chain derivation
 =============================================================================#
 
 """
-    analyze_assume_info(sci, divby_info, bounds_info) -> AssumeInfo
+    op_predicates(divby, bounds, op, kind, spec_div=1) -> Vector{AssumePredicate}
 
-Walk every `Intrinsics.make_tensor_view` in `sci`, derive
-divisibility / bound facts from the operand TileArray's `ArraySpec`
-combined with the optional dataflow analyses, and store the resulting
-`AssumePredicate` chains keyed by `(mtv_ssa, kind, slot)`. Pure
-analysis: does not mutate `sci`.
+Derive the `AssumePredicate` chain for a consumer-op operand. `kind`
+selects the structural prior:
+- `:ptr` — pointer operand, no `Bounded` (a pointer's range is
+  meaningless to tileiras's vectorizer); chain is `[DivBy(d)]` when
+  `d > 1`, else empty.
+- `:size` / `:stride` — integer operand; always `Bounded(0, ?)` since
+  sizes / strides are non-negative, plus `DivBy(d)` when `d > 1`.
+
+`spec_div` is the consumer-side type-level divisor hint
+(`spec.alignment`, `spec.shape_div_by[i]`, `spec.stride_div_by[i]`)
+combined with the dataflow result via `lcm` — both inputs are
+guarantees, so the value is divisible by their lcm.
+
+Returns `EMPTY_PREDS` for literal operands; the Tile IR translator
+already sees the literal directly.
 """
-function analyze_assume_info(sci::StructuredIRCode,
-                              divby_info::Union{DivByInfo, Nothing}=nothing,
-                              bounds_info::Union{BoundsInfo, Nothing}=nothing)
-    info = AssumeInfo()
-    walk_collect!(info, sci.entry, divby_info, bounds_info)
-    return info
-end
+function op_predicates(divby_info::Union{DivByInfo, Nothing},
+                        bounds_info::Union{BoundsInfo, Nothing},
+                        @nospecialize(op),
+                        kind::Symbol,
+                        spec_div::Int=1)
+    is_literal_op(op) && return EMPTY_PREDS
 
-function walk_collect!(info::AssumeInfo, block::Block,
-                        divby_info::Union{DivByInfo, Nothing},
-                        bounds_info::Union{BoundsInfo, Nothing})
-    for inst in instructions(block)
-        s = inst[:stmt]
-        if s isa ControlFlowOp
-            for sub in blocks(s)
-                walk_collect!(info, sub, divby_info, bounds_info)
-            end
-            continue
-        end
-        call = resolve_call(block, inst)
-        call === nothing && continue
-        func, ops = call
-        if func === Intrinsics.make_tensor_view
-            collect_make_tensor_view!(info, block, inst, ops, divby_info, bounds_info)
-        end
-    end
-end
+    df_div = op === nothing ? 0 : divby_query(divby_info, op)
+    d = pow2_divisor(combine_divisor(spec_div, df_div))
 
-function collect_make_tensor_view!(info::AssumeInfo, block::Block,
-                                     inst::Instruction, ops,
-                                     divby_info::Union{DivByInfo, Nothing},
-                                     bounds_info::Union{BoundsInfo, Nothing})
-    length(ops) >= 4 || return
-    T_arg      = ops[1]
-    ptr_op     = ops[2]
-    sizes_op   = ops[3]
-    strides_op = ops[4]
-
-    T = resolve_tilearray_type(block, T_arg)
-    T === nothing && return
-    spec = array_spec(T)
-    spec === nothing && return
-
-    N = ndims(T)
-    mtv_ssa = inst.ssa_idx
-
-    # ---- Pointer ---------------------------------------------------------
-    ptr_div = pow2_divisor(combine_divisor(Int(spec.alignment),
-                                            divby_query(divby_info, ptr_op)))
-    ptr_chain = ptr_div > 1 ? AssumePredicate[DivBy(ptr_div)] : EMPTY_PREDS
-
-    # ---- Sizes -----------------------------------------------------------
-    # Lower bound is structurally `0` (sizes are non-negative). Combine
-    # with the dataflow result to refine: an exact known size collapses
-    # to `Bounded(N, N)`; a ForOp-IV-derived size to `Bounded(0, max)`,
-    # etc.
-    sizes_chains = Vector{Vector{AssumePredicate}}(undef, N)
-    for i in 1:N
-        sizes_chains[i] = element_chain(block, sizes_op, i,
-                                         Int(spec.shape_div_by[i]),
-                                         divby_info, bounds_info)
+    if kind === :ptr
+        return d > 1 ? AssumePredicate[DivBy(d)] : EMPTY_PREDS
     end
 
-    # ---- Strides ---------------------------------------------------------
-    strides_chains = Vector{Vector{AssumePredicate}}(undef, N)
-    for i in 1:N
-        # Skip the contiguous axis: its stride is statically `1` and never
-        # enters the bytecode kernel signature (filter_dynamic_strides).
-        if spec.contiguous && i == 1
-            strides_chains[i] = EMPTY_PREDS
-            continue
-        end
-        strides_chains[i] = element_chain(block, strides_op, i,
-                                           Int(spec.stride_div_by[i]),
-                                           divby_info, bounds_info)
-    end
-
-    info.predicates[mtv_ssa] = MTVPredicates(ptr_chain, sizes_chains, strides_chains)
-    return
-end
-
-# Build the predicate chain for a single tuple element (size or stride).
-# Walks back through `tuple_element_source` to recover a per-element SCI
-# handle when one exists (`Core.tuple(...)` constructor); falls through
-# to spec-only facts (`spec_div`, structural `[0, ∞)`) when the source is
-# wholesale (`getfield(arg, :sizes)`) or otherwise opaque. Returns
-# `EMPTY_PREDS` for literal elements and for the all-trivial case.
-function element_chain(block::Block, tuple_op, i::Int, spec_div::Int,
-                        divby_info::Union{DivByInfo, Nothing},
-                        bounds_info::Union{BoundsInfo, Nothing})
-    elem_op = tuple_element_source(block, tuple_op, i)
-    # Literals — `assume bounded<N, N>` on `<i32: 64>` adds no info
-    # the Tile IR translator can't see directly.
-    is_literal_op(elem_op) && return EMPTY_PREDS
-
-    df_div   = elem_op === nothing ? 0 : divby_query(divby_info, elem_op)
-    df_bound = elem_op === nothing ? TOP_RANGE : bounds_query(bounds_info, elem_op)
-
-    d     = pow2_divisor(combine_divisor(spec_div, df_div))
+    # :size / :stride — always assert non-negativity, refine with
+    # dataflow's tighter range when available.
+    df_bound = op === nothing ? TOP_RANGE : bounds_query(bounds_info, op)
     bound = combine_bound(nonneg_range(), df_bound)
+    chain = AssumePredicate[as_bounded(bound)]
+    d > 1 && push!(chain, DivBy(d))
+    return chain
+end
 
-    preds = AssumePredicate[as_bounded(bound)]
-    d > 1 && push!(preds, DivBy(d))
-    return preds
+#=============================================================================
+ Kernel-arg flat-slot chain derivation (spec-only)
+=============================================================================#
+
+"""
+    arg_chain(T::Type{<:TileArray}, path) -> Vector{AssumePredicate}
+
+Per-flat-slot chain for a `TileArray` kernel argument. Thin
+dispatcher over `op_predicates` keyed on the flat slot path
+produced by `flatten_struct_params!`:
+
+- `[1]` → `:ptr`     (with `spec.alignment`)
+- `[2, i]` → `:size` (with `spec.shape_div_by[i]`)
+- `[3, i]` → `:stride` (with `spec.stride_div_by[i]`)
+
+Dataflow inputs are `nothing` because the kernel-arg slot is the
+analysis anchor — there's no upstream IR for the dataflow to refine
+against. Consumer-site queries against an SSA derived from the slot
+*do* carry dataflow refinement (and combine with the same spec hints
+via `lcm`), so the entry-time chain is an upper bound on what any
+consumer would derive — important for the `wrap_for` cache invariant
+(see its docstring).
+
+Used by `apply_arg_assume_predicates!` (codegen/kernel.jl) at kernel
+entry to wrap each flat kernel-arg `Value` *before* any consumer
+reads it. Important for raw `offset` / `load_ptr_tko` /
+`store_ptr_tko` access paths (gather/scatter): the assume must attach
+to the base pointer, not just to the post-offset operand, for
+tileiras's vectorizer to prove the wide-vector address alignment its
+STG.E.128 / LDG.E.128 lowering requires.
+
+Returns `EMPTY_PREDS` when no useful fact exists (no spec on `T`,
+unrecognised path, or contiguous-axis stride which is a static `1`).
+"""
+function arg_chain(::Type{T}, path::Vector{Int}) where {T <: TileArray}
+    spec = array_spec(T)
+    spec === nothing && return EMPTY_PREDS
+
+    if length(path) == 1 && path[1] == 1
+        return op_predicates(nothing, nothing, nothing, :ptr, Int(spec.alignment))
+    end
+
+    if length(path) == 2
+        i = path[2]
+        1 <= i <= ndims(T) || return EMPTY_PREDS
+        if path[1] == 2  # sizes[i]
+            return op_predicates(nothing, nothing, nothing, :size, Int(spec.shape_div_by[i]))
+        elseif path[1] == 3  # strides[i]
+            # Contiguous axis: `make_tensor_view` inlines `1` and the
+            # `muli(x, 1)` algebra rule folds it out of scatter/gather
+            # offsets, so this slot never enters the bytecode signature.
+            spec.contiguous && i == 1 && return EMPTY_PREDS
+            return op_predicates(nothing, nothing, nothing, :stride, Int(spec.stride_div_by[i]))
+        end
+    end
+    return EMPTY_PREDS
 end
 
 #=============================================================================
  Tuple element source resolution
 =============================================================================#
 
-# Resolve a tuple-typed operand to its i-th element's SCI handle.
-# Recognises:
-#   - Literal `Tuple` values (`(64, 64)`): returns the i-th literal.
-#   - `Core.tuple(s1, ..., sN)` SSA: returns the i-th operand.
-#   - Anything else (e.g. `getfield(arg, :sizes)`): returns `nothing`,
-#     leaving the caller to use spec-only facts.
-#
-# The walk-up parent chain mirrors `value_type` / `lookup_def_call`.
+"""
+    tuple_element_source(block, tuple_op, i) -> SSAValue / literal / nothing
+
+Resolve a tuple-typed operand to its i-th element's SCI handle.
+Recognises:
+- Literal `Tuple` values (`(64, 64)`): returns the i-th literal.
+- `Core.tuple(s1, ..., sN)` SSA: returns the i-th operand.
+- Anything else (e.g. `getfield(arg, :sizes)`): returns `nothing`,
+  leaving the caller to use spec-only facts.
+
+The walk-up parent chain mirrors `value_type` / `lookup_def_call`.
+"""
 function tuple_element_source(block::Block, @nospecialize(tuple_op), i::Int)
     if tuple_op isa Tuple
         return length(tuple_op) >= i ? tuple_op[i] : nothing
@@ -245,10 +168,14 @@ end
  Operand-type extraction
 =============================================================================#
 
-# Extract a `Type{TileArray{...}}` value from an SCI operand. Recognises
-# a constant `Type` literal, a `QuoteNode(::Type)`, and an SSA whose
-# inferred type is `Const(T)` / `Type{T}`. Returns the unwrapped `T` or
-# `nothing`.
+"""
+    resolve_tilearray_type(block, op) -> Union{Type, Nothing}
+
+Extract a `Type{TileArray{...}}` value from an SCI operand. Recognises
+a constant `Type` literal, a `QuoteNode(::Type)`, and an SSA whose
+inferred type is `Const(T)` / `Type{T}`. Returns the unwrapped `T` or
+`nothing`.
+"""
 function resolve_tilearray_type(block::Block, @nospecialize(op))
     if op isa Type
         op <: TileArray && return op

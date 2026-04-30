@@ -33,7 +33,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.load_ptr_tko), args)
     # args: (ptrs, latency, mask?, padding?)
     ptrs_tv = emit_value!(ctx, args[1])
     ptrs_tv === nothing && throw(IRError("load_ptr_tko: cannot resolve pointer tile"))
-    pointers = ptrs_tv.v
+    pointers = wrap_for(ctx, ptrs_tv.v::Value, ptrs_tv.type_id::TypeId,
+                        op_predicates(ctx.divby_info, ctx.bounds_info,
+                                      args[1], :ptr))
     tile_shape = ptrs_tv.shape
 
     ptrs_type = CC.widenconst(ptrs_tv.jltype)
@@ -99,7 +101,9 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.store_ptr_tko), args)
 
     ptrs_tv = emit_value!(ctx, args[1])
     ptrs_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve pointer tile"))
-    pointers = ptrs_tv.v
+    pointers = wrap_for(ctx, ptrs_tv.v::Value, ptrs_tv.type_id::TypeId,
+                        op_predicates(ctx.divby_info, ctx.bounds_info,
+                                      args[1], :ptr))
 
     values_tv = emit_value!(ctx, args[2])
     values_tv === nothing && throw(IRError("store_ptr_tko: cannot resolve values tile"))

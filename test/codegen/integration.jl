@@ -564,6 +564,46 @@ end
                 end
             end
         end
+
+        @testset "contiguous-axis stride folds out of 2D gather offset" begin
+            spec_out = ct.ArraySpec{1}(16, true)
+
+            # Contiguous 2D source: stride[1]=1 statically, the muli for axis-1
+            # folds away. Exactly one muli (for axis-2 stride) survives.
+            spec2d_c = ct.ArraySpec{2}(16, true)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d_c},
+                                 ct.TileArray{Float32,1,spec_out}}) do a, b
+                    pid = ct.bid(1)
+                    i0 = ct.arange(16)
+                    i1 = ct.arange(16)
+                    tile = ct.gather(a, (i0, i1))
+                    ct.store(b, pid, tile)
+                    return
+                end
+                @check "muli"
+                @check_not "muli"
+            end
+
+            # Sibling: non-contiguous keeps both stride multiplies.
+            # Confirms the fold is gated on `Spec.contiguous`, not unconditional.
+            spec2d_nc = ct.ArraySpec{2}(16, false)
+            @test @filecheck begin
+                @check_label "entry"
+                code_tiled(Tuple{ct.TileArray{Float32,2,spec2d_nc},
+                                 ct.TileArray{Float32,1,spec_out}}) do a, b
+                    pid = ct.bid(1)
+                    i0 = ct.arange(16)
+                    i1 = ct.arange(16)
+                    tile = ct.gather(a, (i0, i1))
+                    ct.store(b, pid, tile)
+                    return
+                end
+                @check "muli"
+                @check "muli"
+            end
+        end
     end
 
     #=========================================================================
