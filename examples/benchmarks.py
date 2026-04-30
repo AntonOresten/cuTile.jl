@@ -75,7 +75,7 @@ def discover_benchmarks(names):
         if file == "benchmarks.py":
             continue
         name = file.replace(".py", "")
-        if names and name not in names:
+        if len(names) > 0 and name not in names:
             continue
         examples.append(name)
     return examples
@@ -184,4 +184,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main(sys.argv[1:])
