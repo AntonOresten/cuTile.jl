@@ -353,12 +353,39 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.make_tensor_view), args
     return CGVal(tensor_view, tv_type, result_jltype)
 end
 
-# Apply a predicate chain to a `Value` once across all consumers:
-# `ctx.assume_wrapped` records the first wrap so subsequent consumers
-# of the same source `Value` reuse it instead of emitting a parallel
-# `AssumeOp` chain. Empty chain returns the input unchanged. Mirrors
-# the role of cuTile Python's `var_map` in
-# `_passes/propagate_divby.py::_add_assume_divby`.
+"""
+    wrap_for(ctx, value, type_id, preds) -> Value
+
+Apply an `AssumePredicate` chain to a `Value` at most once across all
+consumers. `ctx.assume_wrapped` records the first wrap so subsequent
+consumers of the same source `Value` reuse it instead of emitting a
+parallel `AssumeOp` chain. Empty chain returns the input unchanged.
+Mirrors the role of cuTile Python's `var_map` in
+`_passes/propagate_divby.py::_add_assume_divby`.
+
+Cache invariant: the cache keys on `Value` only, *not* on the chain
+contents. This is sound only when every consumer-derived chain on a
+given `Value` is a subset of the first-seen chain — i.e. the first
+wrap establishes an upper bound on the facts that any later consumer
+would derive. The pipeline arranges this in two ways:
+
+- **Kernel-arg slots:** `apply_arg_assume_predicates!` runs at kernel
+  entry and seeds the cache with the spec-tightest chain for each
+  TileArray-derived flat slot. Consumer-site `op_predicates` calls on
+  SSAs sourced from the same slot can only re-derive a subset (same
+  spec hints, equally-tight or looser dataflow), so the cache hit
+  drops no information.
+- **Per-`Value` consistency of structural priors:** `op_predicates`'s
+  `kind` selector (`:ptr` vs. `:size`/`:stride`) is determined by the
+  operand's tile type. A single `Value` has one tile type, so all
+  consumers see the same `kind` and the same structural prior.
+
+If you ever introduce a consumer that derives a *tighter* chain on a
+`Value` already wrapped at kernel entry, the cache will silently drop
+the extra facts. Either route the new consumer through a fresh `Value`
+(common — the post-offset gather ptr already does this) or refine the
+cache key.
+"""
 @inline function wrap_for(ctx::CGCtx, value::Value, type_id::TypeId,
                           preds::Vector{AssumePredicate})
     isempty(preds) && return value
