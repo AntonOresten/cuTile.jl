@@ -69,7 +69,67 @@ function transfer(a::ConstantAnalysis, r::DataflowResult, @nospecialize(func),
        length(ops) >= 1
         return operand_value(a, r, ops[1])
     end
+    # Type-narrowing intrinsics — preserve scalar values across width changes
+    # so a `1::Int64` field becomes a `1::Int32` after `Int32(stride)` lowers
+    # to `trunci`. Otherwise downstream `muli(idx, stride_i32)` would lose
+    # the constant on the convert. Also covers `exti` (widening) and `bitcast`
+    # (no-op on signless integers).
+    if (func === Intrinsics.trunci || func === Intrinsics.exti ||
+        func === Intrinsics.bitcast) && length(ops) >= 1
+        v = operand_value(a, r, ops[1])
+        return v isa Number ? v : CONSTANT_TOP
+    end
+    # `getfield(getfield(arg::TileArray, :strides), 1)` for an array with
+    # `ArraySpec` `contiguous=true` is statically `1` (Julia column-major
+    # convention: the first dimension is unit-stride). Mirrors the
+    # `make_tensor_view` codegen, which already inlines the literal `1` for
+    # the contiguous stride. Without this, gather/scatter offset
+    # computations leave a runtime `muli(idx, stride1)` that the algebra
+    # rules can't fold.
+    if func === Base.getfield && length(ops) >= 2
+        v = getfield_constant(ops, block)
+        v !== nothing && return v
+    end
     CONSTANT_TOP
+end
+
+# Resolve `getfield(getfield(arg::TileArray, :strides|:sizes), i)` to a
+# static value when the ArraySpec encodes one. Currently only the
+# contiguous-axis stride (= 1) is statically known; sizes are dynamic
+# (only divisibility / bounds are encoded).
+function getfield_constant(ops, block::Block)
+    field = ops[2] isa QuoteNode ? ops[2].value : ops[2]
+    field isa Integer || return nothing
+
+    obj = ops[1]
+    obj isa SSAValue || return nothing
+    obj_def = lookup_def_call(block, obj)
+    obj_def === nothing && return nothing
+    obj_func, obj_ops = obj_def
+    obj_func === Base.getfield || return nothing
+    length(obj_ops) >= 2 || return nothing
+
+    inner_field = obj_ops[2] isa QuoteNode ? obj_ops[2].value : obj_ops[2]
+    inner_field === :strides || return nothing
+
+    inner_obj = obj_ops[1]
+    inner_T = value_type(block, inner_obj)
+    inner_T === nothing && return nothing
+    inner_T = CC.widenconst(inner_T)
+    inner_T <: TileArray || return nothing
+    spec = array_spec(inner_T)
+    spec === nothing && return nothing
+
+    # Julia column-major: stride[1] == 1 when contiguous. Only fold when the
+    # spec's `stride_div_by[1]` is consistent (0 = unknown or 1 = trivial)
+    # — synthetic test specs sometimes encode `contiguous=true` alongside a
+    # non-trivial `stride_div_by` to exercise the divisibility dataflow,
+    # and folding to `1` would silently override that hint.
+    if spec.contiguous && Int(field) == 1
+        sdb = length(spec.stride_div_by) >= 1 ? spec.stride_div_by[1] : 0
+        (sdb == 0 || sdb == 1) && return Int32(1)
+    end
+    return nothing
 end
 
 #=============================================================================

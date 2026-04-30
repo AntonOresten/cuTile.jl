@@ -9,8 +9,10 @@
     # `0 × anything = 0` is provably non-wrapping regardless of the
     # other operand's range. The slice path emits `muli(start_0,
     # stride)` where `start_0 == 0` for `a[1:N]`; the resulting muli
-    # picks up the `no_wrap` flag.
-    spec = ct.ArraySpec{1}(16, true)
+    # picks up the `no_wrap` flag. Use a non-contiguous spec so the
+    # constant analysis doesn't fold `stride[1]` to `1` (which would
+    # eliminate the muli before the no_wrap pass sees it).
+    spec = ct.ArraySpec{1}(16, false)
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec}}) do a
