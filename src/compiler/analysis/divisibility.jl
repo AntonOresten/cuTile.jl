@@ -197,20 +197,6 @@ function ptr_pointee(@nospecialize(T))
     return nothing
 end
 
-# Walk parent blocks searching for the def of an SSAValue, returning the
-# resolved (func, operands) tuple if it's a call. Returns nothing otherwise.
-function lookup_def_call(block::Block, val::SSAValue)
-    p = block
-    while p isa Block
-        entry = get(p.body, val.id, nothing)
-        if entry !== nothing
-            return resolve_call(p, entry.stmt)
-        end
-        p = p.parent
-    end
-    return nothing
-end
-
 #=============================================================================
  Public query API
 =============================================================================#

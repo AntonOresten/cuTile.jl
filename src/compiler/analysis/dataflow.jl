@@ -151,6 +151,26 @@ the integer itself for a raw `Int` operand.
 operand_value(a::ForwardAnalysis, r::DataflowResult, @nospecialize(op)) =
     op isa LatticeAnchor ? r[op] : bottom(a)
 
+"""
+    lookup_def_call(block::Block, val::SSAValue) -> Union{Tuple, Nothing}
+
+Walk parent blocks searching for the def of an SSAValue, returning the
+resolved `(func, operands)` tuple if it's a call. Returns `nothing` for
+non-call defs or unresolvable values. Used by transfer rules that need
+to peek through a one-step IR chain (e.g. `getfield(getfield(arg, :strides), i)`).
+"""
+function lookup_def_call(block::Block, val::SSAValue)
+    p = block
+    while p isa Block
+        entry = get(p.body, val.id, nothing)
+        if entry !== nothing
+            return resolve_call(p, entry.stmt)
+        end
+        p = p.parent
+    end
+    return nothing
+end
+
 
 #=============================================================================
  Driver
