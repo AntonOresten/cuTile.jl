@@ -43,3 +43,40 @@ function is_atomic_intrinsic(func)
     end
     return false
 end
+
+"""
+    intrinsic_effects(func) -> Union{CC.Effects, Nothing}
+
+Declared effects of a cuTile intrinsic, or `nothing` for non-intrinsic callees.
+Single source of truth for transform passes that need per-intrinsic effect
+information (rewriter flag recomputation, DCE root classification).
+
+Starts from `EFFECTS_TOTAL` — intrinsic methods are `not_callable()` bodies with
+no observable effect — and applies any `efunc` override. Returns `nothing` for
+non-intrinsic callees: purity of arbitrary Julia functions isn't ours to claim,
+and callers should treat `nothing` as "unknown, be conservative".
+"""
+function intrinsic_effects(@nospecialize(func))
+    func isa Function || return nothing
+    parentmodule(func) === Intrinsics || return nothing
+    effects = CC.EFFECTS_TOTAL
+    override = efunc(func, effects)
+    override !== nothing && (effects = override)
+    return effects
+end
+
+"""
+    inferred_flags(func) -> UInt32
+
+IR flags corresponding to `func`'s declared effects, mirroring inference's
+`flags_for_effects`. Used by the rewriter to set fresh flags on inserted or
+opcode-changed instructions, so downstream gates (CSE, LICM) see the same
+information they would have gotten from a fresh inference.
+
+Returns `IR_FLAG_NULL` for non-intrinsic callees — see `intrinsic_effects`.
+"""
+function inferred_flags(@nospecialize(func))
+    effects = intrinsic_effects(func)
+    effects === nothing && return CC.IR_FLAG_NULL
+    return CC.flags_for_effects(effects)
+end
