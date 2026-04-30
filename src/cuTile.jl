@@ -88,4 +88,34 @@ include("launch.jl")
 public launch, TileBackend, DefaultBackend, Tiled, ByTarget,
        @compiler_options, @fpmode, @.
 
+# World age captured at __init__ time. The compilation pipeline
+# (typeinf!, codegen, bytecode emission) is invoked in this world via
+# `invoke_frozen` so that precompiled native code stays usable even after
+# later-loaded packages would otherwise invalidate it. Default to typemax(UInt)
+# so that during precompilation (before __init__ runs) `invoke_in_world` clamps
+# to the current world and behaves normally.
+const _initialization_world = Ref{UInt}(typemax(UInt))
+
+"""
+    invoke_frozen(f, args...; kwargs...)
+
+Invoke `f(args...; kwargs...)` in the world captured at `__init__` time.
+Lets precompiled native code for the cuTile compilation infrastructure
+(`typeinf_local`, codegen, bytecode emission) stay live across method
+insertions in later-loaded packages.
+"""
+function invoke_frozen(f, args...; kwargs...)
+    @inline
+    kwargs = merge(NamedTuple(), kwargs)
+    if isempty(kwargs)
+        return Base.invoke_in_world(_initialization_world[], f, args...)
+    end
+    return Base.invoke_in_world(_initialization_world[], Core.kwcall, kwargs, f, args...)
+end
+
+function __init__()
+    _initialization_world[] = Base.get_world_counter()
+    return
+end
+
 end # module cuTile

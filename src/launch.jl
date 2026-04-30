@@ -355,6 +355,19 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     # specializes on `tt`, so this loop unrolls per kernel signature.
     argtypes, const_argtypes = unwrap_argtypes(f, tt)
 
+    # The compilation pipeline (typeinf!, codegen, bytecode emission) gets
+    # invalidated by any package that defines methods on Base.Compiler hooks
+    # like `OptimizationParams(::AbstractInterpreter)`. To reuse precompiled
+    # native code, run the pipeline in the world captured at __init__.
+    invoke_frozen(_cufunction_compile, f, tt, argtypes, const_argtypes, key)::TileKernel{Core.Typeof(f), tt}
+end
+
+# Inner compilation routine; called via `invoke_frozen` so its method dispatches
+# happen in the world captured at __init__, reusing precompiled native code
+# even when later-loaded packages would otherwise have invalidated it.
+function _cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(argtypes),
+                             const_argtypes::Union{Vector{Any}, Nothing},
+                             key::TileCacheKey)
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
