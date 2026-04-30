@@ -59,6 +59,14 @@ function same_const(keys::Symbol...)
     end
 end
 
+# Guard factory: check that the binding resolves to the constant scalar `c`.
+function const_eq(key::Symbol, c::Number)
+    (match, driver) -> begin
+        v = const_value(driver.constants, match.bindings[key])
+        v !== nothing && v == c
+    end
+end
+
 """Commute addi/subi past a transparent op (reshape or broadcast) by recreating
 the constant at the pre-transparent shape. The transparent op is determined from
 the matched intermediate instruction, so one function handles both reshape and
@@ -145,6 +153,22 @@ const ALGEBRA_RULES = RewriteRule[
     @rewriter Intrinsics.addi(Intrinsics.reshape(~x, ~s), ~c) => commute_arith_transparent
     @rewriter Intrinsics.subi(Intrinsics.broadcast(~x, ~s), ~c) => commute_arith_transparent
     @rewriter Intrinsics.addi(Intrinsics.broadcast(~x, ~s), ~c) => commute_arith_transparent
+
+    # muli identity: x * 1 → x. Drives the contiguous-axis stride fold in
+    # gather/scatter offset chains: for a `TileArray` with `ArraySpec`
+    # `contiguous=true`, `getfield(getfield(arg, :strides), 1)` is statically
+    # `1` (recognised by `analyze_constants`), and constant analysis
+    # propagates through `broadcast`/`reshape`/`from_scalar`. The fold drops
+    # the `muli(idx, broadcast(1))` so the surviving offset has the
+    # `idx + idx_other_axis * stride_other` shape that tileiras's
+    # auto-vectorizer matches against — without it, the contiguous-axis
+    # stride is a runtime value and consecutive lanes' addresses differ by
+    # an unknown scalar, forcing scalar (`STG.E.U16`) stores instead of
+    # wide vector (`STG.E.128`) stores. Mirrors Python cuTile's
+    # `_gather_scatter_pointer_and_mask` static-stride skip
+    # (`if static_stride == 1: offset_delta = ind`).
+    @rewrite(Intrinsics.muli(~x, ~c) => ~x, const_eq(:c, 1))
+    @rewrite(Intrinsics.muli(~c, ~x) => ~x, const_eq(:c, 1))
 ]
 
 algebra_pass!(sci::StructuredIRCode) = rewrite_patterns!(sci, ALGEBRA_RULES)
