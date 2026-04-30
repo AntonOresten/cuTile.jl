@@ -1,6 +1,8 @@
 import cuTile, CUDA
 using ParallelTestRunner
 
+CUDA.functional() || error("CUDA.jl is not functional; cuTile tests require a working GPU")
+
 const init_code = quote
     using cuTile
     import cuTile as ct
@@ -29,19 +31,6 @@ if VERSION >= v"1.12"
                     Base.set_active_project(project)
                 end
             end
-        end
-    end
-end
-
-# Only include executing tests when CUDA is functional
-args = parse_args(ARGS)
-if filter_tests!(testsuite, args)
-    cuda_functional = CUDA.functional()
-    filter!(testsuite) do (test, _)
-        if startswith(test, "device/") || startswith(test, "host/") || startswith(test, "examples/")
-            return cuda_functional
-        else
-            return true
         end
     end
 end
