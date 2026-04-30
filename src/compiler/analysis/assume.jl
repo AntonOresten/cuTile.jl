@@ -74,13 +74,21 @@ end
 """
     arg_chain(T::Type{<:TileArray}, path) -> Vector{AssumePredicate}
 
-Per-flat-slot chain for a `TileArray` kernel argument, derived from
-its `ArraySpec` alone. `path` is the flat slot path produced by
-`flatten_struct_params!`:
+Per-flat-slot chain for a `TileArray` kernel argument. Thin
+dispatcher over `op_predicates` keyed on the flat slot path
+produced by `flatten_struct_params!`:
 
-- `[1]` → `:ptr`
-- `[2, i]` → `sizes[i]`
-- `[3, i]` → `strides[i]`
+- `[1]` → `:ptr`     (with `spec.alignment`)
+- `[2, i]` → `:size` (with `spec.shape_div_by[i]`)
+- `[3, i]` → `:stride` (with `spec.stride_div_by[i]`)
+
+Dataflow inputs are `nothing` because the kernel-arg slot is the
+analysis anchor — there's no upstream IR for the dataflow to refine
+against. Consumer-site queries against an SSA derived from the slot
+*do* carry dataflow refinement (and combine with the same spec hints
+via `lcm`), so the entry-time chain is an upper bound on what any
+consumer would derive — important for the `wrap_for` cache invariant
+(see its docstring).
 
 Used by `apply_arg_assume_predicates!` (codegen/kernel.jl) at kernel
 entry to wrap each flat kernel-arg `Value` *before* any consumer
@@ -98,29 +106,20 @@ function arg_chain(::Type{T}, path::Vector{Int}) where {T <: TileArray}
     spec === nothing && return EMPTY_PREDS
 
     if length(path) == 1 && path[1] == 1
-        # ptr
-        d = pow2_divisor(Int(spec.alignment))
-        return d > 1 ? AssumePredicate[DivBy(d)] : EMPTY_PREDS
+        return op_predicates(nothing, nothing, nothing, :ptr, Int(spec.alignment))
     end
 
     if length(path) == 2
         i = path[2]
-        N = ndims(T)
-        1 <= i <= N || return EMPTY_PREDS
+        1 <= i <= ndims(T) || return EMPTY_PREDS
         if path[1] == 2  # sizes[i]
-            chain = AssumePredicate[Bounded(0, nothing)]
-            d = pow2_divisor(Int(spec.shape_div_by[i]))
-            d > 1 && push!(chain, DivBy(d))
-            return chain
+            return op_predicates(nothing, nothing, nothing, :size, Int(spec.shape_div_by[i]))
         elseif path[1] == 3  # strides[i]
             # Contiguous axis: `make_tensor_view` inlines `1` and the
             # `muli(x, 1)` algebra rule folds it out of scatter/gather
             # offsets, so this slot never enters the bytecode signature.
             spec.contiguous && i == 1 && return EMPTY_PREDS
-            chain = AssumePredicate[Bounded(0, nothing)]
-            d = pow2_divisor(Int(spec.stride_div_by[i]))
-            d > 1 && push!(chain, DivBy(d))
-            return chain
+            return op_predicates(nothing, nothing, nothing, :stride, Int(spec.stride_div_by[i]))
         end
     end
     return EMPTY_PREDS
