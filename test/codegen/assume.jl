@@ -1,9 +1,10 @@
-# Codegen tests for the `analyze_assume_info` aggregator + the
-# `make_tensor_view` codegen path that wraps each operand `Value` with
-# `encode_AssumeOp!`. Facts come from the TileArray-type `ArraySpec`
-# plus the divisibility dataflow analysis (analysis/divisibility.jl)
-# and bounds dataflow analysis (analysis/bounds.jl), so derived
-# TileArrays (slices, permutes, reshapes) get assumes too — recovering
+# Codegen tests for the consumer-driven `AssumeOp` emission path
+# (`make_tensor_view`, `load_ptr_tko`, `store_ptr_tko`) plus the
+# kernel-arg-entry wrap. Chains are derived on demand by `op_predicates`
+# / `arg_chain` (analysis/assume.jl) from the TileArray-type `ArraySpec`
+# combined with the divisibility (analysis/divisibility.jl) and bounds
+# (analysis/bounds.jl) dataflow analyses, so derived TileArrays
+# (slices, permutes, reshapes) get assumes too — recovering
 # through-arithmetic facts that the conservative `sliced_arraytype`
 # etc. drop.
 
@@ -133,5 +134,58 @@ end
         end
         @check "assume div_by<16>"
         @check "assume bounded<0, ?>"
+    end
+end
+
+@testset "assume — kernel-arg ptr wrap survives offset for gather/scatter" begin
+    # Pure-gather/scatter kernel: no MTV consumes the kernel-arg ptr, so
+    # the only path that can attach `spec.alignment` to the base pointer
+    # is the kernel-arg-entry wrap (`apply_arg_assume_predicates!`). The
+    # post-offset ptr that reaches `load_ptr_tko` / `store_ptr_tko` then
+    # carries the base-alignment fact (via the assumed `Value` flowing
+    # through `reshape` → `broadcast` → `offset`) plus a tighter local
+    # divby chain wrapped at the consumer site.
+    spec1d = ct.ArraySpec{1}(128, true)
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d},
+                         ct.TileArray{Float32,1,spec1d}}) do a, b
+            indices = ct.arange(16)
+            tile = ct.gather(a, indices)
+            ct.scatter(b, indices, tile)
+            return
+        end
+        # Base alignment on each kernel-arg ptr (entry wrap).
+        @check "assume div_by<128>"
+        @check "assume div_by<128>"
+        # Local divby chain on the post-offset ptr at each consumer.
+        @check "assume div_by<"
+        @check "load_ptr_tko"
+        @check "assume div_by<"
+        @check "store_ptr_tko"
+    end
+end
+
+@testset "assume — shared ptr Value is wrapped once across consumers" begin
+    # Two MTVs (`ct.load` + `ct.store`) plus a gather all source from
+    # the same kernel-arg ptr. The entry wrap puts one `assume div_by<128>`
+    # on it; the per-`Value` cache (`ctx.assume_wrapped`) ensures the
+    # MTV consumer wraps don't re-emit the same predicate on the same
+    # source. The post-offset gather ptr is a different `Value` and
+    # gets its own (looser) divby chain.
+    spec1d = ct.ArraySpec{1}(128, true)
+    @test @filecheck begin
+        @check_label "entry"
+        code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
+            tile = ct.load(a, 1, (16,))
+            indices = ct.arange(16)
+            tile2 = ct.gather(a, indices)
+            ct.store(a, 1, tile + tile2)
+            return
+        end
+        # Exactly one `assume div_by<128>` despite three consumers of
+        # the same kernel-arg ptr.
+        @check "assume div_by<128>"
+        @check_not "assume div_by<128>"
     end
 end

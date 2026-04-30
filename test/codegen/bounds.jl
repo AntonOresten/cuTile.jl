@@ -1,9 +1,9 @@
 # Codegen tests for `BoundsAnalysis` and the bounded-predicate
-# emission path through `analyze_assume_info`. The analysis tracks
-# integer-valued SSA values to a closed `[lo, hi]` interval; the
-# aggregator intersects the result with the structural lower bound
-# (sizes/strides ≥ 0) and emits a sharper `Bounded(lo, hi)` predicate
-# where the dataflow has information.
+# emission path through `op_predicates` (analysis/assume.jl). The
+# analysis tracks integer-valued SSA values to a closed `[lo, hi]`
+# interval; `op_predicates` intersects the result with the structural
+# lower bound (sizes/strides ≥ 0) and emits a sharper `Bounded(lo, hi)`
+# predicate where the dataflow has information.
 #
 # Today the dataflow doesn't add information at `make_tensor_view`
 # operands for typical kernels (sizes come from `getfield(arg, :sizes)`

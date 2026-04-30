@@ -14,9 +14,9 @@
 # precision on loop-carried values that vary per iteration; gains
 # precision on literal-constant flow and ForOp induction variables.
 #
-# Consumed by `analyze_assume_info` (analysis/assume.jl) to emit
-# sharper `Bounded(...)` predicates on `make_tensor_view` operands at
-# codegen time, and by `no_wrap_pass!` (transform/no_wrap.jl) to
+# Consumed at codegen time by `op_predicates` (analysis/assume.jl) to
+# emit sharper `Bounded(...)` predicates on `make_tensor_view` size /
+# stride operands, and by `no_wrap_pass!` (transform/no_wrap.jl) to
 # attach `nsw`/`nuw` flags on integer arithmetic that provably fits in
 # its destination width.
 

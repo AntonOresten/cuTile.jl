@@ -32,12 +32,14 @@ end
  `SameElements`). Returns its input value — a pure-data annotation,
  eliminated if downstream uses vanish.
 
- The make_tensor_view assume bundle is emitted directly to bytecode by
- `analyze_assume_info` + `views.jl` codegen and never materialises as
- an `Intrinsics.assume` SCI op; this intrinsic exists for hand-written
- user annotations and as the lattice-level shape the dataflow analyses
- recognise (so a future pass that does insert SCI-level assumes still
- composes correctly with divisibility/bounds).
+ Consumer-driven assumes (`make_tensor_view`, `load_ptr_tko`,
+ `store_ptr_tko`) are emitted directly to bytecode at codegen time —
+ the chain comes from `op_predicates` / `arg_chain` (analysis/assume.jl)
+ and the wrapping happens via `wrap_for` (intrinsics/views.jl), so they
+ never materialise as `Intrinsics.assume` SCI ops. This intrinsic exists
+ for hand-written user annotations and as the lattice-level shape the
+ dataflow analyses recognise (so a future pass that does insert
+ SCI-level assumes still composes correctly with divisibility/bounds).
 
  cuTile Python uses one IR op class per predicate (`AssumeDivBy`,
  `AssumeBounded`, …); we collapse to a single polymorphic intrinsic
