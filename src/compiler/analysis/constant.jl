@@ -69,7 +69,44 @@ function transfer(a::ConstantAnalysis, r::DataflowResult, @nospecialize(func),
        length(ops) >= 1
         return operand_value(a, r, ops[1])
     end
+    # Type-narrowing intrinsics — preserve scalar values across width changes
+    # so a `1::Int64` field becomes a `1::Int32` after `Int32(stride)` lowers
+    # to `trunci`. Otherwise downstream `muli(idx, stride_i32)` would lose
+    # the constant on the convert. Also covers `exti` (widening) and `bitcast`
+    # (no-op on signless integers).
+    if (func === Intrinsics.trunci || func === Intrinsics.exti ||
+        func === Intrinsics.bitcast) && length(ops) >= 1
+        v = operand_value(a, r, ops[1])
+        return v isa Number ? v : CONSTANT_TOP
+    end
+    # `getfield(getfield(arg::TileArray, :strides), 1)` for an array with
+    # `ArraySpec` `contiguous=true` is statically `1` (Julia column-major
+    # convention: the first dimension is unit-stride). Mirrors the
+    # `make_tensor_view` codegen, which already inlines the literal `1` for
+    # the contiguous stride. Without this, gather/scatter offset
+    # computations leave a runtime `muli(idx, stride1)` that the algebra
+    # rules can't fold.
+    if func === Base.getfield
+        ref = decode_tilearray_field(block, ops)
+        v = ref === nothing ? nothing : tilearray_field_constant(ref)
+        v !== nothing && return v
+    end
     CONSTANT_TOP
+end
+
+# Project a `TileArrayFieldRef` to a scalar constant when the spec pins
+# the field's value statically. Currently only the contiguous-axis stride
+# (= 1) qualifies; sizes are dynamic (only divisibility / bounds are
+# encoded), and the pointer is opaque to constant analysis. The
+# `contiguous ⟹ stride_div_by[1] ∈ {0, 1}` consistency is enforced by
+# `ArraySpec`'s inner constructor, so no defensive check is needed here.
+function tilearray_field_constant(ref::TileArrayFieldRef)
+    ref.field === :strides || return nothing
+    ref.index == 1 || return nothing
+    ref.spec.contiguous || return nothing
+    # Match the strides field's element type: a contiguous-axis stride
+    # equals `1` in whatever integer width `TileArray.strides` carries.
+    return eltype(fieldtype(ref.T, :strides))(1)
 end
 
 #=============================================================================

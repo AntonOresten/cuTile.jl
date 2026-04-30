@@ -23,7 +23,23 @@ Divisibility values enable optimizations:
 - stride_div_by[i] = 4 means stride[i] is divisible by 4 (enables vectorized access)
 - shape_div_by[i] = 16 means shape[i] is divisible by 16 (no tile boundary handling needed)
 """
-struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy} end
+struct ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}
+    # Validate invariants once per concrete spec type (this struct is a
+    # singleton, so the inner constructor runs on every instantiation but
+    # the result is then cached as a type parameter). Catches synthetic
+    # specs that combine `contiguous=true` with a `stride_div_by[1]` that
+    # contradicts `stride[1] == 1` — `1 % d == 0` only for `d ∈ {0, 1}`.
+    function ArraySpec{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}() where
+            {N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}
+        if Contiguous && N >= 1
+            sdb1 = StrideDivBy[1]
+            (sdb1 == 0 || sdb1 == 1) || throw(ArgumentError(
+                "ArraySpec: contiguous=true requires stride_div_by[1] ∈ {0, 1} " *
+                "(stride[1]=1, and 1 % d == 0 only for d ∈ {0, 1}); got $sdb1"))
+        end
+        new{N, Alignment, Contiguous, StrideDivBy, ShapeDivBy}()
+    end
+end
 
 # Constructors
 function ArraySpec{N}(alignment::Int, contiguous::Bool,

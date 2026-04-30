@@ -143,7 +143,9 @@ function transfer(a::BoundsAnalysis, r::DataflowResult, @nospecialize(func),
     # `arr.strides[i]` are non-negative by construction (Int32 widths
     # carry `[0, ∞)` even before launch-value specialisation).
     if func === Base.getfield
-        return getfield_bounds(r, ops, block)
+        ref = decode_tilearray_field(block, ops)
+        ref === nothing && return TOP_RANGE
+        return tilearray_field_bounds(ref)
     end
 
     return TOP_RANGE
@@ -264,32 +266,13 @@ end
  getfield bounds
 =============================================================================#
 
-# Recognise `getfield(arg::TileArray, :ptr|:sizes|:strides)` (top — they
-# return tuples or pointers, no integer range) and the two-step chain
-# `getfield(getfield(arg, :sizes|:strides), i)` (non-negative integer).
-function getfield_bounds(r::DataflowResult, ops, block::Block)
-    length(ops) >= 2 || return TOP_RANGE
-    obj = ops[1]
-    field = ops[2] isa QuoteNode ? ops[2].value : ops[2]
-
-    obj_T = value_type(block, obj)
-    obj_T = obj_T === nothing ? Any : CC.widenconst(obj_T)
-    obj_T <: TileArray && return TOP_RANGE  # ptr or whole tuple — no scalar range
-
-    obj isa SSAValue || return TOP_RANGE
-    obj_def = lookup_def_call(block, obj)
-    obj_def === nothing && return TOP_RANGE
-    obj_func, obj_ops = obj_def
-    obj_func === Base.getfield || return TOP_RANGE
-    length(obj_ops) >= 2 || return TOP_RANGE
-
-    inner_field = obj_ops[2] isa QuoteNode ? obj_ops[2].value : obj_ops[2]
-    (inner_field === :sizes || inner_field === :strides) || return TOP_RANGE
-
-    inner_T = value_type(block, obj_ops[1])
-    inner_T = inner_T === nothing ? Any : CC.widenconst(inner_T)
-    inner_T <: TileArray || return TOP_RANGE
-
+# Project a `TileArrayFieldRef` to its bound: per-axis `sizes[i]` /
+# `strides[i]` reads are non-negative (Int32 fields carry `[0, ∞)` even
+# before launch-value specialisation); pointer and whole-tuple reads have
+# no scalar range.
+function tilearray_field_bounds(ref::TileArrayFieldRef)
+    ref.index === nothing && return TOP_RANGE
+    (ref.field === :sizes || ref.field === :strides) || return TOP_RANGE
     return nonneg_range()
 end
 

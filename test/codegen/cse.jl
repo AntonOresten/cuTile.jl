@@ -8,7 +8,7 @@
     # Three loads/stores on the same TileArray collapse to one
     # `make_tensor_view` and one `make_partition_view`. Without CSE,
     # each `ct.load`/`ct.store` would emit its own getfield+view chain.
-    spec1d = ct.ArraySpec{1}(16, true, (4,), (16,))
+    spec1d = ct.ArraySpec{1}(16, true, (0,), (16,))
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a

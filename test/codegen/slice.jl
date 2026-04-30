@@ -6,7 +6,7 @@
 # - an `offset` for base + offset
 # - a follow-up `make_tensor_view` on the derived pointer
 
-spec1d = ct.ArraySpec{1}(16, true)
+spec1d = ct.ArraySpec{1}(16, false)  # non-contiguous so muli isn't folded
 spec2d = ct.ArraySpec{2}(16, true)
 
 @testset "slice — 1D single axis" begin
@@ -48,10 +48,13 @@ spec2d = ct.ArraySpec{2}(16, true)
 end
 
 @testset "slice — 2D single axis" begin
-    # Slice along axis 1; axis 2 is full (`:`).
+    # Slice along axis 1 with a non-contiguous spec so the contiguous-stride
+    # constant fold doesn't remove the `muli`. (For a contiguous spec,
+    # stride[1] is statically `1` and `start * 1` collapses to `start`.)
+    spec2d_nc = ct.ArraySpec{2}(16, false)
     @test @filecheck begin
         @check_label "entry"
-        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}, Int32, Int32}) do a, i, j
+        code_tiled(Tuple{ct.TileArray{Float32,2,spec2d_nc}, Int32, Int32}) do a, i, j
             sub = @view a[i:j, :]
             t = ct.load(sub, (1, 1), (4, 4))
             ct.store(sub, (1, 1), t)
