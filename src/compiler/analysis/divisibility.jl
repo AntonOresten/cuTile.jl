@@ -154,68 +154,32 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
 
     # Field access on a TileArray-typed Argument: derive from the ArraySpec.
     if func === Base.getfield
-        return getfield_divby(r, ops, block)
+        ref = decode_tilearray_field(block, ops)
+        ref === nothing && return 1
+        return tilearray_field_divby(ref)
     end
 
     return 1
 end
 
-# `getfield(obj, field)` — derive divisibility when `obj` traces back to a
-# TileArray-typed `Argument`. Handles the two-step chain
-# `getfield(getfield(arg, :sizes), i)` and `getfield(getfield(arg, :strides), i)`.
-function getfield_divby(r::DataflowResult, ops, block::Block)
-    length(ops) >= 2 || return 1
-    obj = ops[1]
-    field = ops[2] isa QuoteNode ? ops[2].value : ops[2]
-
-    obj_T = value_type(block, obj)
-    obj_T = obj_T === nothing ? Any : CC.widenconst(obj_T)
-
-    # First-level: getfield(arg, :ptr | :sizes | :strides)
-    if obj_T <: TileArray
-        spec = array_spec(obj_T)
-        spec === nothing && return 1
-        if field === :ptr
-            return spec.alignment > 0 ? spec.alignment : 1
-        end
-        # :sizes / :strides return a tuple — element-level facts come from
-        # the second-level getfield handler below.
-        return 1
+# Project a `TileArrayFieldRef` to its divisor:
+# - `:ptr` → `spec.alignment` (pointer alignment in bytes)
+# - `:sizes[i]` → `spec.shape_div_by[i]`
+# - `:strides[i]` → `spec.stride_div_by[i]`
+# Whole-tuple reads (`getfield(arg, :sizes)` / `:strides`) return 1: the
+# element-level facts live one getfield deeper.
+function tilearray_field_divby(ref::TileArrayFieldRef)
+    spec = ref.spec
+    if ref.index === nothing
+        ref.field === :ptr || return 1
+        return spec.alignment > 0 ? spec.alignment : 1
     end
-
-    # Second-level: getfield(getfield(arg, :sizes|:strides), i)
-    # Only meaningful when `obj` is itself a getfield SSA defined in this
-    # block (or a parent), with `obj.field ∈ {:sizes, :strides}` and its
-    # source object is a TileArray-typed Argument.
-    obj isa SSAValue || return 1
-    obj_def = lookup_def_call(block, obj)
-    obj_def === nothing && return 1
-    obj_func, obj_ops = obj_def
-    obj_func === Base.getfield || return 1
-    length(obj_ops) >= 2 || return 1
-
-    inner_field = obj_ops[2] isa QuoteNode ? obj_ops[2].value : obj_ops[2]
-    inner_field === :sizes || inner_field === :strides || return 1
-
-    inner_obj = obj_ops[1]
-    inner_T = value_type(block, inner_obj)
-    inner_T = inner_T === nothing ? Any : CC.widenconst(inner_T)
-    inner_T <: TileArray || return 1
-    spec = array_spec(inner_T)
-    spec === nothing && return 1
-
-    idx = field isa Integer ? Int(field) : nothing
-    idx === nothing && return 1
-    idx >= 1 || return 1
-    if inner_field === :sizes
-        idx <= length(spec.shape_div_by) || return 1
-        d = spec.shape_div_by[idx]
-        return d > 0 ? d : 1
-    else  # :strides
-        idx <= length(spec.stride_div_by) || return 1
-        d = spec.stride_div_by[idx]
-        return d > 0 ? d : 1
-    end
+    table = ref.field === :sizes   ? spec.shape_div_by  :
+            ref.field === :strides ? spec.stride_div_by : nothing
+    table === nothing && return 1
+    ref.index <= length(table) || return 1
+    d = table[ref.index]
+    return d > 0 ? d : 1
 end
 
 # Pointee element type of a 0-D pointer base, accepting both `Ptr{T}` and
