@@ -339,8 +339,10 @@ end
         TILE_M = 32
         TILE_N = 1024
 
-        # Use ArraySpec with shape_div_by to match real CuArray behavior
-        spec2d = ct.ArraySpec{2}(128, true, (4, 0), (32, 32))
+        # Use ArraySpec with shape_div_by to match real CuArray behavior.
+        # The non-trivial stride_div_by lives on axis 2 (consistent with
+        # contiguous=true on axis 1).
+        spec2d = ct.ArraySpec{2}(128, true, (0, 4), (32, 32))
         spec1d = ct.ArraySpec{1}(128, true, (0,), (32,))
 
         @test @filecheck begin

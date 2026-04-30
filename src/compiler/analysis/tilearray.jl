@@ -26,13 +26,16 @@
 The result of decoding a `getfield` chain rooted at a TileArray-typed
 `Argument`. Carries:
 
-- `spec::ArraySpec` — the spec from the TileArray type parameter.
+- `T::Type` — the rooting `TileArray` type, for projections that need
+  the runtime field's element type (`fieldtype(T, :strides)` etc.).
+- `spec::ArraySpec` — `array_spec(T)`, cached for ergonomic access.
 - `field::Symbol` — `:ptr`, `:sizes`, or `:strides`.
 - `index::Union{Int,Nothing}` — `nothing` for whole-tuple / pointer reads
   (`getfield(arg, :sizes)`, `getfield(arg, :ptr)`); a 1-based positive
   integer for element reads (`getfield(getfield(arg, :sizes), i)`).
 """
 struct TileArrayFieldRef
+    T::Type
     spec::ArraySpec
     field::Symbol
     index::Union{Int, Nothing}
@@ -66,7 +69,7 @@ function decode_tilearray_field(block::Block, ops)
         spec = array_spec(obj_T)
         spec === nothing && return nothing
         field isa Symbol || return nothing
-        return TileArrayFieldRef(spec, field, nothing)
+        return TileArrayFieldRef(obj_T, spec, field, nothing)
     end
 
     # Second-level: getfield(getfield(arg::TileArray, :sizes|:strides), i).
@@ -91,5 +94,5 @@ function decode_tilearray_field(block::Block, ops)
     idx = Int(field)
     idx >= 1 || return nothing
 
-    return TileArrayFieldRef(spec, inner_field, idx)
+    return TileArrayFieldRef(inner_T, spec, inner_field, idx)
 end

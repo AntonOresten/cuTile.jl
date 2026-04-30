@@ -32,7 +32,9 @@
 end
 
 @testset "assume — per-axis shape divisibility" begin
-    spec2d = ct.ArraySpec{2}(16, true, (4, 0), (16, 8))
+    # stride_div_by left at 0 on the contiguous axis (consistent with
+    # stride[1]=1); the test only asserts on shape facts.
+    spec2d = ct.ArraySpec{2}(16, true, (0, 0), (16, 8))
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
@@ -50,7 +52,7 @@ end
 @testset "assume — strides skip the contiguous axis" begin
     # contiguous=true: stride[1]=1 statically; that operand never enters
     # the bytecode signature, so no assume is emitted for it.
-    spec2d = ct.ArraySpec{2}(16, true, (4, 0), (16, 8))
+    spec2d = ct.ArraySpec{2}(16, true, (0, 0), (16, 8))
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,2,spec2d}}) do a
@@ -67,7 +69,9 @@ end
     # slice offset is `start * stride` divisible by 4 elements = 16 bytes).
     # The slice's TileArray type has alignment=0 (conservative), but the
     # divisibility dataflow recovers gcd(128, 16) = 16 on the offset ptr.
-    spec1d = ct.ArraySpec{1}(128, true, (4,), (16,))
+    # Uses contiguous=false: `stride_div_by[1]>1` is only physically
+    # consistent with a non-unit stride.
+    spec1d = ct.ArraySpec{1}(128, false, (4,), (16,))
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, Int32, Int32}) do a, i, j
@@ -86,8 +90,9 @@ end
     # `a[1:64]` has start_0 == 0, so offset == 0 bytes; the dataflow
     # treats the literal `0` as ∞-divisible, so `gcd(spec.alignment, 0)`
     # == spec.alignment. The slice ptr inherits the source's full
-    # 128-byte alignment.
-    spec1d = ct.ArraySpec{1}(128, true, (4,), (16,))
+    # 128-byte alignment. Uses contiguous=false: `stride_div_by[1]>1` is
+    # only physically consistent with a non-unit stride.
+    spec1d = ct.ArraySpec{1}(128, false, (4,), (16,))
     @test @filecheck begin
         @check_label "entry"
         code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}}) do a
