@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND
 using cuTile: cuTile
 import cuTile as ct
 
@@ -52,10 +53,10 @@ end
 function prepare(; benchmark::Bool=false,
                   shape::Tuple=benchmark ? (2^27,) : (1_024_000,),
                   use_gather::Bool=false, T::DataType=Float32)
-    a = CUDA.rand(T, shape...)
+    a = cuRAND.rand(T, shape...)
     return (;
         a,
-        b = CUDA.rand(T, shape...),
+        b = cuRAND.rand(T, shape...),
         c = similar(a),
         shape,
         use_gather
@@ -71,7 +72,7 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
         tile_x, tile_y = tile isa Tuple ? tile : (tile, tile)
         grid = (cld(m, tile_x), cld(n, tile_y))
 
-        CUDA.@sync for _ in 1:warmup
+        CUDACore.@sync for _ in 1:warmup
             @cuda backend=cuTile blocks=grid vec_add_kernel_2d(a, b, c, ct.Constant(tile_x), ct.Constant(tile_y))
         end
 
@@ -79,7 +80,7 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
         NVTX.@range "cuTile" begin
             for i in 1:nruns
                 NVTX.@range "run $i" begin
-                    t = CUDA.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_2d(a, b, c, ct.Constant(tile_x), ct.Constant(tile_y))
+                    t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_2d(a, b, c, ct.Constant(tile_x), ct.Constant(tile_y))
                     push!(times, t * 1000)  # ms
                 end
             end
@@ -91,7 +92,7 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
         grid = cld(n, tile_val)
 
         if use_gather
-            CUDA.@sync for _ in 1:warmup
+            CUDACore.@sync for _ in 1:warmup
                 @cuda backend=cuTile blocks=grid vec_add_kernel_1d_gather(a, b, c, ct.Constant(tile_val))
             end
 
@@ -99,13 +100,13 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
             NVTX.@range "cuTile" begin
                 for i in 1:nruns
                     NVTX.@range "run $i" begin
-                        t = CUDA.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_1d_gather(a, b, c, ct.Constant(tile_val))
+                        t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_1d_gather(a, b, c, ct.Constant(tile_val))
                         push!(times, t * 1000)  # ms
                     end
                 end
             end
         else
-            CUDA.@sync for _ in 1:warmup
+            CUDACore.@sync for _ in 1:warmup
                 @cuda backend=cuTile blocks=grid vec_add_kernel_1d(a, b, c, ct.Constant(tile_val))
             end
 
@@ -113,7 +114,7 @@ function run(data; tile::Union{Int, Tuple{Int,Int}}=1024, nruns::Int=1, warmup::
             NVTX.@range "cuTile" begin
                 for i in 1:nruns
                     NVTX.@range "run $i" begin
-                        t = CUDA.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_1d(a, b, c, ct.Constant(tile_val))
+                        t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid vec_add_kernel_1d(a, b, c, ct.Constant(tile_val))
                         push!(times, t * 1000)  # ms
                     end
                 end
@@ -159,14 +160,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         c_simt = similar(c)
 
         # GPUArrays (broadcasting)
-        CUDA.@sync for _ in 1:warmup
+        CUDACore.@sync for _ in 1:warmup
             c_gpuarrays .= a .+ b
         end
         times_gpuarrays = Float64[]
         NVTX.@range "GPUArrays" begin
             for i in 1:nruns
                 NVTX.@range "run $i" begin
-                    t = CUDA.@elapsed c_gpuarrays .= a .+ b
+                    t = CUDACore.@elapsed c_gpuarrays .= a .+ b
                     push!(times_gpuarrays, t * 1000)
                 end
             end
@@ -176,14 +177,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
         # SIMT kernel
         threads = 256
         blocks = cld(n, threads)
-        CUDA.@sync for _ in 1:warmup
+        CUDACore.@sync for _ in 1:warmup
             @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
         end
         times_simt = Float64[]
         NVTX.@range "SIMT" begin
             for i in 1:nruns
                 NVTX.@range "run $i" begin
-                    t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
+                    t = CUDACore.@elapsed @cuda threads=threads blocks=blocks simt_kernel(a, b, c_simt, n)
                     push!(times_simt, t * 1000)
                 end
             end

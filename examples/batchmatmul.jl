@@ -5,7 +5,8 @@
 # Uses Julia-idiomatic batch-last ordering: A(M, K, Batch), B(K, N, Batch), C(M, N, Batch)
 # This provides optimal memory access with Julia's column-major layout.
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND, cuBLAS
 using cuTile: cuTile
 import cuTile as ct
 
@@ -66,8 +67,8 @@ function prepare(; benchmark::Bool=false,
                   Batch::Int=benchmark ? 8 : 4,
                   T::DataType=Float32)
     return (;
-        A = CUDA.rand(T, M, K, Batch),
-        B = CUDA.rand(T, K, N, Batch),
+        A = cuRAND.rand(T, M, K, Batch),
+        B = cuRAND.rand(T, K, N, Batch),
         C = CuArray{T}(undef, M, N, Batch),
         M, K, N, Batch
     )
@@ -77,7 +78,7 @@ function run(data; tm::Int=128, tn::Int=128, tk::Int=64, nruns::Int=1, warmup::I
     (; A, B, C, M, N, Batch) = data
     grid = (cld(M, tm), cld(N, tn), Batch)
 
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         @cuda backend=cuTile blocks=grid batch_matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
     end
 
@@ -85,7 +86,7 @@ function run(data; tm::Int=128, tn::Int=128, tk::Int=64, nruns::Int=1, warmup::I
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid batch_matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+                t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid batch_matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
                 push!(times, t * 1000)  # ms
             end
         end
@@ -121,14 +122,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     C_cublas = similar(A, M, N, Batch)
 
     # cuBLAS batched gemm via CUBLAS.gemm_strided_batched!
-    CUDA.@sync for _ in 1:warmup
-        CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+    CUDACore.@sync for _ in 1:warmup
+        cuBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
     end
     times_cublas = Float64[]
     NVTX.@range "cuBLAS batched" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed CUDA.CUBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
+                t = CUDACore.@elapsed cuBLAS.gemm_strided_batched!('N', 'N', one(eltype(A)), A, B, zero(eltype(A)), C_cublas)
                 push!(times_cublas, t * 1000)
             end
         end

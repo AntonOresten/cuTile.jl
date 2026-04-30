@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND, cuBLAS
 using LinearAlgebra
 using cuTile: cuTile
 import cuTile as ct
@@ -71,8 +72,8 @@ function prepare(; benchmark::Bool=false,
                   K::Int=benchmark ? 4096 : 256,
                   T::DataType=Float32)
     return (;
-        A = CUDA.rand(T, M, K),
-        B = CUDA.rand(T, K, N),
+        A = cuRAND.rand(T, M, K),
+        B = cuRAND.rand(T, K, N),
         C = CuArray{T}(undef, M, N),
         M, N, K
     )
@@ -88,7 +89,7 @@ function run(data; tm::Int=64, tn::Int=64, tk::Int=64, nruns::Int=1, warmup::Int
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+                t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
                 push!(times, t * 1000)  # ms
             end
         end
@@ -118,14 +119,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     C_gpuarrays = similar(A, size(A, 1), size(B, 2))
 
     # GPUArrays (uses cuBLAS under the hood via LinearAlgebra.mul!)
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         mul!(C_gpuarrays, A, B)
     end
     times_gpuarrays = Float64[]
     NVTX.@range "cuBLAS" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed mul!(C_gpuarrays, A, B)
+                t = CUDACore.@elapsed mul!(C_gpuarrays, A, B)
                 push!(times_gpuarrays, t * 1000)
             end
         end
