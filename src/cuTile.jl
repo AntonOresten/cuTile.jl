@@ -118,4 +118,6 @@ function __init__()
     return
 end
 
+include("precompile.jl")
+
 end # module cuTile
