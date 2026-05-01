@@ -138,6 +138,70 @@ end
 
 const tile_ir_support = PerDevice{Union{Nothing, VersionNumber}}()
 
+const toolkit_version_lock = ReentrantLock()
+const toolkit_version_ref  = Ref{Union{Nothing, String}}(nothing)
+
+# Matches the `V<major>.<minor>.<patch>` component of `tileiras --version`,
+# e.g. `V13.2.78`. That's the part that actually identifies the compiler;
+# the surrounding `Built on …` / `Build local.local.…` lines vary across
+# rebuilds of the same logical version and would over-invalidate the cache.
+const TILEIRAS_VERSION_REGEX = r"V(\d+\.\d+\.\d+)"
+
+"""
+    toolkit_version() -> String
+
+Lazy-cached `tileiras` toolkit identity, used as the toolkit-identity
+component of the disk-cache key so distinct CUDA Toolkit patches
+(e.g. `13.2.51` vs `13.2.78`) produce distinct cubins.
+
+We invoke `tileiras --version` once per process and pull out the
+`V<major>.<minor>.<patch>` token (the only thing that actually
+identifies the compiler — `Built on …` and `Build local.local.…`
+lines also vary across rebuilds of the same logical version, which
+would over-invalidate the cache).
+
+`CUDA_Compiler_jll.cuda_version` is not enough on its own: it only
+exposes major.minor, so different patches would alias. cuTile Python
+sidesteps the parsing problem by hashing the entire `--version`
+stdout (`_get_compiler_version_string` in `_compile.py`); we extract
+the V-token instead and fall back to the full stdout only if the
+regex misses, so a future format change degrades to Python-style
+over-invalidation rather than aliasing distinct compilers.
+
+Failure to invoke `tileiras` returns the string `"unknown"` so the
+cache still functions (all entries collapse into a single toolkit
+bucket); it's the caller's job to decide whether that's acceptable.
+"""
+function toolkit_version()
+    v = toolkit_version_ref[]
+    v === nothing || return v
+    Base.@lock toolkit_version_lock begin
+        v = toolkit_version_ref[]
+        v === nothing || return v
+        v = try
+            cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) --version`,
+                         "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
+            proc, log = run_and_collect(cmd)
+            if !success(proc)
+                "unknown"
+            else
+                m = match(TILEIRAS_VERSION_REGEX, log)
+                if m === nothing
+                    @warn "tileiras --version output does not contain a V<major>.<minor>.<patch> token; falling back to full stdout for cache keying" log
+                    log
+                else
+                    m.captures[1]::AbstractString
+                end
+            end
+        catch err
+            @debug "tileiras --version failed" exception=(err, catch_backtrace())
+            "unknown"
+        end
+        toolkit_version_ref[] = v
+        return v
+    end
+end
+
 """
     check_tile_ir_support()
 
@@ -245,7 +309,6 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     res.cuda_bin !== nothing && return res.cuda_bin
 
     sm_arch = unpack_version(cache.owner.sm_arch)
-    bytecode_version = unpack_version(cache.owner.bytecode_version)
 
     # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
     # num_ctas/occupancy are resolved in emit_tile because they're encoded in bytecode.
@@ -255,11 +318,12 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
 
     # Disk cache lookup. The hash covers every input that changes the CUBIN
     # — bytecode + sm_arch + opt_level + tileiras toolkit version — so
-    # different toolkit versions never collide.
+    # different toolkit versions never collide. `bytecode_version` is encoded
+    # in the bytecode itself, so it's covered transitively by the bytecode hash.
     dc = DiskCache.global_cache()
     cache_key = nothing
     if dc !== nothing
-        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, bytecode_version)
+        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, toolkit_version())
         cubin = try
             DiskCache.get(dc, cache_key)
         catch err

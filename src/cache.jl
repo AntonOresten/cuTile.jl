@@ -18,9 +18,11 @@ can swap the backend to `LMDB.jl` later without touching call sites.
 - A single LMDB env at `\$(scratchspace)/disk_cache/`. The directory
   contains `data.mdb` + `lock.mdb`; wiping the cache means `rm -rf` of
   that directory or `Scratch.delete_scratch!`.
-- Keys: `sha256(toolkit_version ‖ sm_arch ‖ opt_level ‖ bytecode)` —
+- Keys: `sha256(SCHEMA_VERSION ‖ toolkit_version ‖ sm_arch ‖ opt_level ‖ bytecode)` —
   any input change produces a fresh key, so old-toolkit entries simply
-  never match on lookup.
+  never match on lookup. Bump [`SCHEMA_VERSION`](@ref) to invalidate
+  every existing entry on the next access (e.g. after a value-framing
+  change).
 - Values: 8 bytes little-endian `atime_ns` followed by the CUBIN bytes.
   The atime drives the LRU eviction policy.
 
@@ -576,19 +578,37 @@ end
 # ===========================================================================
 
 """
+    SCHEMA_VERSION
+
+Cache schema version, mixed into every [`compute_key`](@ref). Bump this
+when the on-disk value layout changes incompatibly (e.g. add/move bytes
+in the framed value, change the hash algorithm, or alter what inputs
+the key covers). The bump invalidates every existing entry on the next
+access — old entries simply never match, and LRU eventually evicts
+them.
+
+Mirrors `_CACHE_VERSION` in cuTile Python (`_cache.py`).
+"""
+const SCHEMA_VERSION = UInt32(1)
+
+"""
     compute_key(bytecode, sm_arch, opt_level, toolkit_version) -> Vector{UInt8}
 
 Derive a 32-byte content-addressable cache key for a Tile IR compilation.
 The key covers the bytecode plus every input that changes the resulting
-CUBIN: target arch, opt level, and the `tileiras` toolkit version.
+CUBIN: target arch, opt level, and the `tileiras` toolkit version
+(typically the full `--version` stdout — see `cuTile.toolkit_version()`).
 
 Any change to those inputs produces a fresh key — old-toolkit entries
-simply never match on lookup, and eventually evict via LRU.
+simply never match on lookup, and eventually evict via LRU. The
+[`SCHEMA_VERSION`](@ref) prefix lets us invalidate every entry at once
+when the value layout changes.
 """
 function compute_key(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
-                     opt_level::Integer, toolkit_version::VersionNumber)
+                     opt_level::Integer, toolkit_version::AbstractString)
     io = IOBuffer()
-    write_pstring!(io, string(toolkit_version))
+    write(io, hton(SCHEMA_VERSION))
+    write_pstring!(io, toolkit_version)
     write_pstring!(io, string(sm_arch))
     write(io, hton(UInt32(opt_level)))
     write(io, bytecode)
