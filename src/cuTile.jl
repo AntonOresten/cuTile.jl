@@ -83,6 +83,7 @@ include("utils.jl")
 include("tiled.jl")
 include("broadcast.jl")
 include("mapreduce.jl")
+include("cache.jl")
 include("launch.jl")
 
 public launch, TileBackend, DefaultBackend, Tiled, ByTarget,

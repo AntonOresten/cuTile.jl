@@ -245,12 +245,32 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     res.cuda_bin !== nothing && return res.cuda_bin
 
     sm_arch = unpack_version(cache.owner.sm_arch)
+    bytecode_version = unpack_version(cache.owner.bytecode_version)
 
     # Resolve opt_level here (not in emit_tile) because it's a tileiras flag, not bytecode.
     # num_ctas/occupancy are resolved in emit_tile because they're encoded in bytecode.
     _, _, kernel_meta = res.julia_ir
     opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
                                        kernel_meta, :opt_level, sm_arch), 3)
+
+    # Disk cache lookup. The hash covers every input that changes the CUBIN
+    # — bytecode + sm_arch + opt_level + tileiras toolkit version — so
+    # different toolkit versions never collide.
+    dc = DiskCache.global_cache()
+    cache_key = nothing
+    if dc !== nothing
+        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, bytecode_version)
+        cubin = try
+            DiskCache.get(dc, cache_key)
+        catch err
+            @debug "cuTile disk cache lookup failed" exception=(err, catch_backtrace())
+            nothing
+        end
+        if cubin !== nothing
+            res.cuda_bin = cubin
+            return cubin
+        end
+    end
 
     # Run tileiras to produce CUBIN
     input_path = tempname() * ".tile"
@@ -279,6 +299,14 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     finally
         compiled && rm(input_path, force=true)
         rm(output_path, force=true)
+    end
+
+    if cache_key !== nothing
+        try
+            DiskCache.put!(dc, cache_key, res.cuda_bin)
+        catch err
+            @debug "cuTile disk cache store failed" exception=(err, catch_backtrace())
+        end
     end
 
     return res.cuda_bin
