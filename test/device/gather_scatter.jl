@@ -22,7 +22,7 @@ using CUDA
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(gather_kernel, 64, a, b)
+    @cuda backend=cuTile blocks=64 gather_kernel(a, b)
 
     @test Array(b) ≈ Array(a)
 end
@@ -42,7 +42,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(scatter_kernel, 64, a, b)
+    @cuda backend=cuTile blocks=64 scatter_kernel(a, b)
 
     @test Array(b) ≈ Array(a)
 end
@@ -66,7 +66,7 @@ end
     arr = CUDA.ones(Float32, 16)
     out = CUDA.zeros(Float32, 32)
 
-    ct.launch(gather_oob_kernel, 1, out, arr)
+    @cuda backend=cuTile gather_oob_kernel(out, arr)
 
     result = Array(out)
     @test all(result[1:16] .== 1.0f0)
@@ -84,7 +84,7 @@ end
 
     arr = CUDA.zeros(Float32, 16)
 
-    ct.launch(scatter_oob_kernel, 1, arr)
+    @cuda backend=cuTile scatter_oob_kernel(arr)
 
     result = Array(arr)
     @test all(result .== 42.0f0)
@@ -108,7 +108,7 @@ end
     arr = CuArray(Float32.(1:64))
     out = CUDA.zeros(Float32, 32)
 
-    ct.launch(masked_gather_kernel, 1, out, arr)
+    @cuda backend=cuTile masked_gather_kernel(out, arr)
 
     result = Array(out)
     @test result[1:16] == Float32.(1:16)
@@ -132,7 +132,7 @@ end
     arr = CUDA.ones(Float32, 16)
     out = CUDA.zeros(Float32, 32)
 
-    ct.launch(padding_gather_kernel, 1, out, arr)
+    @cuda backend=cuTile padding_gather_kernel(out, arr)
 
     result = Array(out)
     @test all(result[1:16] .== 1.0f0)
@@ -157,7 +157,7 @@ end
     arr = CuArray(Float32.(1:64))
     out = CUDA.zeros(Float32, 32)
 
-    ct.launch(mask_pad_gather_kernel, 1, out, arr)
+    @cuda backend=cuTile mask_pad_gather_kernel(out, arr)
 
     result = Array(out)
     @test result[1:8] == Float32.(1:8)
@@ -180,7 +180,7 @@ end
 
     arr = CUDA.zeros(Float32, 64)
 
-    ct.launch(masked_scatter_kernel, 1, arr)
+    @cuda backend=cuTile masked_scatter_kernel(arr)
 
     result = Array(arr)
     @test all(result[1:16] .== 42.0f0)
@@ -203,7 +203,7 @@ end
     arr = CuArray(Float32.(1:32))
     out = CUDA.zeros(Float32, 32)
 
-    ct.launch(unchecked_gather_kernel, 1, out, arr)
+    @cuda backend=cuTile unchecked_gather_kernel(out, arr)
 
     @test Array(out) == Float32.(1:32)
 end
@@ -223,7 +223,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(unchecked_scatter_kernel, 64, a, b)
+    @cuda backend=cuTile blocks=64 unchecked_scatter_kernel(a, b)
 
     @test Array(b) ≈ Array(a)
 end
@@ -243,6 +243,6 @@ end
 
     out = CUDA.zeros(Float32, 1)
     n_blocks = 100
-    ct.launch(gen_kwargs_kernel, n_blocks, out)
+    @cuda backend=cuTile blocks=n_blocks gen_kwargs_kernel(out)
     @test Array(out)[1] == Float32(n_blocks)
 end

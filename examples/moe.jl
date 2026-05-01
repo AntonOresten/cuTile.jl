@@ -10,6 +10,7 @@
 
 using CUDA, NVTX
 using Random: randperm
+using cuTile: cuTile
 import cuTile as ct
 
 #=============================================================================
@@ -194,11 +195,7 @@ function invoke_fused_moe_kernel(A, B, C, topk_weights, sorted_token_ids, sorted
     # C is 3D (dim, topk, num_tokens) → flatten last two dims to (dim, total_tokens)
     C_flat = reshape(C, size(C, 1), size(C, 2) * size(C, 3))
 
-    ct.launch(fused_moe_kernel, grid,
-              A, B, C_flat, topk_weights_flat,
-              sorted_token_ids, sorted_expert_ids,
-              num_token_replicas, ct.Constant(mul_routed_weight),
-              ct.Constant(tile_m), ct.Constant(tile_n), ct.Constant(tile_k))
+    @cuda backend=cuTile blocks=grid fused_moe_kernel(A, B, C_flat, topk_weights_flat, sorted_token_ids, sorted_expert_ids, num_token_replicas, ct.Constant(mul_routed_weight), ct.Constant(tile_m), ct.Constant(tile_n), ct.Constant(tile_k))
 end
 
 
@@ -226,8 +223,7 @@ function invoke_silu_and_mul_kernel(AB, C)
                         async=true)
 
     tile_n = nextpow(2, inter)
-    ct.launch(silu_and_mul_kernel, total,
-              A_half, B_half, C, ct.Constant(tile_n))
+    @cuda backend=cuTile blocks=total silu_and_mul_kernel(A_half, B_half, C, ct.Constant(tile_n))
 end
 
 

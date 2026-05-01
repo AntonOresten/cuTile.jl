@@ -14,10 +14,12 @@
 
 using Random
 
-# Internal — not in `public`. The no-arg constructor draws fresh entropy so
-# consecutive launches see distinct seeds.
+# Internal — not in `public`. The no-arg constructor draws a fresh seed
+# from the task-local RNG so consecutive launches see distinct seeds.
+# `RandomDevice` would also work but is ~100× slower, which dominates
+# launch overhead for tiny kernels.
 struct KernelState
     seed::UInt32
 end
 
-KernelState() = KernelState(Base.rand(Random.RandomDevice(), UInt32))
+KernelState() = KernelState(Base.rand(UInt32))

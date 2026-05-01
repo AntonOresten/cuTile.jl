@@ -18,7 +18,7 @@ using CUDA
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_1d, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vadd_1d(a, b, c)
 
     @test Array(c) ≈ Array(a) + Array(b)
 end
@@ -39,7 +39,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vsub_1d, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vsub_1d(a, b, c)
 
     @test Array(c) ≈ Array(a) - Array(b)
 end
@@ -60,7 +60,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vmul_1d, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vmul_1d(a, b, c)
 
     @test Array(c) ≈ Array(a) .* Array(b)
 end
@@ -81,7 +81,7 @@ end
     b = CUDA.rand(Float32, n) .+ 0.1f0  # Ensure non-zero
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vdiv_1d, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) vdiv_1d(a, b, c)
 
     @test Array(c) ≈ Array(a) ./ Array(b)
 end
@@ -103,7 +103,7 @@ end
     b = CUDA.rand(Float32, m, n)
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(madd_2d, (cld(m, tile_x), cld(n, tile_y)), a, b, c)
+    @cuda backend=cuTile blocks=(cld(m, tile_x), cld(n, tile_y)) madd_2d(a, b, c)
 
     @test Array(c) ≈ Array(a) + Array(b)
 end
@@ -130,7 +130,7 @@ end
     c = CUDA.zeros(Float32, d1, d2, d3, d4)
 
     grid = (cld(d1, tile_1), cld(d2, tile_2), cld(d3, tile_3))
-    ct.launch(tadd_4d, grid, a, b, c)
+    @cuda backend=cuTile blocks=grid tadd_4d(a, b, c)
 
     @test Array(c) ≈ Array(a) + Array(b)
 end
@@ -148,7 +148,7 @@ for (op, name) in [
         end
         a = CUDA.rand(Float32, 1024) .+ 0.1f0
         b = CUDA.zeros(Float32, 1024)
-        ct.launch($(Symbol("vmath_$(name)")), cld(1024, 16), a, b)
+        @cuda backend=cuTile blocks=cld(1024, 16) $(Symbol("vmath_$(name)"))(a, b)
         @test Array(b) ≈ $op.(Array(a)) rtol=1e-4
     end
 end
@@ -167,7 +167,7 @@ end
     src = CUDA.fill(3.14f0, 1)
     dst = CUDA.zeros(Float32, n)
 
-    ct.launch(full_runtime_kernel, cld(n, 16), src, dst)
+    @cuda backend=cuTile blocks=cld(n, 16) full_runtime_kernel(src, dst)
 
     @test all(Array(dst) .≈ 3.14f0)
 end
@@ -185,7 +185,7 @@ end
         src = CUDA.rand(Float32, m, 1)
         dst = CUDA.zeros(Float32, m, 1)
 
-        ct.launch(copy_1d_2d, cld(m, 16), src, dst)
+        @cuda backend=cuTile blocks=cld(m, 16) copy_1d_2d(src, dst)
 
         @test Array(dst) ≈ Array(src)
     end
@@ -203,7 +203,7 @@ end
         src = CUDA.rand(Float32, d1, d2, 1, 1)
         dst = CUDA.zeros(Float32, d1, d2, 1, 1)
 
-        ct.launch(copy_2d_4d, (cld(d1, 4), cld(d2, 4)), src, dst)
+        @cuda backend=cuTile blocks=(cld(d1, 4), cld(d2, 4)) copy_2d_4d(src, dst)
 
         @test Array(dst) ≈ Array(src)
     end
@@ -219,7 +219,7 @@ end
     sz = 32; N = 1024
     a = CUDA.rand(Float32, N)
     b = CUDA.zeros(Float32, cld(N, sz))
-    ct.launch(scalar_store_1d, cld(N, sz), a, b, ct.Constant(sz))
+    @cuda backend=cuTile blocks=cld(N, sz) scalar_store_1d(a, b, ct.Constant(sz))
 
     a_cpu = reshape(Array(a), sz, :)
     @test Array(b) ≈ vec(sum(a_cpu; dims=1)) rtol=1e-3
@@ -240,7 +240,7 @@ end
     x = CUDA.rand(Float32, m, n)
     y = CUDA.zeros(Float32, n, m)
 
-    ct.launch(transpose_kernel, (cld(m, tile_size), cld(n, tile_size)), x, y)
+    @cuda backend=cuTile blocks=(cld(m, tile_size), cld(n, tile_size)) transpose_kernel(x, y)
 
     @test Array(y) ≈ transpose(Array(x))
 end
@@ -262,7 +262,7 @@ end
         # Each of the m/4 = 16 blocks produces 32 elements
         y = CUDA.zeros(Float32, m * n)
 
-        ct.launch(reshape_2d_to_1d_kernel, cld(m, 4), x, y)
+        @cuda backend=cuTile blocks=cld(m, 4) reshape_2d_to_1d_kernel(x, y)
 
         # Verify all elements are preserved (same multiset)
         x_cpu = Array(x)
@@ -292,7 +292,7 @@ end
         m_out = n ÷ 8
         y = CUDA.zeros(Float32, m_out, 8)
 
-        ct.launch(reshape_1d_to_2d_kernel, cld(n, 32), x, y)
+        @cuda backend=cuTile blocks=cld(n, 32) reshape_1d_to_2d_kernel(x, y)
 
         # Verify all elements are preserved (same multiset)
         x_cpu = Array(x)
@@ -322,7 +322,7 @@ end
         x = CUDA.rand(Float32, m, n)
         y = CUDA.zeros(Float32, m, n)
 
-        ct.launch(reshape_roundtrip_kernel, cld(m, 8), x, y)
+        @cuda backend=cuTile blocks=cld(m, 8) reshape_roundtrip_kernel(x, y)
 
         @test Array(y) ≈ Array(x)
     end
@@ -349,7 +349,7 @@ end
         x = CuArray(Float32.(1:n))
         y = CUDA.zeros(Float32, shape)
 
-        ct.launch(reshape_1d_to_2d_exact_kernel, 1, x, y, ct.Constant(n), ct.Constant(shape))
+        @cuda backend=cuTile reshape_1d_to_2d_exact_kernel(x, y, ct.Constant(n), ct.Constant(shape))
 
         # Must match Julia's column-major reshape exactly (not just same elements)
         expected = reshape(Float32.(1:n), shape)
@@ -372,7 +372,7 @@ end
         x = CuArray(Float32.(reshape(1:n, shape)))
         y = CUDA.zeros(Float32, n)
 
-        ct.launch(reshape_2d_to_1d_exact_kernel, 1, x, y, ct.Constant(shape), ct.Constant(n))
+        @cuda backend=cuTile reshape_2d_to_1d_exact_kernel(x, y, ct.Constant(shape), ct.Constant(n))
 
         # Flattening should give column-major order: 1,2,3,4,...,32
         expected = vec(Float32.(reshape(1:n, shape)))
@@ -396,8 +396,7 @@ end
         x = CuArray(Float32.(reshape(1:n, src_shape)))
         y = CUDA.zeros(Float32, tgt_shape)
 
-        ct.launch(reshape_2d_to_2d_exact_kernel, 1, x, y,
-                  ct.Constant(src_shape), ct.Constant(tgt_shape))
+        @cuda backend=cuTile reshape_2d_to_2d_exact_kernel(x, y, ct.Constant(src_shape), ct.Constant(tgt_shape))
 
         expected = reshape(Float32.(reshape(1:n, src_shape)), tgt_shape)
         @test Array(y) ≈ expected
@@ -420,8 +419,7 @@ end
         x = CuArray(Float32.(reshape(1:n, src_shape)))
         y = CUDA.zeros(Float32, tgt_shape)
 
-        ct.launch(reshape_3d_to_2d_exact_kernel, 1, x, y,
-                  ct.Constant(src_shape), ct.Constant(tgt_shape))
+        @cuda backend=cuTile reshape_3d_to_2d_exact_kernel(x, y, ct.Constant(src_shape), ct.Constant(tgt_shape))
 
         expected = reshape(Float32.(reshape(1:n, src_shape)), tgt_shape)
         @test Array(y) ≈ expected
@@ -448,8 +446,7 @@ end
         x = CuArray(Float32.(reshape(1:prod(orig_shape), orig_shape)))
         y = CUDA.zeros(Float32, orig_shape)
 
-        ct.launch(reshape_roundtrip_3d_kernel, 1, x, y,
-                  ct.Constant(orig_shape), ct.Constant(packed_shape))
+        @cuda backend=cuTile reshape_roundtrip_3d_kernel(x, y, ct.Constant(orig_shape), ct.Constant(packed_shape))
 
         # Round-trip must preserve exact data, not just same elements
         @test Array(y) ≈ Array(x)
@@ -470,7 +467,7 @@ end
         x = CuArray(Float32.(reshape(1:prod(shape), shape)))
         y = CUDA.zeros(Float32, shape)
 
-        ct.launch(reshape_2d_1d_2d_kernel, 1, x, y, ct.Constant(shape))
+        @cuda backend=cuTile reshape_2d_1d_2d_kernel(x, y, ct.Constant(shape))
 
         @test Array(y) ≈ Array(x)
     end
@@ -492,7 +489,7 @@ end
         x = CUDA.rand(Float32, m, n)
         y = CUDA.zeros(Float32, cld(m, 8) * 4, 8)
 
-        ct.launch(permute_2d_kernel, cld(m, 8), x, y)
+        @cuda backend=cuTile blocks=cld(m, 8) permute_2d_kernel(x, y)
 
         # Verify permutedims matches transpose
         x_cpu = Array(x)
@@ -523,7 +520,7 @@ end
         x = CUDA.rand(Float32, m, n)
         y = CUDA.zeros(Float32, m, n)
 
-        ct.launch(permute_roundtrip_kernel, cld(m, 4), x, y)
+        @cuda backend=cuTile blocks=cld(m, 4) permute_roundtrip_kernel(x, y)
 
         @test Array(y) ≈ Array(x)
     end
@@ -549,7 +546,7 @@ end
         out = CUDA.zeros(Float32, m, n)
 
         grid = (cld(m, tm), cld(n, tn))
-        ct.launch(copy_kernel_2d, grid, P, out, ct.Constant(tm), ct.Constant(tn))
+        @cuda backend=cuTile blocks=grid copy_kernel_2d(P, out, ct.Constant(tm), ct.Constant(tn))
 
         @test out == permutedims(A, (2, 1))
     end
@@ -570,7 +567,7 @@ end
         src = CuArray(Float32.(reshape(1:n*n, n, n)))
         dst = CUDA.zeros(Float32, n, n)
 
-        ct.launch(order_load_kernel, (cld(n, t), cld(n, t)), src, dst, ct.Constant(t))
+        @cuda backend=cuTile blocks=(cld(n, t), cld(n, t)) order_load_kernel(src, dst, ct.Constant(t))
 
         @test Array(dst) ≈ transpose(Array(src))
     end
@@ -591,7 +588,7 @@ end
         src = CuArray(Float32.(reshape(1:n*n, n, n)))
         dst = CUDA.zeros(Float32, n, n)
 
-        ct.launch(order_store_kernel, (cld(n, t), cld(n, t)), src, dst, ct.Constant(t))
+        @cuda backend=cuTile blocks=(cld(n, t), cld(n, t)) order_store_kernel(src, dst, ct.Constant(t))
 
         @test Array(dst) ≈ transpose(Array(src))
     end
@@ -613,7 +610,7 @@ end
         x = CUDA.rand(Float32, m, n)
         y = CUDA.zeros(Float32, m, n)
 
-        ct.launch(extract_identity_kernel, cld(m, 4), x, y)
+        @cuda backend=cuTile blocks=cld(m, 4) extract_identity_kernel(x, y)
 
         # Full extract at (0,0) should preserve data
         @test Array(y) ≈ Array(x)
@@ -634,7 +631,7 @@ end
         x = CUDA.rand(Float32, m, n)
         y = CUDA.zeros(Float32, cld(m, 8) * 4, 4)
 
-        ct.launch(extract_smaller_kernel, cld(m, 8), x, y)
+        @cuda backend=cuTile blocks=cld(m, 8) extract_smaller_kernel(x, y)
 
         # Verify elements are preserved for top-left 4x4
         x_cpu = Array(x)
@@ -684,7 +681,7 @@ end
         y2 = CUDA.zeros(Float32, 4, 4)
         y3 = CUDA.zeros(Float32, 4, 4)
 
-        ct.launch(extract_all_quadrants_kernel, 1, x, y0, y1, y2, y3)
+        @cuda backend=cuTile extract_all_quadrants_kernel(x, y0, y1, y2, y3)
 
         @test all(Array(y0) .≈ 1.0f0)  # Top-left = 1
         @test all(Array(y1) .≈ 2.0f0)  # Bottom-left = 2
@@ -717,7 +714,7 @@ end
         y_real = CUDA.zeros(Float32, 2, 8, 1)
         y_imag = CUDA.zeros(Float32, 2, 8, 1)
 
-        ct.launch(extract_real_imag_kernel, 1, x, y_real, y_imag)
+        @cuda backend=cuTile extract_real_imag_kernel(x, y_real, y_imag)
 
         @test all(Array(y_real) .≈ 1.0f0)  # Real component
         @test all(Array(y_imag) .≈ 2.0f0)  # Imag component
@@ -735,7 +732,7 @@ end
     host_x[3] = 42.0f0
     x = CuArray(host_x)
     y = CUDA.zeros(Float32, 8)
-    ct.launch(tile_getindex_kernel, 1, x, y)
+    @cuda backend=cuTile tile_getindex_kernel(x, y)
     @test all(Array(y) .≈ 42.0f0)
 end
 
@@ -748,7 +745,7 @@ end
     end
     x = CuArray(Float32.(1:8))
     y = CUDA.zeros(Float32, 8)
-    ct.launch(tile_setindex_kernel, 1, x, y)
+    @cuda backend=cuTile tile_setindex_kernel(x, y)
     expected = Float32.(1:8)
     expected[3] = 0.0f0
     @test Array(y) ≈ expected
@@ -773,7 +770,7 @@ end
         b = CUDA.rand(Float32, m, n)
         c = CUDA.zeros(Float32, m, 8)
 
-        ct.launch(cat_last_axis_kernel, cld(m, 4), a, b, c)
+        @cuda backend=cuTile blocks=cld(m, 4) cat_last_axis_kernel(a, b, c)
 
         # Verify concatenation: c[:, 1:4] should match a, c[:, 5:8] should match b
         c_cpu = Array(c)
@@ -812,7 +809,7 @@ end
         b = CUDA.rand(Float32, m, n)
         c = CUDA.zeros(Float32, m * 2, n)
 
-        ct.launch(cat_first_axis_kernel, cld(m, 4), a, b, c)
+        @cuda backend=cuTile blocks=cld(m, 4) cat_first_axis_kernel(a, b, c)
 
         # Verify concatenation: elements from both inputs should be preserved
         c_cpu = Array(c)
@@ -852,7 +849,7 @@ end
         x = CUDA.rand(Float32, m, n)
         y = CUDA.zeros(Float32, m, n)
 
-        ct.launch(extract_cat_roundtrip_kernel, cld(m, 4), x, y)
+        @cuda backend=cuTile blocks=cld(m, 4) extract_cat_roundtrip_kernel(x, y)
 
         # Output should match input (roundtrip)
         x_cpu = Array(x)
@@ -890,7 +887,7 @@ end
 
         grid_x = cld(M, 32)
         grid_y = cld(N, 32)
-        ct.launch(matmul_kernel, (grid_x, grid_y, 1), a, b, c)
+        @cuda backend=cuTile blocks=(grid_x, grid_y, 1) matmul_kernel(a, b, c)
 
         # Verify against CPU reference
         a_cpu = Array(a)
@@ -917,7 +914,7 @@ end
         b = CUDA.rand(Float32, 1, N)
         c = CUDA.zeros(Float32, M, N)
 
-        ct.launch(outer_product_kernel, 1, a, b, c)
+        @cuda backend=cuTile outer_product_kernel(a, b, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -944,7 +941,7 @@ end
         b = CUDA.rand(Float32, K)
         c = CUDA.zeros(Float32, M)
 
-        ct.launch(matvec_kernel, 1, a, b, c)
+        @cuda backend=cuTile matvec_kernel(a, b, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -970,7 +967,7 @@ end
         b = CUDA.rand(Float32, K, N, B)
         c = CUDA.zeros(Float32, M, N, B)
 
-        ct.launch(batched_matmul_kernel, 1, a, b, c)
+        @cuda backend=cuTile batched_matmul_kernel(a, b, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -1003,7 +1000,7 @@ end
         c = CUDA.zeros(Float32, M, N)
 
         # Each block handles a 16-row chunk of a and a 32-col chunk of b
-        ct.launch(multi_vecmat_kernel, (cld(M, 16), cld(N, 32)), a, b, c)
+        @cuda backend=cuTile blocks=(cld(M, 16), cld(N, 32)) multi_vecmat_kernel(a, b, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -1029,7 +1026,7 @@ end
         b = CUDA.rand(Float32, K)
         c = CUDA.zeros(Float32, M)
 
-        ct.launch(multi_matvec_kernel, cld(M, 32), a, b, c)
+        @cuda backend=cuTile blocks=cld(M, 32) multi_matvec_kernel(a, b, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -1068,7 +1065,7 @@ end
         b = CUDA.rand(Float32, K, N, B1, B2)
         c = CUDA.zeros(Float32, M, N, B1, B2)
 
-        ct.launch(batched_4d_kernel, 1, a, b, c)
+        @cuda backend=cuTile batched_4d_kernel(a, b, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -1098,7 +1095,7 @@ end
         b = CUDA.rand(Float32, K, N)
         c = CUDA.zeros(Float32, M, N)
 
-        ct.launch(mixed_matmul_kernel, 1, a, b, c)
+        @cuda backend=cuTile mixed_matmul_kernel(a, b, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -1126,7 +1123,7 @@ end
         bias = CUDA.rand(Float32, M)
         c = CUDA.zeros(Float32, M)
 
-        ct.launch(matvec_muladd_kernel, cld(M, 32), a, b, bias, c)
+        @cuda backend=cuTile blocks=cld(M, 32) matvec_muladd_kernel(a, b, bias, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)
@@ -1155,7 +1152,7 @@ end
         bias = CUDA.rand(Float32, M, N)
         c = CUDA.zeros(Float32, M, N)
 
-        ct.launch(matmul_muladd_kernel, 1, a, b, bias, c)
+        @cuda backend=cuTile matmul_muladd_kernel(a, b, bias, c)
 
         a_cpu = Array(a)
         b_cpu = Array(b)

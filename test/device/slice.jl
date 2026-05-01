@@ -13,7 +13,7 @@ using CUDA
 
     a = CUDA.rand(Float32, 16)
     b = CUDA.zeros(Float32, 8)
-    ct.launch(kern, 1, a, b)
+    @cuda backend=cuTile kern(a, b)
     @test Array(b) == Array(a)[3:10]
 end
 
@@ -31,7 +31,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, 4)
     # Pull a[10:13] (4 elements).
-    ct.launch(kern, 1, a, b, Int32(10), Int32(13))
+    @cuda backend=cuTile kern(a, b, Int32(10), Int32(13))
     @test Array(b) == Array(a)[10:13]
 end
 
@@ -47,7 +47,7 @@ end
 
     a = CUDA.rand(Float32, 8, 4)
     b = CUDA.zeros(Float32, 4, 4)
-    ct.launch(kern, 1, a, b, Int32(3), Int32(6))
+    @cuda backend=cuTile kern(a, b, Int32(3), Int32(6))
     @test Array(b) == Array(a)[3:6, :]
 end
 
@@ -62,7 +62,7 @@ end
 
     a = CUDA.rand(Float32, 4, 8)
     b = CUDA.zeros(Float32, 4, 4)
-    ct.launch(kern, 1, a, b, Int32(2), Int32(5))
+    @cuda backend=cuTile kern(a, b, Int32(2), Int32(5))
     @test Array(b) == Array(a)[:, 2:5]
 end
 
@@ -77,7 +77,7 @@ end
 
     a = CUDA.rand(Float32, 8, 8)
     b = CUDA.zeros(Float32, 4, 4)
-    ct.launch(kern, 1, a, b, Int32(3), Int32(6), Int32(2), Int32(5))
+    @cuda backend=cuTile kern(a, b, Int32(3), Int32(6), Int32(2), Int32(5))
     @test Array(b) == Array(a)[3:6, 2:5]
 end
 
@@ -93,7 +93,7 @@ end
 
     a = CUDA.zeros(Float32, 16)
     src = CUDA.rand(Float32, 4)
-    ct.launch(kern, 1, a, src, Int32(5), Int32(8))
+    @cuda backend=cuTile kern(a, src, Int32(5), Int32(8))
     got = Array(a)
     want = zeros(Float32, 16)
     want[5:8] .= Array(src)
@@ -115,7 +115,7 @@ end
 
     a = CUDA.rand(Float32, 8, 8)
     b = CUDA.zeros(Float32, 4, 4)
-    ct.launch(kern, 1, a, b, Int32(3), Int32(6), Int32(2), Int32(5))
+    @cuda backend=cuTile kern(a, b, Int32(3), Int32(6), Int32(2), Int32(5))
     @test Array(b) == Array(a)[3:6, 2:5]
 end
 

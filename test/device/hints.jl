@@ -19,10 +19,10 @@ using CUDA
     c = CUDA.zeros(Float32, n)
 
     if capability(device()) >= v"10"
-        ct.launch(vadd_kernel_num_ctas, 64, a, b, c; num_ctas=2)
+        @cuda backend=cuTile blocks=64 num_ctas=2 vadd_kernel_num_ctas(a, b, c)
         @test Array(c) ≈ ones(Float32, n) .* 3
     else
-        @test_throws "num_cta_in_cga" ct.launch(vadd_kernel_num_ctas, 64, a, b, c; num_ctas=2)
+        @test_throws "num_cta_in_cga" @cuda backend=cuTile blocks=64 num_ctas=2 vadd_kernel_num_ctas(a, b, c)
     end
 end
 
@@ -42,7 +42,7 @@ end
     b = CUDA.ones(Float32, n) .* 2
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_kernel_occupancy, 64, a, b, c; occupancy=4)
+    @cuda backend=cuTile blocks=64 occupancy=4 vadd_kernel_occupancy(a, b, c)
 
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
@@ -64,10 +64,10 @@ end
     c = CUDA.zeros(Float32, n)
 
     if capability(device()) >= v"10"
-        ct.launch(vadd_kernel_both_hints, 64, a, b, c; num_ctas=4, occupancy=8)
+        @cuda backend=cuTile blocks=64 num_ctas=4 occupancy=8 vadd_kernel_both_hints(a, b, c)
         @test Array(c) ≈ ones(Float32, n) .* 3
     else
-        @test_throws "num_cta_in_cga" ct.launch(vadd_kernel_both_hints, 64, a, b, c; num_ctas=4, occupancy=8)
+        @test_throws "num_cta_in_cga" @cuda backend=cuTile blocks=64 num_ctas=4 occupancy=8 vadd_kernel_both_hints(a, b, c)
     end
 end
 
@@ -91,7 +91,7 @@ end
     b = CUDA.ones(Float32, n) .* 2
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_with_load_latency, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 vadd_with_load_latency(a, b, c)
 
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
@@ -112,7 +112,7 @@ end
     b = CUDA.ones(Float32, n) .* 2
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_no_tma, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 vadd_no_tma(a, b, c)
 
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
@@ -133,7 +133,7 @@ end
     b = CUDA.ones(Float32, n) .* 2
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_both_load_hints, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 vadd_both_load_hints(a, b, c)
 
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
@@ -151,7 +151,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(copy_with_store_latency, 64, a, b)
+    @cuda backend=cuTile blocks=64 copy_with_store_latency(a, b)
 
     @test Array(b) ≈ Array(a)
 end
@@ -169,7 +169,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(copy_no_tma_store, 64, a, b)
+    @cuda backend=cuTile blocks=64 copy_no_tma_store(a, b)
 
     @test Array(b) ≈ Array(a)
 end
@@ -192,7 +192,7 @@ end
     b = CUDA.ones(Float32, n) .* 2
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(vadd_mixed_hints, 64, a, b, c)
+    @cuda backend=cuTile blocks=64 vadd_mixed_hints(a, b, c)
 
     @test Array(c) ≈ ones(Float32, n) .* 3
 end
@@ -213,7 +213,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(gather_with_latency, 64, a, b)
+    @cuda backend=cuTile blocks=64 gather_with_latency(a, b)
 
     @test Array(b) ≈ Array(a)
 end
@@ -233,7 +233,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(scatter_with_latency, 64, a, b)
+    @cuda backend=cuTile blocks=64 scatter_with_latency(a, b)
 
     @test Array(b) ≈ Array(a)
 end

@@ -7,7 +7,9 @@ authors = ["Tim Besard <tim.besard@gmail.com>"]
 projects = ["test", "examples"]
 
 [deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
+CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
 CUDA_Compiler_jll = "d1e2174e-dfdc-576e-b43e-73b79eb1aca8"
 CUDA_Tile_jll = "2068806d-a867-5dbd-af0e-42c2eb5d895d"
 CompilerCaching = "9db33cc3-5358-4881-8759-fa4194144afd"
@@ -17,19 +19,18 @@ IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [weakdeps]
-CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
 DLFP8Types = "f4c16678-4a16-415b-82ef-ed337c5d6c7c"
 
 [extensions]
-CUDAExt = "CUDACore"
 DLFP8TypesExt = "DLFP8Types"
 
 [compat]
+Adapt = "4.4"
 BFloat16s = "0.6"
+CUDACore = "6.1"
 CUDA_Compiler_jll = "0.4"
 CUDA_Tile_jll = "13.1"
-CUDACore = "6"
-CompilerCaching = "0.2"
+CompilerCaching = "0.2.4"
 EnumX = "1.0"
 GPUArrays = "11"
 IRStructurizer = "0.6"

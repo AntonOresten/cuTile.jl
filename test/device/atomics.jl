@@ -14,7 +14,7 @@ using CUDA
     n_blocks = 1000
     counters = CUDA.zeros(Int, 1)
 
-    ct.launch(atomic_add_kernel, n_blocks, counters)
+    @cuda backend=cuTile blocks=n_blocks atomic_add_kernel(counters)
 
     result = Array(counters)[1]
     @test result == n_blocks
@@ -33,7 +33,7 @@ end
     out = CUDA.zeros(Float32, 1)
     val = 1.5f0
 
-    ct.launch(atomic_add_f32_kernel, n_blocks, out, ct.Constant(val))
+    @cuda backend=cuTile blocks=n_blocks atomic_add_f32_kernel(out, ct.Constant(val))
 
     result = Array(out)[1]
     @test result ≈ n_blocks * val rtol=1e-3
@@ -52,7 +52,7 @@ end
     n_blocks = 10
     arr = CUDA.zeros(Int, 1)
 
-    ct.launch(atomic_xchg_kernel, n_blocks, arr)
+    @cuda backend=cuTile blocks=n_blocks atomic_xchg_kernel(arr)
 
     # Result should be one of 1..n_blocks (whichever thread ran last)
     result = Array(arr)[1]
@@ -76,7 +76,7 @@ end
     locks = CUDA.zeros(Int, 1)
     success_count = CUDA.zeros(Int, 1)
 
-    ct.launch(atomic_cas_kernel, 100, locks, success_count)
+    @cuda backend=cuTile blocks=100 atomic_cas_kernel(locks, success_count)
 
     # Lock should be set to 1 (at least one thread succeeded)
     lock_val = Array(locks)[1]
@@ -110,7 +110,7 @@ end
     result = CUDA.zeros(Float32, 1)
     lock = CUDA.zeros(Int, 1)
 
-    ct.launch(spinlock_kernel, n_blocks, result, lock)
+    @cuda backend=cuTile blocks=n_blocks spinlock_kernel(result, lock)
 
     # Each block should have added 1.0 to the result
     final_result = Array(result)[1]
@@ -142,7 +142,7 @@ end
     result = CUDA.zeros(Float32, 1)
     lock = CUDA.zeros(Int, 1)
 
-    ct.launch(explicit_ordering_kernel, n_blocks, result, lock)
+    @cuda backend=cuTile blocks=n_blocks explicit_ordering_kernel(result, lock)
 
     final_result = Array(result)[1]
     @test final_result == Float32(n_blocks)
@@ -161,7 +161,7 @@ end
     n_blocks = 100
     counters = CUDA.zeros(Int, 1)
 
-    ct.launch(explicit_add_kernel, n_blocks, counters)
+    @cuda backend=cuTile blocks=n_blocks explicit_add_kernel(counters)
 
     result = Array(counters)[1]
     @test result == n_blocks
@@ -187,7 +187,7 @@ end
     n_blocks = div(n, tile_size)
     arr = CUDA.zeros(Int, n)
 
-    ct.launch(atomic_add_tile_kernel, n_blocks, arr, ct.Constant(tile_size))
+    @cuda backend=cuTile blocks=n_blocks atomic_add_tile_kernel(arr, ct.Constant(tile_size))
 
     @test all(Array(arr) .== 1)
 end
@@ -204,7 +204,7 @@ end
     arr = CUDA.zeros(Int, 16)
     out = CUDA.fill(Int(-1), 16)
 
-    ct.launch(atomic_add_return_kernel, 1, arr, out)
+    @cuda backend=cuTile atomic_add_return_kernel(arr, out)
 
     @test all(Array(out) .== 0)
     @test all(Array(arr) .== 1)
@@ -225,7 +225,7 @@ end
     n_blocks = div(n, tile_size)
     arr = CUDA.zeros(Float32, n)
 
-    ct.launch(atomic_add_f32_tile_kernel, n_blocks, arr, ct.Constant(tile_size))
+    @cuda backend=cuTile blocks=n_blocks atomic_add_f32_tile_kernel(arr, ct.Constant(tile_size))
 
     @test all(isapprox.(Array(arr), 1.5f0))
 end
@@ -243,7 +243,7 @@ end
     arr = CUDA.zeros(Int, 16)
     vals = CuArray(collect(Int, 1:16))
 
-    ct.launch(atomic_add_tile_val_kernel, 1, arr, vals)
+    @cuda backend=cuTile atomic_add_tile_val_kernel(arr, vals)
 
     @test Array(arr) == collect(1:16)
 end
@@ -258,7 +258,7 @@ end
 
     arr = CUDA.zeros(Int, 16)
 
-    ct.launch(atomic_xchg_tile_kernel, 1, arr)
+    @cuda backend=cuTile atomic_xchg_tile_kernel(arr)
 
     @test all(Array(arr) .== 42)
 end
@@ -275,7 +275,7 @@ end
     arr = CUDA.zeros(Int, 16)
     out = CUDA.fill(Int(-1), 16)
 
-    ct.launch(atomic_cas_tile_kernel, 1, arr, out)
+    @cuda backend=cuTile atomic_cas_tile_kernel(arr, out)
 
     @test all(Array(out) .== 0)
     @test all(Array(arr) .== 1)
@@ -293,7 +293,7 @@ end
     arr = CUDA.fill(Int(1), 16)
     out = CUDA.fill(Int(-1), 16)
 
-    ct.launch(atomic_cas_fail_kernel, 1, arr, out)
+    @cuda backend=cuTile atomic_cas_fail_kernel(arr, out)
 
     @test all(Array(out) .== 1)   # old values returned
     @test all(Array(arr) .== 1)   # unchanged (CAS failed)
@@ -310,7 +310,7 @@ end
 
     arr = CUDA.zeros(Int, 8)
 
-    ct.launch(atomic_add_oob_kernel, 1, arr)
+    @cuda backend=cuTile atomic_add_oob_kernel(arr)
 
     # Only first 8 elements should be updated
     @test all(Array(arr) .== 1)
@@ -329,7 +329,7 @@ end
 
     arr = CUDA.zeros(Int, 4, 4, 4)
 
-    ct.launch(atomic_add_3d_kernel, 1, arr)
+    @cuda backend=cuTile atomic_add_3d_kernel(arr)
 
     @test all(Array(arr) .== 1)
 end
@@ -345,7 +345,7 @@ end
     n_blocks = 100
     out = CUDA.zeros(Int, 1)
 
-    ct.launch(atomic_max_kernel, n_blocks, out)
+    @cuda backend=cuTile blocks=n_blocks atomic_max_kernel(out)
 
     result = Array(out)[1]
     @test result == n_blocks
@@ -362,7 +362,7 @@ end
     n_blocks = 100
     out = CUDA.fill(Int(999), 1)
 
-    ct.launch(atomic_min_kernel, n_blocks, out)
+    @cuda backend=cuTile blocks=n_blocks atomic_min_kernel(out)
 
     result = Array(out)[1]
     @test result == 1
@@ -380,7 +380,7 @@ end
     n_blocks = 16
     out = CUDA.zeros(Int, 1)
 
-    ct.launch(atomic_or_kernel, n_blocks, out)
+    @cuda backend=cuTile blocks=n_blocks atomic_or_kernel(out)
 
     result = Array(out)[1]
     @test result == (1 << n_blocks) - 1
@@ -398,7 +398,7 @@ end
     n_blocks = 16
     out = CUDA.fill(Int((1 << n_blocks) - 1), 1)
 
-    ct.launch(atomic_and_kernel, n_blocks, out)
+    @cuda backend=cuTile blocks=n_blocks atomic_and_kernel(out)
 
     result = Array(out)[1]
     @test result == 0
@@ -416,7 +416,7 @@ end
     n_blocks = 100
     out = CUDA.zeros(Int, 1)
 
-    ct.launch(atomic_xor_kernel, n_blocks, out)
+    @cuda backend=cuTile blocks=n_blocks atomic_xor_kernel(out)
 
     # Expected: XOR of 1..n_blocks
     expected = reduce(xor, 1:n_blocks)
@@ -441,7 +441,7 @@ end
     src = CUDA.rand(Float32, n)
     dst = CUDA.zeros(Float32, n)
 
-    ct.launch(gather_simple_kernel, 1, src, dst)
+    @cuda backend=cuTile gather_simple_kernel(src, dst)
 
     @test Array(dst) ≈ Array(src)
 end
@@ -463,7 +463,7 @@ end
     src = CUDA.rand(Float32, n)
     dst = CUDA.zeros(Float32, n)
 
-    ct.launch(scatter_simple_kernel, 1, src, dst)
+    @cuda backend=cuTile scatter_simple_kernel(src, dst)
 
     @test Array(dst) ≈ Array(src)
 end

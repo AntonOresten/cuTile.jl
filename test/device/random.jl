@@ -49,7 +49,7 @@ rand_span(::Type{T}) where {T<:Signed}        = (Float64(typemin(T)), Float64(ty
     o1 = CUDA.zeros(T, n_blocks)
     o2 = CUDA.zeros(T, n_blocks * m)
     o3 = CUDA.zeros(T, n_blocks * m)
-    ct.launch(k_typed_surfaces, n_blocks, o1, o2, o3, T, ct.Constant(dims))
+    @cuda backend=cuTile blocks=n_blocks k_typed_surfaces(o1, o2, o3, T, ct.Constant(dims))
 
     for v in (Array(o1), Array(o2), Array(o3))
         @test eltype(v) === T
@@ -91,7 +91,7 @@ end
     o2 = CUDA.zeros(Float32, n_blocks * 16)
     o3 = CUDA.zeros(Float32, n_blocks * 16)
     o4 = CUDA.zeros(Float32, n_blocks * 16)
-    ct.launch(k_untyped_surfaces, n_blocks, o1, o2, o3, o4)
+    @cuda backend=cuTile blocks=n_blocks k_untyped_surfaces(o1, o2, o3, o4)
     for v in (Array(o1), Array(o2), Array(o3), Array(o4))
         @test all(0f0 .< v .< 1f0)
     end
@@ -155,7 +155,7 @@ end
                c    = CUDA.zeros(UInt32, n_blocks * 16),
                loop = CUDA.zeros(UInt32, n_blocks * 4))
     out1 = alloc()
-    ct.launch(k_multi, n_blocks, out1.d1, out1.d2, out1.a, out1.b, out1.c, out1.loop)
+    @cuda backend=cuTile blocks=n_blocks k_multi(out1.d1, out1.d2, out1.a, out1.b, out1.c, out1.loop)
     arr1 = map(Array, out1)
 
     # Within a launch: every output's elements are fully unique. The loop
@@ -175,7 +175,7 @@ end
     # `DeviceRNG()` streams, and the in-loop default usage. The
     # explicitly-seeded `c` stream stays byte-identical.
     out2 = alloc()
-    ct.launch(k_multi, n_blocks, out2.d1, out2.d2, out2.a, out2.b, out2.c, out2.loop)
+    @cuda backend=cuTile blocks=n_blocks k_multi(out2.d1, out2.d2, out2.a, out2.b, out2.c, out2.loop)
     arr2 = map(Array, out2)
 
     @test arr1.d1   != arr2.d1
@@ -200,8 +200,8 @@ end
     n_blocks = 16
     out1 = CUDA.zeros(Float32, n_blocks * 16)
     out2 = CUDA.zeros(Float32, n_blocks * 16)
-    ct.launch(k, n_blocks, out1, UInt32(42))
-    ct.launch(k, n_blocks, out2, UInt32(42))
+    @cuda backend=cuTile blocks=n_blocks k(out1, UInt32(42))
+    @cuda backend=cuTile blocks=n_blocks k(out2, UInt32(42))
     @test Array(out1) == Array(out2)
 end
 
@@ -215,7 +215,7 @@ end
         ct.store(out, pid, rand(Float32, (512,)))
         return
     end
-    out = CUDA.zeros(Float32, 512); ct.launch(k, 1, out)
+    out = CUDA.zeros(Float32, 512); @cuda backend=cuTile k(out)
     expected = Array(Random.rand(ct.RNG(UInt32(42), UInt32(0)), Float32, 512))
     @test Array(out) == expected
 end
@@ -291,7 +291,7 @@ mean_tol(::Type{T}) where {T} =
         o1 = CUDA.zeros(T, n_blocks)
         o2 = CUDA.zeros(T, n_blocks * m)
         o3 = CUDA.zeros(T, n_blocks * m)
-        ct.launch(k, n_blocks, o1, o2, o3, T, ct.Constant(dims))
+        @cuda backend=cuTile blocks=n_blocks k(o1, o2, o3, T, ct.Constant(dims))
 
         for v in (Array(o1), Array(o2), Array(o3))
             @test eltype(v) === T
@@ -315,7 +315,7 @@ mean_tol(::Type{T}) where {T} =
         end
         n_blocks = 64
         o = CUDA.zeros(Float32, n_blocks * 16)
-        ct.launch(k, n_blocks, o)
+        @cuda backend=cuTile blocks=n_blocks k(o)
         v = Array(o)
         @test eltype(v) === Float32
         @test all(in_range, v)
@@ -332,7 +332,7 @@ mean_tol(::Type{T}) where {T} =
             ct.store(out, pid, f(Float32, (512,)))
             return
         end
-        out = CUDA.zeros(Float32, 512); ct.launch(k, 1, out)
+        out = CUDA.zeros(Float32, 512); @cuda backend=cuTile k(out)
         @test Array(out) == Array(f(ct.RNG(UInt32(42), UInt32(0)), Float32, 512))
     end
 end

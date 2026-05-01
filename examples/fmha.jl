@@ -12,6 +12,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 using CUDA, NVTX
+using cuTile: cuTile
 import cuTile as ct
 
 const INV_LOG_2 = Float32(1.0 / log(2.0))
@@ -159,13 +160,7 @@ function cutile_fmha(Q::CuArray{T}, K::CuArray{T}, V::CuArray{T};
     grid_x = cld(SeqLen_Q, tile_m)
     grid_y = Batch * Heads
 
-    ct.launch(fmha_kernel, (grid_x, grid_y),
-              Q, K, V, Out,
-              qk_scale, Int32(input_pos),
-              ct.Constant(D_k), ct.Constant(Heads),
-              ct.Constant(tile_m), ct.Constant(tile_n),
-              ct.Constant(query_group_size),
-              ct.Constant(causal), ct.Constant(even_k))
+    @cuda backend=cuTile blocks=(grid_x, grid_y) fmha_kernel(Q, K, V, Out, qk_scale, Int32(input_pos), ct.Constant(D_k), ct.Constant(Heads), ct.Constant(tile_m), ct.Constant(tile_n), ct.Constant(query_group_size), ct.Constant(causal), ct.Constant(even_k))
 
     return Out
 end

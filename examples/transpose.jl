@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 using CUDA, NVTX
+using cuTile: cuTile
 import cuTile as ct
 
 # Transpose kernel with TileArray and constant tile sizes
@@ -38,16 +39,14 @@ function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     grid = (cld(m, tm), cld(n, tn))
 
     CUDA.@sync for _ in 1:warmup
-        ct.launch(transpose_kernel, grid, x, y,
-                  ct.Constant(tm), ct.Constant(tn))
+        @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
     end
 
     times = Float64[]
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed ct.launch(transpose_kernel, grid, x, y,
-                                            ct.Constant(tm), ct.Constant(tn))
+                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
                 push!(times, t * 1000)  # ms
             end
         end

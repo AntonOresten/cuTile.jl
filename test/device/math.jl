@@ -21,7 +21,7 @@ using CUDA
     b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
     c = CUDA.zeros(Int32, n)
 
-    ct.launch(bitwise_and_kernel, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) bitwise_and_kernel(a, b, c)
 
     @test Array(c) == Array(a) .& Array(b)
 end
@@ -42,7 +42,7 @@ end
     b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
     c = CUDA.zeros(Int32, n)
 
-    ct.launch(bitwise_or_kernel, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) bitwise_or_kernel(a, b, c)
 
     @test Array(c) == Array(a) .| Array(b)
 end
@@ -63,7 +63,7 @@ end
     b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
     c = CUDA.zeros(Int32, n)
 
-    ct.launch(bitwise_xor_kernel, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) bitwise_xor_kernel(a, b, c)
 
     @test Array(c) == Array(a) .⊻ Array(b)
 end
@@ -81,7 +81,7 @@ end
     a = CuArray(rand(Int32(0):Int32(0x0fff_ffff), n))
     b = CUDA.zeros(Int32, n)
 
-    ct.launch(shift_left_kernel, cld(n, tile_size), a, b)
+    @cuda backend=cuTile blocks=cld(n, tile_size) shift_left_kernel(a, b)
 
     @test Array(b) == Array(a) .<< Int32(4)
 end
@@ -99,7 +99,7 @@ end
     a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
     b = CUDA.zeros(Int32, n)
 
-    ct.launch(shift_right_kernel, cld(n, tile_size), a, b)
+    @cuda backend=cuTile blocks=cld(n, tile_size) shift_right_kernel(a, b)
 
     @test Array(b) == Array(a) .>> Int32(8)
 end
@@ -121,7 +121,7 @@ end
     b = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
     c = CUDA.zeros(Int32, n)
 
-    ct.launch(combined_bitwise_kernel, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) combined_bitwise_kernel(a, b, c)
 
     @test Array(c) == (Array(a) .& Array(b)) .| (Array(a) .⊻ Array(b))
 end
@@ -139,7 +139,7 @@ end
     a = CuArray(rand(Int32(0):Int32(0x7fff_ffff), n))
     b = CUDA.zeros(Int32, n)
 
-    ct.launch(bitwise_not_kernel, cld(n, tile_size), a, b)
+    @cuda backend=cuTile blocks=cld(n, tile_size) bitwise_not_kernel(a, b)
 
     @test Array(b) == .~Array(a)
 end
@@ -160,7 +160,7 @@ end
     CUDA.@allowscalar a[1:16:end] .= NaN32
     out = CUDA.zeros(Float32, n)
 
-    ct.launch(isnan_kernel, cld(n, 16), a, out)
+    @cuda backend=cuTile blocks=cld(n, 16) isnan_kernel(a, out)
 
     @test Array(out) == Float32.(isnan.(Array(a)))
 end

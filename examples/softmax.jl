@@ -8,6 +8,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 using CUDA, NVTX
+using cuTile: cuTile
 import cuTile as ct
 
 #=============================================================================
@@ -132,12 +133,11 @@ function run(data; tile_tma::Int=next_power_of_2(data.N),
     (; input, output_tma, output_chunked, M, N) = data
 
     function run_tma()
-        ct.launch(softmax_tma_kernel, M, output_tma, input, ct.Constant(tile_tma))
+        @cuda backend=cuTile blocks=M softmax_tma_kernel(output_tma, input, ct.Constant(tile_tma))
     end
 
     function run_chunked()
-        ct.launch(softmax_chunked_kernel, M, output_chunked, input,
-                  ct.Constant(N), ct.Constant(tile_chunked))
+        @cuda backend=cuTile blocks=M softmax_chunked_kernel(output_chunked, input, ct.Constant(N), ct.Constant(tile_chunked))
     end
 
     # Warmup

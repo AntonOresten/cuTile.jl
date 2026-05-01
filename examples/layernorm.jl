@@ -6,6 +6,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 using CUDA, NVTX
+using cuTile: cuTile
 import cuTile as ct
 
 #=============================================================================
@@ -290,19 +291,16 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
        M, N, eps, GROUP_SIZE_M) = data
 
     function run_fwd()
-        ct.launch(layer_norm_fwd, M, X, W, B, Y, Mean, Rstd,
-                  ct.Constant(eps), ct.Constant(TILE_N))
+        @cuda backend=cuTile blocks=M layer_norm_fwd(X, W, B, Y, Mean, Rstd, ct.Constant(eps), ct.Constant(TILE_N))
     end
 
     function run_bwd()
         fill!(DW_partial, 0)
         fill!(DB_partial, 0)
         fill!(Locks, 0)
-        ct.launch(layer_norm_bwd_dx_partial_dwdb, M, DX, DY, DW_partial, DB_partial, X, W,
-                  Mean, Rstd, Locks, ct.Constant(GROUP_SIZE_M), ct.Constant(TILE_N))
+        @cuda backend=cuTile blocks=M layer_norm_bwd_dx_partial_dwdb(DX, DY, DW_partial, DB_partial, X, W, Mean, Rstd, Locks, ct.Constant(GROUP_SIZE_M), ct.Constant(TILE_N))
         num_tiles_n = cld(N, TILE_N)
-        ct.launch(layer_norm_bwd_dwdb, num_tiles_n, DW_partial, DB_partial, FINAL_DW, FINAL_DB,
-                  ct.Constant(TILE_M), ct.Constant(TILE_N))
+        @cuda backend=cuTile blocks=num_tiles_n layer_norm_bwd_dwdb(DW_partial, DB_partial, FINAL_DW, FINAL_DB, ct.Constant(TILE_M), ct.Constant(TILE_N))
     end
 
     # Warmup

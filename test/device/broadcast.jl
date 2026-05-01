@@ -23,7 +23,7 @@ for (name, kernel_expr, cpu_expr) in [
         end
         a = CUDA.rand(Float32, 1024) .+ 0.1f0
         b = CUDA.zeros(Float32, 1024)
-        ct.launch($sym, cld(1024, 16), a, b)
+        @cuda backend=cuTile blocks=cld(1024, 16) $sym(a, b)
         @test Array(b) ≈ $cpu_expr
     end
 end
@@ -53,7 +53,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(broadcast_1d_kernel, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) broadcast_1d_kernel(a, b, c)
 
     # Each output element should be a[1] + b[i]
     a_cpu = Array(a)
@@ -80,7 +80,7 @@ end
     b = CUDA.rand(Float32, m, 1)   # Column vector
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(broadcast_2d_kernel, 1, a, b, c)
+    @cuda backend=cuTile broadcast_2d_kernel(a, b, c)
 
     # Result should be outer sum: c[i,j] = a[1,j] + b[i,1]
     a_cpu = Array(a)
@@ -105,7 +105,7 @@ end
     b = CUDA.rand(Float32, 1, 8)
     c = CUDA.zeros(Float32, 4, 8)
 
-    ct.launch(broadcast_mul_kernel, 1, a, b, c)
+    @cuda backend=cuTile broadcast_mul_kernel(a, b, c)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -132,7 +132,7 @@ end
     b = CUDA.rand(Float32, 1)  # Single element
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(broadcast_sub_kernel, cld(n, tile_size), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, tile_size) broadcast_sub_kernel(a, b, c)
 
     a_cpu = Array(a)
     b_cpu = Array(b)
@@ -157,7 +157,7 @@ end
     scale = CUDA.rand(Float32, 1, n) .+ 0.1f0  # Non-zero scale factors
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(broadcast_div_kernel, 1, a, scale, c)
+    @cuda backend=cuTile broadcast_div_kernel(a, scale, c)
 
     a_cpu = Array(a)
     scale_cpu = Array(scale)
@@ -181,7 +181,7 @@ end
     a = CUDA.rand(Float32, 1, n)
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(broadcast_to_kernel, 1, a, c)
+    @cuda backend=cuTile broadcast_to_kernel(a, c)
 
     a_cpu = Array(a)
     c_cpu = Array(c)
@@ -206,7 +206,7 @@ end
     b = CUDA.rand(Float32, m, n)
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(broadcast_1d_2d_kernel, 1, a, b, c)
+    @cuda backend=cuTile broadcast_1d_2d_kernel(a, b, c)
 
     expected = Array(a) .+ Array(b)  # Julia: (64,) broadcasts along dim 1
     @test Array(c) ≈ expected
@@ -236,7 +236,7 @@ for (name, op1, op2) in [
         b = CUDA.rand(Float32, n)
         out1 = CUDA.zeros(Float32, n)
         out2 = CUDA.zeros(Float32, n)
-        ct.launch($sym, cld(n, 16), a, b, out1, out2)
+        @cuda backend=cuTile blocks=cld(n, 16) $sym(a, b, out1, out2)
         @test Array(out1) ≈ Float32.(broadcast($op1, Array(a), Array(b)))
         @test Array(out2) ≈ Float32.(broadcast($op2, Array(a), Array(b)))
     end
@@ -262,7 +262,7 @@ end
     out_eq = CUDA.zeros(Float32, n)
     out_ne = CUDA.zeros(Float32, n)
 
-    ct.launch(cmp_eq_ne_kernel, cld(n, 16), a, b, out_eq, out_ne)
+    @cuda backend=cuTile blocks=cld(n, 16) cmp_eq_ne_kernel(a, b, out_eq, out_ne)
 
     @test Array(out_eq) ≈ Float32.(Array(a) .== Array(b))
     @test Array(out_ne) ≈ Float32.(Array(a) .!= Array(b))
@@ -291,7 +291,7 @@ end
             CUDA.@allowscalar a[1:16:end] .= NaN32
             CUDA.@allowscalar b[2:16:end] .= NaN32
             out = CUDA.zeros(Float32, n)
-            ct.launch($sym, cld(n, 16), a, b, out)
+            @cuda backend=cuTile blocks=cld(n, 16) $sym(a, b, out)
             @test Array(out) == Float32.(broadcast($op, Array(a), Array(b)))
         end
     end
@@ -310,7 +310,7 @@ end
     a = CUDA.rand(Float32, n)
     out = CUDA.zeros(Float32, n)
 
-    ct.launch(cmp_scalar_kernel, cld(n, 16), a, out)
+    @cuda backend=cuTile blocks=cld(n, 16) cmp_scalar_kernel(a, out)
 
     @test Array(out) ≈ Float32.(Array(a) .> 0.5f0)
 end
@@ -334,7 +334,7 @@ end
     b = CUDA.rand(Float32, n) .+ 0.5f0
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(pow_tt_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) pow_tt_kernel(a, b, c)
 
     @test Array(c) ≈ Array(a) .^ Array(b) rtol=1e-4
 end
@@ -351,7 +351,7 @@ end
     a = CUDA.rand(Float32, n) .+ 0.1f0
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(pow_ts_kernel, cld(n, 16), a, c)
+    @cuda backend=cuTile blocks=cld(n, 16) pow_ts_kernel(a, c)
 
     @test Array(c) ≈ Array(a) .^ 2.0f0 rtol=1e-4
 end
@@ -377,7 +377,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(where_same_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) where_same_kernel(a, b, c)
 
     @test Array(c) ≈ ifelse.(Array(a) .> Array(b), Array(a), Array(b)) rtol=1e-5
 end
@@ -396,7 +396,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(where_scalar_y_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) where_scalar_y_kernel(a, b)
 
     @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, Array(a), 0.0f0) rtol=1e-5
 end
@@ -415,7 +415,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(where_scalar_x_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) where_scalar_x_kernel(a, b)
 
     @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, 1.0f0, Array(a)) rtol=1e-5
 end
@@ -433,7 +433,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m, n)
 
-    ct.launch(where_broadcast_kernel, 1, a, b)
+    @cuda backend=cuTile where_broadcast_kernel(a, b)
 
     a_cpu = Array(a)
     mask_cpu = a_cpu[1:1, :] .> 0.5f0
@@ -457,7 +457,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(ifelse_same_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) ifelse_same_kernel(a, b, c)
 
     @test Array(c) ≈ ifelse.(Array(a) .> Array(b), Array(a), Array(b)) rtol=1e-5
 end
@@ -475,7 +475,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(ifelse_scalar_y_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) ifelse_scalar_y_kernel(a, b)
 
     @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, Array(a), 0.0f0) rtol=1e-5
 end
@@ -493,7 +493,7 @@ end
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(ifelse_both_scalar_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) ifelse_both_scalar_kernel(a, b)
 
     @test Array(b) ≈ ifelse.(Array(a) .> 0.5f0, 1.0f0, 0.0f0) rtol=1e-5
 end
@@ -511,7 +511,7 @@ end
     a = CUDA.rand(Float32, m, n)
     b = CUDA.zeros(Float32, m, n)
 
-    ct.launch(ifelse_broadcast_kernel, 1, a, b)
+    @cuda backend=cuTile ifelse_broadcast_kernel(a, b)
 
     a_cpu = Array(a)
     mask_cpu = a_cpu[:, 1:1] .> 0.5f0
@@ -539,7 +539,7 @@ end # where / ifelse broadcasting
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(max_float_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) max_float_kernel(a, b, c)
 
     @test Array(c) ≈ max.(Array(a), Array(b)) rtol=1e-5
 end
@@ -560,7 +560,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(min_float_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) min_float_kernel(a, b, c)
 
     @test Array(c) ≈ min.(Array(a), Array(b)) rtol=1e-5
 end
@@ -578,7 +578,7 @@ end
     a = CUDA.rand(Float32, n) .- 0.5f0  # Mix of positive and negative
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(relu_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) relu_kernel(a, b)
 
     @test Array(b) ≈ max.(Array(a), 0.0f0) rtol=1e-5
 end
@@ -596,7 +596,7 @@ end
     a = CUDA.rand(Float32, n) .* 2.0f0  # Values in [0, 2]
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(clamp_max_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) clamp_max_kernel(a, b)
 
     @test Array(b) ≈ min.(Array(a), 1.0f0) rtol=1e-5
 end
@@ -617,7 +617,7 @@ end
     b = CuArray(rand(Int32(-100):Int32(100), n))
     c = CUDA.zeros(Int32, n)
 
-    ct.launch(max_int_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) max_int_kernel(a, b, c)
 
     @test Array(c) == max.(Array(a), Array(b))
 end
@@ -638,7 +638,7 @@ end
     b = CuArray(rand(Int32(-100):Int32(100), n))
     c = CUDA.zeros(Int32, n)
 
-    ct.launch(min_int_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) min_int_kernel(a, b, c)
 
     @test Array(c) == min.(Array(a), Array(b))
 end
@@ -658,7 +658,7 @@ end
     b = CUDA.rand(Float32, 1, n)
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(max_broadcast_kernel, 1, a, b, c)
+    @cuda backend=cuTile max_broadcast_kernel(a, b, c)
 
     @test Array(c) ≈ max.(Array(a), Array(b)) rtol=1e-5
 end
@@ -685,7 +685,7 @@ end # max / min broadcasting
     c = CUDA.rand(Float32, n)
     d = CUDA.zeros(Float32, n)
 
-    ct.launch(fma_same_kernel, cld(n, 16), a, b, c, d)
+    @cuda backend=cuTile blocks=cld(n, 16) fma_same_kernel(a, b, c, d)
 
     @test Array(d) ≈ fma.(Array(a), Array(b), Array(c)) rtol=1e-5
 end
@@ -706,7 +706,7 @@ end
     b = CUDA.rand(Float32, n)
     c = CUDA.zeros(Float32, n)
 
-    ct.launch(fma_scalar_c_kernel, cld(n, 16), a, b, c)
+    @cuda backend=cuTile blocks=cld(n, 16) fma_scalar_c_kernel(a, b, c)
 
     @test Array(c) ≈ fma.(Array(a), Array(b), 1.0f0) rtol=1e-5
 end
@@ -728,7 +728,7 @@ end
     bias = CUDA.rand(Float32, 1, n)
     c = CUDA.zeros(Float32, m, n)
 
-    ct.launch(fma_broadcast_kernel, 1, a, b, bias, c)
+    @cuda backend=cuTile fma_broadcast_kernel(a, b, bias, c)
 
     @test Array(c) ≈ fma.(Array(a), Array(b), Array(bias)) rtol=1e-5
 end
@@ -749,7 +749,7 @@ end # fma broadcasting
     a = CUDA.rand(Float32, n)
     b = CUDA.zeros(Float16, n)
 
-    ct.launch(convert_f16_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) convert_f16_kernel(a, b)
 
     @test Array(b) == Float16.(Array(a))
 end
@@ -766,7 +766,7 @@ end
     a = CUDA.rand(Float16, n)
     b = CUDA.zeros(Float32, n)
 
-    ct.launch(convert_f32_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) convert_f32_kernel(a, b)
 
     @test Array(b) == Float32.(Array(a))
 end
@@ -783,7 +783,7 @@ end
     a = CuArray(Float32.(rand(-100:100, n)) .+ 0.7f0)
     b = CUDA.zeros(Int32, n)
 
-    ct.launch(unsafe_trunc_i32_kernel, cld(n, 16), a, b)
+    @cuda backend=cuTile blocks=cld(n, 16) unsafe_trunc_i32_kernel(a, b)
 
     @test Array(b) == unsafe_trunc.(Int32, Array(a))
 end
@@ -805,7 +805,7 @@ end # type argument broadcasting
         a = CUDA.rand(Float32, n)
         b = CUDA.rand(Float32, n)
         c = CUDA.zeros(Float32, n)
-        ct.launch(map_add_kernel, cld(n, 16), a, b, c)
+        @cuda backend=cuTile blocks=cld(n, 16) map_add_kernel(a, b, c)
         @test Array(c) ≈ Array(a) + Array(b)
     end
 
@@ -825,7 +825,7 @@ end # type argument broadcasting
         b = CUDA.rand(Float32, n)
         c = CUDA.rand(Float32, n)
         d = CUDA.zeros(Float32, n)
-        ct.launch(map_fma_kernel, cld(n, 16), a, b, c, d)
+        @cuda backend=cuTile blocks=cld(n, 16) map_fma_kernel(a, b, c, d)
         @test Array(d) ≈ fma.(Array(a), Array(b), Array(c))
     end
 
@@ -845,7 +845,7 @@ end # type argument broadcasting
         b = CUDA.rand(Float32, n)
         c = CUDA.rand(Float32, n)
         d = CUDA.zeros(Float32, n)
-        ct.launch(nested_bc_kernel, cld(n, 16), a, b, c, d)
+        @cuda backend=cuTile blocks=cld(n, 16) nested_bc_kernel(a, b, c, d)
         @test Array(d) ≈ Array(a) .+ Array(b) .* Array(c)
     end
 
@@ -864,7 +864,7 @@ end # type argument broadcasting
         a = CUDA.rand(Float32, n)
         b = CUDA.rand(Float32, n)
         c = CUDA.zeros(Float32, n)
-        ct.launch(ifelse_bc_kernel, cld(n, 16), a, b, c)
+        @cuda backend=cuTile blocks=cld(n, 16) ifelse_bc_kernel(a, b, c)
         @test Array(c) ≈ max.(Array(a), Array(b))
     end
 end

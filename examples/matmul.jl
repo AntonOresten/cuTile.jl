@@ -4,6 +4,7 @@
 
 using CUDA, NVTX
 using LinearAlgebra
+using cuTile: cuTile
 import cuTile as ct
 
 # 2D swizzle for better L2 cache locality
@@ -81,15 +82,13 @@ function run(data; tm::Int=64, tn::Int=64, tk::Int=64, nruns::Int=1, warmup::Int
     (; A, B, C, M, N, K) = data
     grid = cld(M, tm) * cld(N, tn)
 
-    ct.launch(matmul_kernel, grid, A, B, C,
-              ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+    @cuda backend=cuTile blocks=grid matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
 
     times = Float64[]
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed ct.launch(matmul_kernel, grid, A, B, C,
-                                            ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
                 push!(times, t * 1000)  # ms
             end
         end

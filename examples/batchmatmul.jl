@@ -6,6 +6,7 @@
 # This provides optimal memory access with Julia's column-major layout.
 
 using CUDA, NVTX
+using cuTile: cuTile
 import cuTile as ct
 
 # Batch matrix multiplication kernel
@@ -77,16 +78,14 @@ function run(data; tm::Int=128, tn::Int=128, tk::Int=64, nruns::Int=1, warmup::I
     grid = (cld(M, tm), cld(N, tn), Batch)
 
     CUDA.@sync for _ in 1:warmup
-        ct.launch(batch_matmul_kernel, grid, A, B, C,
-                  ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+        @cuda backend=cuTile blocks=grid batch_matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
     end
 
     times = Float64[]
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed ct.launch(batch_matmul_kernel, grid, A, B, C,
-                                            ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
+                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid batch_matmul_kernel(A, B, C, ct.Constant(tm), ct.Constant(tn), ct.Constant(tk))
                 push!(times, t * 1000)  # ms
             end
         end
