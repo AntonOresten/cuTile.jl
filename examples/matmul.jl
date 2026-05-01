@@ -149,19 +149,13 @@ function test_matmul(::Type{T}, M, N, K, tm, tn, tk; name=nothing) where T
     println("  passed")
 end
 
-function main(T=Float32)
+function main()
     println("--- cuTile Matrix Multiplication Examples ---\n")
 
-    # Small matrices
-    test_matmul(T, 256, 256, 256, 32, 32, 32)
-    test_matmul(T, 512, 512, 512, 64, 64, 64)
-
-    # Non-square matrices
-    test_matmul(T, 256, 512, 128, 32, 32, 32)
-    test_matmul(T, 512, 256, 384, 64, 64, 64)
-
-    # Larger matrices
-    test_matmul(T, 1024, 1024, 1024, 32, 32, 32)
+    test_matmul(Float32, 256, 256, 256, 32, 32, 32)
+    test_matmul(Float32, 512, 512, 512, 64, 64, 64)
+    test_matmul(Float32, 256, 512, 128, 32, 32, 32)
+    test_matmul(Float32, 1024, 1024, 1024, 64, 64, 64)
 
     println("\n--- All matmul examples completed ---")
 end

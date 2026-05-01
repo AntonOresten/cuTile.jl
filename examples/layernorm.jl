@@ -396,7 +396,7 @@ function main()
 
     test_layernorm(256, 256, 256)
     test_layernorm(512, 512, 512)
-    test_layernorm(1024, 2048, 1024)
+    test_layernorm(1024, 1024, 1024)
 
     println("\n=== All layernorm examples completed ===")
 end

@@ -297,24 +297,23 @@ end
  Main
 =============================================================================#
 
-function main()
-    println("--- Running cuTile FFT Example ---")
-
-    data = prepare()
-    println("  Configuration:")
-    println("    FFT Size (N): $(data.n)")
-    println("    Batch Size: $(data.batch)")
-    println("    FFT Factors: $(data.factors)")
-    println("    Atom Packing Dim: $(data.D)")
-    println("\nInput data shape: $(size(data.input)), dtype: $(eltype(data.input))")
-
+function test_fft(batch, factors; name=nothing)
+    n = prod(factors)
+    name = something(name, "fft batch=$batch, size=$n, factors=$factors")
+    println("--- $name ---")
+    data = prepare(; batch, factors)
     result = run(data)
-    println("cuTile FFT Output shape: $(size(result.output)), dtype: $(eltype(result.output))")
-
     verify(data, result)
-    println("\n✓ Correctness check PASSED")
+    println("  passed")
+end
 
-    println("\n--- cuTile FFT example execution complete ---")
+function main()
+    println("--- cuTile FFT Examples ---\n")
+
+    test_fft(64, (8, 8, 8))
+    test_fft(32, (8, 8, 8))
+
+    println("\n--- All FFT examples completed ---")
 end
 
 isinteractive() || main()

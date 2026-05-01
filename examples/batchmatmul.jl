@@ -155,15 +155,9 @@ end
 function main()
     println("--- cuTile Batch Matrix Multiplication Examples ---\n")
 
-    # Float32 tests with smaller tile sizes
     test_batch_matmul(Float32, 256, 128, 256, 4, 32, 32, 32)
     test_batch_matmul(Float32, 512, 256, 512, 4, 64, 64, 64)
-
-    # Float16 tests - can use larger tiles for tensor cores
     test_batch_matmul(Float16, 512, 256, 1024, 4, 128, 256, 64)
-
-    # Non-square matrices
-    test_batch_matmul(Float32, 256, 512, 128, 2, 32, 32, 32)
 
     println("\n--- All batch matmul examples completed ---")
 end

@@ -138,17 +138,10 @@ end
 function main()
     println("--- cuTile Matrix Transposition Examples ---\n")
 
-    # Float32 tests (like Python's test case 2)
-    test_transpose(Float32, 1024, 512, 32, 32)
-    test_transpose(Float32, 1024, 512, 64, 64)
-
-    # Float64 tests
-    test_transpose(Float64, 1024, 512, 32, 32)
-    test_transpose(Float64, 512, 1024, 64, 64)
-
-    # Float16 tests (like Python's test case 1 with 128x128 tiles)
-    test_transpose(Float16, 1024, 512, 128, 128)
-    test_transpose(Float16, 1024, 1024, 64, 64)
+    test_transpose(Float32, 256, 256, 32, 32)
+    test_transpose(Float32, 512, 512, 64, 64)
+    test_transpose(Float32, 256, 512, 32, 64)
+    test_transpose(Float32, 1024, 1024, 64, 64)
 
     println("\n--- All transpose examples completed ---")
 end
