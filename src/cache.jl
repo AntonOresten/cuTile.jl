@@ -11,26 +11,38 @@ cuTile Python's SQLite cache (`cuda.tile._cache`).
 
 The implementation talks to LMDB directly via `LMDB_jll`. The public
 surface is intentionally narrow (`open`, `close`, `get`, `put!`,
-`compute_key`, plus the lazy `global_cache` accessor) so we can swap the
-backend to `LMDB.jl` later without touching call sites.
+`compute_key`, `evict_lru!`, plus the lazy `global_cache` accessor) so we
+can swap the backend to `LMDB.jl` later without touching call sites.
 
 # Layout
-- A single LMDB env at `\$(scratchspace)/disk_cache/`, where
-  `\$(scratchspace)` is the Scratch.jl-managed directory for cuTile
-  (typically `\$DEPOT/scratchspaces/<cuTile-UUID>/disk_cache`). The
-  directory contains exactly two files (`data.mdb`, `lock.mdb`); wiping
-  the cache means `rm -rf` of that directory or `Scratch.delete_scratch!`.
-- A single (unnamed) main database inside the env.
-- Key = `sha256(SCHEMA ‖ toolkit_version ‖ sm_arch ‖ opt_level ‖ bytecode)`.
+- A single LMDB env at `\$(scratchspace)/disk_cache/`. The directory
+  contains `data.mdb` + `lock.mdb`; wiping the cache means `rm -rf` of
+  that directory or `Scratch.delete_scratch!`.
+- Keys: `sha256(toolkit_version ‖ sm_arch ‖ opt_level ‖ bytecode)` —
+  any input change produces a fresh key, so old-toolkit entries simply
+  never match on lookup.
+- Values: 8 bytes little-endian `atime_ns` followed by the CUBIN bytes.
+  The atime drives the LRU eviction policy.
 
-The toolkit version lives in the hash, not the path, so a single env
-holds entries from any number of toolkit versions safely. Old-toolkit
-entries become unreachable garbage when the toolkit is upgraded, but
-they're bounded by the env's `mapsize` cap. See [Eviction](#Eviction)
-below for the strategy when the cap is hit.
+# Eviction
+LMDB provides no built-in cache replacement; `mdb_put` returns
+`MDB_MAP_FULL` when the map is exhausted. We prune *before* hitting that
+point (deletes are also copy-on-write in LMDB and need free pages, so
+draining a fully-saturated map is unreliable). On every `put!`:
 
-The combination of content-addressable keys and per-version envs makes
-stale hits structurally impossible.
+1. Compute env utilization via `mdb_env_info` + the cached page size.
+2. If above [`HIGH_WATER`](@ref) (90%), call [`evict_lru!`](@ref)
+   targeting [`LOW_WATER`](@ref) (75%).
+3. Then write the new entry.
+
+`evict_lru!` cursor-walks all entries collecting `(key, atime, size)`,
+sorts by atime ascending, and deletes the oldest in batches of ~100 per
+write txn (so freed pages become available within a couple of generations
+— LMDB's COW semantics need that headroom).
+
+Atime refresh on a hit is throttled to at most once per session per key,
+avoiding the write-amplification that an unconditional refresh would
+cause on hot kernels.
 """
 module DiskCache
 
@@ -50,10 +62,33 @@ const MDB_NOOVERWRITE = Cuint(0x00000010)
 const MDB_SUCCESS     = Cint(0)
 const MDB_KEYEXIST    = Cint(-30799)
 const MDB_NOTFOUND    = Cint(-30798)
+const MDB_MAP_FULL    = Cint(-30792)
+
+# MDB_cursor_op values (from lmdb.h)
+const MDB_FIRST = Cuint(0)
+const MDB_NEXT  = Cuint(8)
 
 struct MDB_val
     mv_size::Csize_t
     mv_data::Ptr{Cvoid}
+end
+
+struct MDB_envinfo
+    me_mapaddr::Ptr{Cvoid}
+    me_mapsize::Csize_t
+    me_last_pgno::Csize_t
+    me_last_txnid::Csize_t
+    me_maxreaders::Cuint
+    me_numreaders::Cuint
+end
+
+struct MDB_stat
+    ms_psize::Cuint
+    ms_depth::Cuint
+    ms_branch_pages::Csize_t
+    ms_leaf_pages::Csize_t
+    ms_overflow_pages::Csize_t
+    ms_entries::Csize_t
 end
 
 @inline liblmdb() = LMDB_jll.liblmdb
@@ -79,12 +114,16 @@ writers internally; readers use `MDB_NOTLS` so they're decoupled from
 the OS thread).
 """
 mutable struct Cache
-    env::Ptr{Cvoid}     # MDB_env*
-    dbi::Cuint          # main DB handle, valid for the env's lifetime
+    env::Ptr{Cvoid}                  # MDB_env*
+    dbi::Cuint                       # main DB handle
+    psize::Int                       # LMDB page size in bytes (cached at open)
     path::String
+    refreshed::Set{Vector{UInt8}}    # keys whose atime we already bumped this session
+    state_lock::ReentrantLock        # guards `refreshed` + serializes evictions
 
-    function Cache(env::Ptr{Cvoid}, dbi::Cuint, path::AbstractString)
-        c = new(env, dbi, String(path))
+    function Cache(env::Ptr{Cvoid}, dbi::Cuint, psize::Integer, path::AbstractString)
+        c = new(env, dbi, Int(psize), String(path),
+                Set{Vector{UInt8}}(), ReentrantLock())
         finalizer(close, c)
         return c
     end
@@ -138,18 +177,19 @@ function open(path::AbstractString; mapsize::Integer = (Csize_t(1) << 30),
                     env, path, flags, Cushort(0o644)),
               "mdb_env_open($(repr(path)))")
 
-        dbi = open_main_db!(env)
-        return Cache(env, dbi, path)
+        dbi, psize = open_main_db_and_stat!(env)
+        return Cache(env, dbi, psize, path)
     catch
         ccall((:mdb_env_close, liblmdb()), Cvoid, (Ptr{Cvoid},), env)
         rethrow()
     end
 end
 
-# Get a reusable handle to the env's main (unnamed) DB. The handle becomes
-# valid in subsequent transactions only after the opening txn commits, so
-# we always do this through a fresh dummy write txn.
-function open_main_db!(env::Ptr{Cvoid})
+# Get a reusable handle to the env's main (unnamed) DB and read out the page
+# size in the same dummy write txn. The dbi handle is only valid in
+# subsequent transactions after the opening txn commits, so we always go
+# through this dance.
+function open_main_db_and_stat!(env::Ptr{Cvoid})
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
     check(ccall((:mdb_txn_begin, liblmdb()), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
@@ -165,16 +205,98 @@ function open_main_db!(env::Ptr{Cvoid})
         ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
         check(ret, "mdb_dbi_open (main)")
     end
+    dbi = dbi_ref[]
+
+    stat_ref = Ref{MDB_stat}()
+    ret = ccall((:mdb_stat, liblmdb()), Cint,
+                (Ptr{Cvoid}, Cuint, Ref{MDB_stat}), txn, dbi, stat_ref)
+    if !iszero(ret)
+        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        check(ret, "mdb_stat")
+    end
+    psize = Int(stat_ref[].ms_psize)
 
     check(ccall((:mdb_txn_commit, liblmdb()), Cint, (Ptr{Cvoid},), txn),
           "mdb_txn_commit (init)")
 
-    return dbi_ref[]
+    return dbi, psize
+end
+
+"""
+    env_info(cache::Cache) -> NamedTuple
+
+Snapshot of the env's *live* page count and configured map size. Used
+by the eviction policy to decide whether to prune.
+
+Note that `mdb_env_info`'s `me_last_pgno` is a monotonic high-water
+mark — it doesn't drop when entries get deleted. Eviction relies on
+`mdb_stat`'s live-page accounting (branch + leaf + overflow), which
+*does* shrink after a delete commits. Cost is one short read txn —
+~10 µs.
+"""
+function env_info(cache::Cache)
+    info_ref = Ref{MDB_envinfo}()
+    check(ccall((:mdb_env_info, liblmdb()), Cint,
+                (Ptr{Cvoid}, Ref{MDB_envinfo}),
+                cache.env, info_ref),
+          "mdb_env_info")
+    mapsize = Int(info_ref[].me_mapsize)
+
+    txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
+    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+                (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
+                cache.env, C_NULL, MDB_RDONLY, txn_ref),
+          "mdb_txn_begin (stat)")
+    txn = txn_ref[]
+    stat_ref = Ref{MDB_stat}()
+    try
+        check(ccall((:mdb_stat, liblmdb()), Cint,
+                    (Ptr{Cvoid}, Cuint, Ref{MDB_stat}),
+                    txn, cache.dbi, stat_ref),
+              "mdb_stat")
+    finally
+        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+    end
+    s = stat_ref[]
+    live_pages = Int(s.ms_branch_pages) + Int(s.ms_leaf_pages) + Int(s.ms_overflow_pages)
+    used_bytes = live_pages * cache.psize
+    return (; mapsize, used_bytes, entries = Int(s.ms_entries))
+end
+
+@inline utilization(cache::Cache) = let i = env_info(cache); i.used_bytes / i.mapsize end
+
+# ===========================================================================
+# Value framing (atime prefix)
+# ===========================================================================
+
+const _ATIME_PREFIX = 8  # bytes for a UInt64 little-endian timestamp
+
+@inline function pack_value(atime::UInt64, value::Vector{UInt8})
+    out = Vector{UInt8}(undef, _ATIME_PREFIX + length(value))
+    GC.@preserve out begin
+        unsafe_store!(Ptr{UInt64}(pointer(out)), htol(atime))
+    end
+    @inbounds copyto!(out, _ATIME_PREFIX + 1, value, 1, length(value))
+    return out
+end
+
+@inline function read_atime(p::Ptr{UInt8})
+    return ltoh(unsafe_load(Ptr{UInt64}(p)))
 end
 
 # ===========================================================================
 # get / put!
 # ===========================================================================
+
+# Eviction trigger / target as fractions of mapsize. Margins live here for
+# easy tuning; values are intentionally Howard-Chu-recommended-ish (he
+# suggests pruning at ~90%).
+const HIGH_WATER = 0.90
+const LOW_WATER  = 0.75
+
+# Keep the eviction batch small so freed COW pages become available
+# within a couple of write txns (per LMDB authors' advice).
+const EVICT_BATCH = 100
 
 """
     get(cache, key) -> Union{Vector{UInt8}, Nothing}
@@ -183,6 +305,9 @@ Look up `key` in the cache. Returns a freshly-allocated copy of the
 value on hit, or `nothing` on miss. The copy is necessary because LMDB
 hands back a pointer into the memory-mapped data file, which a future
 writer is allowed to reuse.
+
+On hit, the entry's atime is bumped (at most once per session per key,
+to avoid write-amplification). This drives the LRU eviction order.
 """
 function get(cache::Cache, key::Vector{UInt8})
     cache.env != C_NULL || error("DiskCache.get on closed cache")
@@ -194,7 +319,7 @@ function get(cache::Cache, key::Vector{UInt8})
           "mdb_txn_begin (read)")
     txn = txn_ref[]
 
-    try
+    blob = try
         key_val  = Ref(MDB_val(Csize_t(length(key)), pointer(key)))
         data_val = Ref(MDB_val(Csize_t(0), C_NULL))
 
@@ -203,18 +328,37 @@ function get(cache::Cache, key::Vector{UInt8})
             (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ref{MDB_val}),
             txn, cache.dbi, key_val, data_val)
 
-        if ret == MDB_NOTFOUND
-            return nothing
-        end
+        ret == MDB_NOTFOUND && return nothing
         check(ret, "mdb_get")
 
         sz = Int(data_val[].mv_size)
-        out = Vector{UInt8}(undef, sz)
-        unsafe_copyto!(pointer(out), Ptr{UInt8}(data_val[].mv_data), sz)
-        return out
+        # Defensively reject malformed entries (shorter than the atime prefix).
+        # We never write those, but a corrupted env shouldn't crash the caller.
+        sz < _ATIME_PREFIX && return nothing
+        out = Vector{UInt8}(undef, sz - _ATIME_PREFIX)
+        unsafe_copyto!(pointer(out),
+                       Ptr{UInt8}(data_val[].mv_data) + _ATIME_PREFIX,
+                       sz - _ATIME_PREFIX)
+        out
     finally
         ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
     end
+
+    # Throttled atime refresh. Done outside the read txn (LMDB doesn't
+    # allow nesting). Errors here are non-fatal — we'd rather return the
+    # blob than fail the launch.
+    Base.@lock cache.state_lock begin
+        if !(key in cache.refreshed)
+            push!(cache.refreshed, copy(key))
+            try
+                _put_raw!(cache, key, pack_value(time_ns(), blob))
+            catch err
+                @debug "atime refresh failed" exception=(err, catch_backtrace())
+            end
+        end
+    end
+
+    return blob
 end
 
 """
@@ -224,10 +368,34 @@ Insert `key => value` into the cache. Existing entries are not
 overwritten — under content addressing, a key collision means the values
 are identical (or, vanishingly, a SHA-256 collision); either way, the
 first writer wins.
+
+If the env is above [`HIGH_WATER`](@ref), [`evict_lru!`](@ref) is run
+first to drop down to [`LOW_WATER`](@ref).
 """
 function put!(cache::Cache, key::Vector{UInt8}, value::Vector{UInt8})
     cache.env != C_NULL || error("DiskCache.put! on closed cache")
 
+    # Double-checked: the cheap utilization probe gates the lock acquisition
+    # in the common case (well below high water, no contention).
+    if utilization(cache) > HIGH_WATER
+        Base.@lock cache.state_lock begin
+            if utilization(cache) > HIGH_WATER
+                evict_lru!(cache, LOW_WATER)
+            end
+        end
+    end
+
+    framed = pack_value(time_ns(), value)
+    _put_raw!(cache, key, framed)
+
+    # Mark this key as "atime is fresh" so a subsequent get in the same
+    # session doesn't redundantly bump it.
+    Base.@lock cache.state_lock push!(cache.refreshed, copy(key))
+    return
+end
+
+# Single mdb_put with already-framed (atime-prefixed) value bytes.
+function _put_raw!(cache::Cache, key::Vector{UInt8}, framed::Vector{UInt8})
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
     check(ccall((:mdb_txn_begin, liblmdb()), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
@@ -237,16 +405,14 @@ function put!(cache::Cache, key::Vector{UInt8}, value::Vector{UInt8})
 
     committed = false
     try
-        key_val = Ref(MDB_val(Csize_t(length(key)),   pointer(key)))
-        val_val = Ref(MDB_val(Csize_t(length(value)), pointer(value)))
+        key_val = Ref(MDB_val(Csize_t(length(key)),    pointer(key)))
+        val_val = Ref(MDB_val(Csize_t(length(framed)), pointer(framed)))
 
-        ret = GC.@preserve key value ccall(
+        ret = GC.@preserve key framed ccall(
             (:mdb_put, liblmdb()), Cint,
             (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ref{MDB_val}, Cuint),
-            txn, cache.dbi, key_val, val_val, MDB_NOOVERWRITE)
-        if ret != MDB_KEYEXIST
-            check(ret, "mdb_put")
-        end
+            txn, cache.dbi, key_val, val_val, Cuint(0))  # plain overwrite
+        check(ret, "mdb_put")
 
         check(ccall((:mdb_txn_commit, liblmdb()), Cint, (Ptr{Cvoid},), txn),
               "mdb_txn_commit (write)")
@@ -258,14 +424,156 @@ function put!(cache::Cache, key::Vector{UInt8}, value::Vector{UInt8})
 end
 
 # ===========================================================================
-# Key derivation
+# Eviction
 # ===========================================================================
 
-# Bumped manually when the cache key derivation changes shape. cuTile
-# bytecode format changes are picked up automatically because the bytecode
-# bytes themselves are mixed into the hash. The toolkit version is encoded
-# in the env path, not here.
-const _CACHE_SCHEMA = UInt32(1)
+"""
+    evict_lru!(cache, target_ratio = LOW_WATER) -> Int
+
+Walk the cache, sort entries by atime ascending (oldest first), and
+delete enough of them in batched write txns to bring used bytes below
+`target_ratio * mapsize`. Returns the number of entries evicted.
+
+Called automatically from [`put!`](@ref) when utilization crosses
+[`HIGH_WATER`](@ref); also exposed for manual invocation if needed.
+"""
+function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
+    info = env_info(cache)
+    target_bytes = floor(Int, target_ratio * info.mapsize)
+    info.used_bytes <= target_bytes && return 0
+    bytes_to_free = info.used_bytes - target_bytes
+
+    entries = _collect_entries(cache)
+    sort!(entries, by = e -> e[2])  # atime ascending
+
+    evicted = 0
+    freed = 0
+    batch = Vector{Vector{UInt8}}()
+    sizehint!(batch, EVICT_BATCH)
+
+    for (key, _atime, raw_size) in entries
+        push!(batch, key)
+        # Approximate freed bytes by entry size; LMDB's actual freed-page
+        # count is fuzzier (page granularity, COW), but this is the right
+        # order of magnitude.
+        freed += raw_size
+        if length(batch) >= EVICT_BATCH
+            evicted += _delete_batch!(cache, batch)
+            empty!(batch)
+        end
+        # Stop as soon as we've nominated enough bytes for eviction. The
+        # check has to sit outside the batch-flush branch — otherwise a
+        # cache with fewer than EVICT_BATCH entries flushes the entire
+        # contents in one shot.
+        freed >= bytes_to_free && break
+    end
+    isempty(batch) || (evicted += _delete_batch!(cache, batch))
+
+    # Drop refreshed-set entries we just deleted — they no longer exist.
+    # Cheaper than per-key removal: clear the set entirely. Worst case
+    # we do a few redundant atime bumps after eviction.
+    empty!(cache.refreshed)
+
+    return evicted
+end
+
+# Collect (key_copy, atime, raw_value_size) for every entry in the cache.
+function _collect_entries(cache::Cache)
+    entries = Tuple{Vector{UInt8}, UInt64, Int}[]
+
+    txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
+    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+                (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
+                cache.env, C_NULL, MDB_RDONLY, txn_ref),
+          "mdb_txn_begin (evict-scan)")
+    txn = txn_ref[]
+
+    cursor_ref = Ref{Ptr{Cvoid}}(C_NULL)
+    ret = ccall((:mdb_cursor_open, liblmdb()), Cint,
+                (Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
+                txn, cache.dbi, cursor_ref)
+    if !iszero(ret)
+        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        check(ret, "mdb_cursor_open")
+    end
+    cursor = cursor_ref[]
+
+    try
+        op = MDB_FIRST
+        key_val  = Ref(MDB_val(Csize_t(0), C_NULL))
+        data_val = Ref(MDB_val(Csize_t(0), C_NULL))
+        while true
+            ret = ccall((:mdb_cursor_get, liblmdb()), Cint,
+                        (Ptr{Cvoid}, Ref{MDB_val}, Ref{MDB_val}, Cuint),
+                        cursor, key_val, data_val, op)
+            ret == MDB_NOTFOUND && break
+            check(ret, "mdb_cursor_get")
+
+            kv, dv = key_val[], data_val[]
+
+            keysz = Int(kv.mv_size)
+            datasz = Int(dv.mv_size)
+
+            key_copy = Vector{UInt8}(undef, keysz)
+            unsafe_copyto!(pointer(key_copy), Ptr{UInt8}(kv.mv_data), keysz)
+
+            atime = if datasz >= _ATIME_PREFIX
+                read_atime(Ptr{UInt8}(dv.mv_data))
+            else
+                # Pre-eviction-format entries (or anything malformed) get
+                # priority eviction by virtue of atime = 0.
+                UInt64(0)
+            end
+
+            push!(entries, (key_copy, atime, datasz))
+            op = MDB_NEXT
+        end
+    finally
+        ccall((:mdb_cursor_close, liblmdb()), Cvoid, (Ptr{Cvoid},), cursor)
+        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+    end
+
+    return entries
+end
+
+# Delete a batch of keys in a single write txn.
+function _delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
+    txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
+    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+                (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
+                cache.env, C_NULL, Cuint(0), txn_ref),
+          "mdb_txn_begin (evict-delete)")
+    txn = txn_ref[]
+
+    deleted = 0
+    committed = false
+    try
+        for key in keys
+            key_val = Ref(MDB_val(Csize_t(length(key)), pointer(key)))
+            ret = GC.@preserve key ccall(
+                (:mdb_del, liblmdb()), Cint,
+                (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ptr{MDB_val}),
+                txn, cache.dbi, key_val, C_NULL)
+            if ret == MDB_NOTFOUND
+                # Already gone (race or repeat); skip.
+            else
+                check(ret, "mdb_del")
+                deleted += 1
+            end
+        end
+
+        check(ccall((:mdb_txn_commit, liblmdb()), Cint, (Ptr{Cvoid},), txn),
+              "mdb_txn_commit (evict)")
+        committed = true
+    finally
+        committed || ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+    end
+    return deleted
+end
+
+# ===========================================================================
+# Key derivation
+# ===========================================================================
 
 """
     compute_key(bytecode, sm_arch, opt_level, toolkit_version) -> Vector{UInt8}
@@ -274,13 +582,12 @@ Derive a 32-byte content-addressable cache key for a Tile IR compilation.
 The key covers the bytecode plus every input that changes the resulting
 CUBIN: target arch, opt level, and the `tileiras` toolkit version.
 
-A different toolkit version produces a different key for the same
-bytecode, so old-toolkit entries simply never match on lookup.
+Any change to those inputs produces a fresh key — old-toolkit entries
+simply never match on lookup, and eventually evict via LRU.
 """
 function compute_key(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
                      opt_level::Integer, toolkit_version::VersionNumber)
     io = IOBuffer()
-    write(io, hton(_CACHE_SCHEMA))
     write_pstring!(io, string(toolkit_version))
     write_pstring!(io, string(sm_arch))
     write(io, hton(UInt32(opt_level)))
@@ -295,7 +602,7 @@ end
 end
 
 # ===========================================================================
-# Process-wide singletons (one Cache per toolkit version)
+# Process-wide singleton
 # ===========================================================================
 
 const _global_cache             = Ref{Union{Cache, Nothing}}(nothing)
@@ -332,33 +639,5 @@ function _try_init()
         return nothing
     end
 end
-
-# ===========================================================================
-# Eviction (designed, not yet implemented)
-# ===========================================================================
-#
-# When `mdb_put` returns `MDB_MAP_FULL` (the env hit its mapsize cap),
-# we need to free space. This module currently has no eviction logic;
-# `put!` will surface MDB_MAP_FULL as an error which the launch site
-# silently swallows (so launches keep working, just without caching new
-# entries). The plan when we need to enable it:
-#
-# 1. Value layout: prepend an 8-byte little-endian `atime_ns` to every
-#    stored blob. `compute_key` doesn't change. `get` strips the prefix
-#    after copying.
-# 2. atime refresh: on hit, if `time_ns() - atime > REFRESH_THRESHOLD`
-#    (e.g. 1 day), rewrite the entry with a fresh atime in a tiny
-#    write txn. Throttling avoids write-amplification on hot kernels.
-# 3. Reactive eviction: catch MDB_MAP_FULL in `put!`, run
-#    `evict_lru!(target_utilization=0.75)`, then retry the put once.
-# 4. evict_lru!: cursor-walk all entries collecting (key, atime),
-#    sort by atime ascending, delete oldest until env utilization is
-#    below the target. O(N) per eviction; eviction is rare so this is
-#    fine. Use `mdb_env_info` + `mdb_stat` to compute utilization.
-#
-# Migration: existing entries lacking the atime prefix can be detected
-# (size < 8 or sentinel byte) and treated as "atime = 0" so they evict
-# first. Or just bump _CACHE_SCHEMA, which strands old entries (they
-# never match) and lets the next eviction cycle clean them up.
 
 end # module DiskCache
