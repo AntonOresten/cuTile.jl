@@ -176,29 +176,19 @@ function toolkit_version()
     v = toolkit_version_ref[]
     v === nothing || return v
     Base.@lock toolkit_version_lock begin
-        v = toolkit_version_ref[]
-        v === nothing || return v
-        v = try
+        if toolkit_version_ref[] === nothing
             cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) --version`,
                          "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
             proc, log = run_and_collect(cmd)
-            if !success(proc)
-                "unknown"
-            else
-                m = match(TILEIRAS_VERSION_REGEX, log)
-                if m === nothing
-                    @warn "tileiras --version output does not contain a V<major>.<minor>.<patch> token; falling back to full stdout for cache keying" log
-                    log
-                else
-                    m.captures[1]::AbstractString
-                end
-            end
-        catch err
-            @debug "tileiras --version failed" exception=(err, catch_backtrace())
-            "unknown"
+            success(proc) ||
+                error("tileiras --version failed: $(proc.exitcode), log: $log")
+
+            m = match(TILEIRAS_VERSION_REGEX, log)
+            isnothing(m) && error("tileiras --version output did not match expected format: $log")
+
+            toolkit_version_ref[] = m.captures[1]
         end
-        toolkit_version_ref[] = v
-        return v
+        return toolkit_version_ref[]
     end
 end
 
@@ -206,8 +196,6 @@ end
     check_tile_ir_support()
 
 Validate that the current CUDA toolkit supports Tile IR on the active device.
-Result is cached per `(capability, cuda_version)` — checking compute capability
-and toolkit version on every kernel launch is wasteful.
 """
 function check_tile_ir_support()
     @static if !CUDA_Compiler_jll.is_available()

@@ -18,7 +18,7 @@ can swap the backend to `LMDB.jl` later without touching call sites.
 - A single LMDB env at `\$(scratchspace)/disk_cache/`. The directory
   contains `data.mdb` + `lock.mdb`; wiping the cache means `rm -rf` of
   that directory or `Scratch.delete_scratch!`.
-- Keys: `sha256(SCHEMA_VERSION ‖ toolkit_version ‖ sm_arch ‖ opt_level ‖ bytecode)` —
+- Keys: `hash(SCHEMA_VERSION ‖ toolkit_version ‖ sm_arch ‖ opt_level ‖ bytecode)` —
   any input change produces a fresh key, so old-toolkit entries simply
   never match on lookup. Bump [`SCHEMA_VERSION`](@ref) to invalidate
   every existing entry on the next access (e.g. after a value-framing
