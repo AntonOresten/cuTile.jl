@@ -1457,6 +1457,24 @@ end
         end
     end
 
+    @testset "tanh rounding_mode honoured under @fpmode" begin
+        # On v13.2+ the active @fpmode rounding_mode is forwarded to TanHOp.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}};
+                       bytecode_version=v"13.2") do a
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                ct.@fpmode rounding_mode=ct.Rounding.Approx begin
+                    @check "tanh"
+                    @check "rounding<approx>"
+                    Base.donotdelete(tanh.(tile))
+                end
+                return
+            end
+        end
+    end
+
     @testset "fma" begin
         @test @filecheck begin
             @check_label "entry"
