@@ -24,6 +24,9 @@
 @overlay Base.rem(x::T, y::T) where {T <: Signed} = Intrinsics.remi(x, y, Signedness.Signed)
 @overlay Base.rem(x::T, y::T) where {T <: Unsigned} = Intrinsics.remi(x, y, Signedness.Unsigned)
 
+# floor division on floats — `fld(x, y)` and `div(x, y, RoundDown)`
+@overlay Base.div(x::T, y::T, ::typeof(RoundDown)) where {T <: ScalarFloat} = Intrinsics.floor(Intrinsics.divf(x, y))
+
 # float power (expands to dozens of intrinsics in Julia — complex)
 @overlay Base.:^(x::T, y::T) where {T <: ScalarFloat} = Intrinsics.pow(x, y)
 

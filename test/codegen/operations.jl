@@ -1582,6 +1582,22 @@ end
         end
     end
 
+    @testset "float floordiv" begin
+        # `fld(x, y)` on floats lowers to floor(divf).
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float32,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                ta = ct.load(a, pid, (16,))
+                tb = ct.load(b, pid, (16,))
+                @check "divf"
+                @check "floor"
+                Base.donotdelete(fld.(ta, tb))
+                return
+            end
+        end
+    end
+
     @testset "scalar broadcast" begin
         # Distinct constants per line so CSE doesn't fold the broadcasts.
         @test @filecheck begin
