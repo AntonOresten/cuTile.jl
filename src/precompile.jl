@@ -62,13 +62,16 @@ import REPL
         world = Base.get_world_counter()
         stripped, const_argtypes = process_const_argtypes(f, tt)
         mi = lookup_method_instance(f, stripped; world)
-        cache = CacheView{CuTileResults}(:cuTile, world)
-        ir, rettype = emit_julia(cache, mi; const_argtypes)
-        sci, rettype, kernel_meta = emit_structured(ir, rettype)
         # Ampere/Ada (8.0) and Blackwell (10.0) cover all supported archs;
         # bytecode emission keys off `sm_arch` for entry-hint encoding only,
         # so two representative values are enough to prime that path.
         for sm_arch in (v"8.0", v"10.0")
+            # Use a real `TileCacheKey` so the workload's specializations of
+            # `emit_*!` and `write_bytecode!` match the launch path's cache type.
+            key = TileCacheKey(sm_arch, DEFAULT_BYTECODE_VERSION, nothing, nothing, nothing)
+            cache = CacheView{CuTileResults}(key, world)
+            ir, rettype = emit_julia(cache, mi; const_argtypes)
+            sci, rettype, kernel_meta = emit_structured(ir, rettype)
             opts = CGOpts((sm_arch=sm_arch, opt_level=nothing,
                            num_ctas=nothing, occupancy=nothing,
                            bytecode_version=DEFAULT_BYTECODE_VERSION))
