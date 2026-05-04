@@ -50,7 +50,6 @@ module DiskCache
 
 using LMDB_jll: liblmdb
 using Scratch: @get_scratch!
-using SHA: sha256
 
 # ===========================================================================
 # Minimal LMDB binding
@@ -366,7 +365,7 @@ end
 
 Insert `key => value` into the cache. Existing entries are not
 overwritten — under content addressing, a key collision means the values
-are identical (or, vanishingly, a SHA-256 collision); either way, the
+are identical (or, vanishingly, a `hash` collision); either way, the
 first writer wins.
 
 If the env is above [`HIGH_WATER`](@ref), [`evict_lru!`](@ref) is run
@@ -587,7 +586,7 @@ them.
 
 Mirrors `_CACHE_VERSION` in cuTile Python (`_cache.py`).
 """
-const SCHEMA_VERSION = UInt32(1)
+const SCHEMA_VERSION = UInt32(2)
 
 """
     compute_key(bytecode, sm_arch, opt_level, toolkit_version) -> Vector{UInt8}
@@ -604,19 +603,12 @@ when the value layout changes.
 """
 function compute_key(bytecode::Vector{UInt8}, sm_arch::VersionNumber,
                      opt_level::Integer, toolkit_version::AbstractString)
-    io = IOBuffer()
-    write(io, hton(SCHEMA_VERSION))
-    write_pstring!(io, toolkit_version)
-    write_pstring!(io, string(sm_arch))
-    write(io, hton(UInt32(opt_level)))
-    write(io, bytecode)
-    return sha256(take!(io))
-end
-
-@inline function write_pstring!(io::IO, s::AbstractString)
-    bytes = codeunits(s)
-    write(io, hton(UInt32(length(bytes))))
-    write(io, bytes)
+    h = hash(SCHEMA_VERSION)
+    h = hash(toolkit_version, h)
+    h = hash(sm_arch, h)
+    h = hash(opt_level, h)
+    h = hash(bytecode, h)
+    return reinterpret(UInt8, [h])
 end
 
 # ===========================================================================
