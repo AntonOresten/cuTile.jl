@@ -481,6 +481,25 @@ spec4d = ct.ArraySpec{4}(16, true)
         end
     end
 
+    @testset "u16 + u64 promotes to u64" begin
+        # Pin promote_type(UInt16, UInt64) == UInt64 so the narrower operand
+        # is widened with `exti` (zero-extend) before `addi` rather than
+        # narrowing the wider one or going through a signed path.
+        @test promote_type(UInt16, UInt64) === UInt64
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt64,1,spec1d}}) do out
+                a = ct.arange(16; dtype=UInt16)
+                b = ct.arange(16; dtype=UInt64)
+                @check "exti"
+                @check "addi"
+                result = a .+ b
+                ct.store(out, Int32(0), result)
+                return
+            end
+        end
+    end
+
     @testset "constant" begin
         @test @filecheck begin
             @check_label "entry"
