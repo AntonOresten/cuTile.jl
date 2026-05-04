@@ -48,7 +48,7 @@ cause on hot kernels.
 """
 module DiskCache
 
-import LMDB_jll
+using LMDB_jll: liblmdb
 using Scratch: @get_scratch!
 using SHA: sha256
 
@@ -93,10 +93,8 @@ struct MDB_stat
     ms_entries::Csize_t
 end
 
-@inline liblmdb() = LMDB_jll.liblmdb
-
 errstr(ret::Cint) =
-    unsafe_string(ccall((:mdb_strerror, liblmdb()), Cstring, (Cint,), ret))
+    unsafe_string(ccall((:mdb_strerror, liblmdb), Cstring, (Cint,), ret))
 
 @inline function check(ret::Cint, what)
     iszero(ret) && return nothing
@@ -140,7 +138,7 @@ Release the underlying LMDB environment. Idempotent.
 """
 function close(cache::Cache)
     cache.env == C_NULL && return
-    ccall((:mdb_env_close, liblmdb()), Cvoid, (Ptr{Cvoid},), cache.env)
+    ccall((:mdb_env_close, liblmdb), Cvoid, (Ptr{Cvoid},), cache.env)
     cache.env = C_NULL
     return
 end
@@ -158,15 +156,15 @@ function open(path::AbstractString; mapsize::Integer = (Csize_t(1) << 30),
     mkpath(path)
 
     env_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    check(ccall((:mdb_env_create, liblmdb()), Cint, (Ref{Ptr{Cvoid}},), env_ref),
+    check(ccall((:mdb_env_create, liblmdb), Cint, (Ref{Ptr{Cvoid}},), env_ref),
           "mdb_env_create")
     env = env_ref[]
 
     try
-        check(ccall((:mdb_env_set_maxreaders, liblmdb()), Cint,
+        check(ccall((:mdb_env_set_maxreaders, liblmdb), Cint,
                     (Ptr{Cvoid}, Cuint), env, Cuint(maxreaders)),
               "mdb_env_set_maxreaders")
-        check(ccall((:mdb_env_set_mapsize, liblmdb()), Cint,
+        check(ccall((:mdb_env_set_mapsize, liblmdb), Cint,
                     (Ptr{Cvoid}, Csize_t), env, Csize_t(mapsize)),
               "mdb_env_set_mapsize")
 
@@ -174,7 +172,7 @@ function open(path::AbstractString; mapsize::Integer = (Csize_t(1) << 30),
         # (Julia tasks may migrate). MDB_NORDAHEAD: lookups are random-access,
         # so OS read-ahead is wasted I/O.
         flags = MDB_NOTLS | MDB_NORDAHEAD
-        check(ccall((:mdb_env_open, liblmdb()), Cint,
+        check(ccall((:mdb_env_open, liblmdb), Cint,
                     (Ptr{Cvoid}, Cstring, Cuint, Cushort),
                     env, path, flags, Cushort(0o644)),
               "mdb_env_open($(repr(path)))")
@@ -182,7 +180,7 @@ function open(path::AbstractString; mapsize::Integer = (Csize_t(1) << 30),
         dbi, psize = open_main_db_and_stat!(env)
         return Cache(env, dbi, psize, path)
     catch
-        ccall((:mdb_env_close, liblmdb()), Cvoid, (Ptr{Cvoid},), env)
+        ccall((:mdb_env_close, liblmdb), Cvoid, (Ptr{Cvoid},), env)
         rethrow()
     end
 end
@@ -193,32 +191,32 @@ end
 # through this dance.
 function open_main_db_and_stat!(env::Ptr{Cvoid})
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+    check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
                 env, C_NULL, Cuint(0), txn_ref),
           "mdb_txn_begin (init)")
     txn = txn_ref[]
 
     dbi_ref = Ref{Cuint}(0)
-    ret = ccall((:mdb_dbi_open, liblmdb()), Cint,
+    ret = ccall((:mdb_dbi_open, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cchar}, Cuint, Ref{Cuint}),
                 txn, Ptr{Cchar}(C_NULL), Cuint(0), dbi_ref)
     if !iszero(ret)
-        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
         check(ret, "mdb_dbi_open (main)")
     end
     dbi = dbi_ref[]
 
     stat_ref = Ref{MDB_stat}()
-    ret = ccall((:mdb_stat, liblmdb()), Cint,
+    ret = ccall((:mdb_stat, liblmdb), Cint,
                 (Ptr{Cvoid}, Cuint, Ref{MDB_stat}), txn, dbi, stat_ref)
     if !iszero(ret)
-        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
         check(ret, "mdb_stat")
     end
     psize = Int(stat_ref[].ms_psize)
 
-    check(ccall((:mdb_txn_commit, liblmdb()), Cint, (Ptr{Cvoid},), txn),
+    check(ccall((:mdb_txn_commit, liblmdb), Cint, (Ptr{Cvoid},), txn),
           "mdb_txn_commit (init)")
 
     return dbi, psize
@@ -238,26 +236,26 @@ mark — it doesn't drop when entries get deleted. Eviction relies on
 """
 function env_info(cache::Cache)
     info_ref = Ref{MDB_envinfo}()
-    check(ccall((:mdb_env_info, liblmdb()), Cint,
+    check(ccall((:mdb_env_info, liblmdb), Cint,
                 (Ptr{Cvoid}, Ref{MDB_envinfo}),
                 cache.env, info_ref),
           "mdb_env_info")
     mapsize = Int(info_ref[].me_mapsize)
 
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+    check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
                 cache.env, C_NULL, MDB_RDONLY, txn_ref),
           "mdb_txn_begin (stat)")
     txn = txn_ref[]
     stat_ref = Ref{MDB_stat}()
     try
-        check(ccall((:mdb_stat, liblmdb()), Cint,
+        check(ccall((:mdb_stat, liblmdb), Cint,
                     (Ptr{Cvoid}, Cuint, Ref{MDB_stat}),
                     txn, cache.dbi, stat_ref),
               "mdb_stat")
     finally
-        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
     end
     s = stat_ref[]
     live_pages = Int(s.ms_branch_pages) + Int(s.ms_leaf_pages) + Int(s.ms_overflow_pages)
@@ -315,7 +313,7 @@ function get(cache::Cache, key::Vector{UInt8})
     cache.env != C_NULL || error("DiskCache.get on closed cache")
 
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+    check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
                 cache.env, C_NULL, MDB_RDONLY, txn_ref),
           "mdb_txn_begin (read)")
@@ -326,7 +324,7 @@ function get(cache::Cache, key::Vector{UInt8})
         data_val = Ref(MDB_val(Csize_t(0), C_NULL))
 
         ret = GC.@preserve key ccall(
-            (:mdb_get, liblmdb()), Cint,
+            (:mdb_get, liblmdb), Cint,
             (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ref{MDB_val}),
             txn, cache.dbi, key_val, data_val)
 
@@ -343,7 +341,7 @@ function get(cache::Cache, key::Vector{UInt8})
                        sz - _ATIME_PREFIX)
         out
     finally
-        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
     end
 
     # Throttled atime refresh. Done outside the read txn (LMDB doesn't
@@ -399,7 +397,7 @@ end
 # Single mdb_put with already-framed (atime-prefixed) value bytes.
 function _put_raw!(cache::Cache, key::Vector{UInt8}, framed::Vector{UInt8})
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+    check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
                 cache.env, C_NULL, Cuint(0), txn_ref),
           "mdb_txn_begin (write)")
@@ -411,16 +409,16 @@ function _put_raw!(cache::Cache, key::Vector{UInt8}, framed::Vector{UInt8})
         val_val = Ref(MDB_val(Csize_t(length(framed)), pointer(framed)))
 
         ret = GC.@preserve key framed ccall(
-            (:mdb_put, liblmdb()), Cint,
+            (:mdb_put, liblmdb), Cint,
             (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ref{MDB_val}, Cuint),
             txn, cache.dbi, key_val, val_val, Cuint(0))  # plain overwrite
         check(ret, "mdb_put")
 
-        check(ccall((:mdb_txn_commit, liblmdb()), Cint, (Ptr{Cvoid},), txn),
+        check(ccall((:mdb_txn_commit, liblmdb), Cint, (Ptr{Cvoid},), txn),
               "mdb_txn_commit (write)")
         committed = true
     finally
-        committed || ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        committed || ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
     end
     return
 end
@@ -484,18 +482,18 @@ function _collect_entries(cache::Cache)
     entries = Tuple{Vector{UInt8}, UInt64, Int}[]
 
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+    check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
                 cache.env, C_NULL, MDB_RDONLY, txn_ref),
           "mdb_txn_begin (evict-scan)")
     txn = txn_ref[]
 
     cursor_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    ret = ccall((:mdb_cursor_open, liblmdb()), Cint,
+    ret = ccall((:mdb_cursor_open, liblmdb), Cint,
                 (Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
                 txn, cache.dbi, cursor_ref)
     if !iszero(ret)
-        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
         check(ret, "mdb_cursor_open")
     end
     cursor = cursor_ref[]
@@ -505,7 +503,7 @@ function _collect_entries(cache::Cache)
         key_val  = Ref(MDB_val(Csize_t(0), C_NULL))
         data_val = Ref(MDB_val(Csize_t(0), C_NULL))
         while true
-            ret = ccall((:mdb_cursor_get, liblmdb()), Cint,
+            ret = ccall((:mdb_cursor_get, liblmdb), Cint,
                         (Ptr{Cvoid}, Ref{MDB_val}, Ref{MDB_val}, Cuint),
                         cursor, key_val, data_val, op)
             ret == MDB_NOTFOUND && break
@@ -531,8 +529,8 @@ function _collect_entries(cache::Cache)
             op = MDB_NEXT
         end
     finally
-        ccall((:mdb_cursor_close, liblmdb()), Cvoid, (Ptr{Cvoid},), cursor)
-        ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        ccall((:mdb_cursor_close, liblmdb), Cvoid, (Ptr{Cvoid},), cursor)
+        ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
     end
 
     return entries
@@ -541,7 +539,7 @@ end
 # Delete a batch of keys in a single write txn.
 function _delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
-    check(ccall((:mdb_txn_begin, liblmdb()), Cint,
+    check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
                 cache.env, C_NULL, Cuint(0), txn_ref),
           "mdb_txn_begin (evict-delete)")
@@ -553,7 +551,7 @@ function _delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
         for key in keys
             key_val = Ref(MDB_val(Csize_t(length(key)), pointer(key)))
             ret = GC.@preserve key ccall(
-                (:mdb_del, liblmdb()), Cint,
+                (:mdb_del, liblmdb), Cint,
                 (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ptr{MDB_val}),
                 txn, cache.dbi, key_val, C_NULL)
             if ret == MDB_NOTFOUND
@@ -564,11 +562,11 @@ function _delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
             end
         end
 
-        check(ccall((:mdb_txn_commit, liblmdb()), Cint, (Ptr{Cvoid},), txn),
+        check(ccall((:mdb_txn_commit, liblmdb), Cint, (Ptr{Cvoid},), txn),
               "mdb_txn_commit (evict)")
         committed = true
     finally
-        committed || ccall((:mdb_txn_abort, liblmdb()), Cvoid, (Ptr{Cvoid},), txn)
+        committed || ccall((:mdb_txn_abort, liblmdb), Cvoid, (Ptr{Cvoid},), txn)
     end
     return deleted
 end
