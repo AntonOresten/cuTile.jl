@@ -319,16 +319,18 @@ function get(cache::Cache, key::Vector{UInt8})
     txn = txn_ref[]
 
     blob = try
-        key_val  = Ref(MDB_val(Csize_t(length(key)), pointer(key)))
-        data_val = Ref(MDB_val(Csize_t(0), C_NULL))
+        GC.@preserve key begin
+            key_val  = Ref(MDB_val(Csize_t(length(key)), pointer(key)))
+            data_val = Ref(MDB_val(Csize_t(0), C_NULL))
 
-        ret = GC.@preserve key ccall(
-            (:mdb_get, liblmdb), Cint,
-            (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ref{MDB_val}),
-            txn, cache.dbi, key_val, data_val)
+            ret = ccall(
+                (:mdb_get, liblmdb), Cint,
+                (Ptr{Cvoid}, Cuint, Ref{MDB_val}, Ref{MDB_val}),
+                txn, cache.dbi, key_val, data_val)
 
-        ret == MDB_NOTFOUND && return nothing
-        check(ret, "mdb_get")
+            ret == MDB_NOTFOUND && return nothing
+            check(ret, "mdb_get")
+        end
 
         sz = Int(data_val[].mv_size)
         # Defensively reject malformed entries (shorter than the atime prefix).
@@ -591,7 +593,7 @@ const SCHEMA_VERSION = UInt32(2)
 """
     compute_key(bytecode, sm_arch, opt_level, toolkit_version) -> Vector{UInt8}
 
-Derive a 32-byte content-addressable cache key for a Tile IR compilation.
+Derive an 8-byte content-addressable cache key for a Tile IR compilation.
 The key covers the bytecode plus every input that changes the resulting
 CUBIN: target arch, opt level, and the `tileiras` toolkit version
 (typically the full `--version` stdout — see `cuTile.toolkit_version()`).
