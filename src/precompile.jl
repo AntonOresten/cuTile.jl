@@ -110,5 +110,19 @@ import REPL
                        Constant{Int, 1024}}
             precompile_kernel(_precompile_vadd_gather, tt)
         end
+
+        # No-Constant path. Covers `const_argtypes::Nothing` specializations
+        # of the codegen-pipeline closures (write_bytecode!, emit_tile, etc.)
+        # — the launch path uses the Nothing variant whenever the kernel has
+        # no `Constant{T,V}` arguments (e.g. `@cuda backend=cuTile identity(nothing)`).
+        precompile_kernel(identity, Tuple{Nothing})
     end
+
+    # Explicit precompile of the launch path. The workload above covers the
+    # codegen pipeline starting at `emit_julia`, but the launch entry
+    # (`_cufunction_compile`) is not exercised by the workload — its MI is
+    # precompiled here so the first user-visible launch doesn't pay its JIT cost.
+    precompile(Tuple{typeof(_cufunction_compile),
+                     typeof(identity), Type{Tuple{Nothing}},
+                     Type{Tuple{Nothing}}, Nothing, TileCacheKey})
 end
