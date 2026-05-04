@@ -351,7 +351,7 @@ function get(cache::Cache, key::Vector{UInt8})
         if !(key in cache.refreshed)
             push!(cache.refreshed, copy(key))
             try
-                _put_raw!(cache, key, pack_value(time_ns(), blob))
+                put_raw!(cache, key, pack_value(time_ns(), blob))
             catch err
                 @debug "atime refresh failed" exception=(err, catch_backtrace())
             end
@@ -386,7 +386,7 @@ function put!(cache::Cache, key::Vector{UInt8}, value::Vector{UInt8})
     end
 
     framed = pack_value(time_ns(), value)
-    _put_raw!(cache, key, framed)
+    put_raw!(cache, key, framed)
 
     # Mark this key as "atime is fresh" so a subsequent get in the same
     # session doesn't redundantly bump it.
@@ -395,7 +395,7 @@ function put!(cache::Cache, key::Vector{UInt8}, value::Vector{UInt8})
 end
 
 # Single mdb_put with already-framed (atime-prefixed) value bytes.
-function _put_raw!(cache::Cache, key::Vector{UInt8}, framed::Vector{UInt8})
+function put_raw!(cache::Cache, key::Vector{UInt8}, framed::Vector{UInt8})
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
     check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
@@ -443,7 +443,7 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
     info.used_bytes <= target_bytes && return 0
     bytes_to_free = info.used_bytes - target_bytes
 
-    entries = _collect_entries(cache)
+    entries = collect_entries(cache)
     sort!(entries, by = e -> e[2])  # atime ascending
 
     evicted = 0
@@ -458,7 +458,7 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
         # order of magnitude.
         freed += raw_size
         if length(batch) >= EVICT_BATCH
-            evicted += _delete_batch!(cache, batch)
+            evicted += delete_batch!(cache, batch)
             empty!(batch)
         end
         # Stop as soon as we've nominated enough bytes for eviction. The
@@ -467,7 +467,7 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
         # contents in one shot.
         freed >= bytes_to_free && break
     end
-    isempty(batch) || (evicted += _delete_batch!(cache, batch))
+    isempty(batch) || (evicted += delete_batch!(cache, batch))
 
     # Drop refreshed-set entries we just deleted — they no longer exist.
     # Cheaper than per-key removal: clear the set entirely. Worst case
@@ -478,7 +478,7 @@ function evict_lru!(cache::Cache, target_ratio::Real = LOW_WATER)
 end
 
 # Collect (key_copy, atime, raw_value_size) for every entry in the cache.
-function _collect_entries(cache::Cache)
+function collect_entries(cache::Cache)
     entries = Tuple{Vector{UInt8}, UInt64, Int}[]
 
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
@@ -537,7 +537,7 @@ function _collect_entries(cache::Cache)
 end
 
 # Delete a batch of keys in a single write txn.
-function _delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
+function delete_batch!(cache::Cache, keys::Vector{Vector{UInt8}})
     txn_ref = Ref{Ptr{Cvoid}}(C_NULL)
     check(ccall((:mdb_txn_begin, liblmdb), Cint,
                 (Ptr{Cvoid}, Ptr{Cvoid}, Cuint, Ref{Ptr{Cvoid}}),
@@ -639,14 +639,14 @@ function global_cache()
     _global_cache_initialized[] && return _global_cache[]
     Base.@lock _global_cache_lock begin
         if !_global_cache_initialized[]
-            _global_cache[] = _try_init()
+            _global_cache[] = try_init()
             _global_cache_initialized[] = true
         end
     end
     return _global_cache[]
 end
 
-function _try_init()
+function try_init()
     try
         # @get_scratch! resolves to cuTile's package UUID via moduleroot,
         # so the path is $DEPOT/scratchspaces/<cuTile-UUID>/disk_cache/.

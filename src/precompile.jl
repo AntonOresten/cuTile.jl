@@ -20,8 +20,8 @@ import REPL
     # on the current GPU's compute capability via `check_tile_ir_support`.
     # Instead we loop over a representative set of shader models so the
     # bytecode emitter is primed for whatever device the user ends up on.
-    function _precompile_vadd_1d(a::TileArray{T,1}, b::TileArray{T,1},
-                                 c::TileArray{T,1}, tile) where {T}
+    function vadd_1d(a::TileArray{T,1}, b::TileArray{T,1},
+                     c::TileArray{T,1}, tile) where {T}
         bid = cuTile.bid(1)
         a_tile = cuTile.load(a; index=bid, shape=(tile,))
         b_tile = cuTile.load(b; index=bid, shape=(tile,))
@@ -29,8 +29,8 @@ import REPL
         return
     end
 
-    function _precompile_vadd_2d(a::TileArray{T,2}, b::TileArray{T,2},
-                                 c::TileArray{T,2}, tx, ty) where {T}
+    function vadd_2d(a::TileArray{T,2}, b::TileArray{T,2},
+                     c::TileArray{T,2}, tx, ty) where {T}
         bx = cuTile.bid(1); by = cuTile.bid(2)
         a_tile = cuTile.load(a; index=(bx, by), shape=(tx, ty))
         b_tile = cuTile.load(b; index=(bx, by), shape=(tx, ty))
@@ -38,8 +38,8 @@ import REPL
         return
     end
 
-    function _precompile_vadd_gather(a::TileArray{T,1}, b::TileArray{T,1},
-                                     c::TileArray{T,1}, tile) where {T}
+    function vadd_gather(a::TileArray{T,1}, b::TileArray{T,1},
+                         c::TileArray{T,1}, tile) where {T}
         bid = cuTile.bid(1)
         offsets = cuTile.arange(tile)
         base = cuTile.Tile((bid - Int32(1)) * Int32(tile))
@@ -91,7 +91,7 @@ import REPL
                        TileArray{T, 1, spec1d},
                        TileArray{T, 1, spec1d},
                        Constant{Int, 1024}}
-            precompile_kernel(_precompile_vadd_1d, tt)
+            precompile_kernel(vadd_1d, tt)
         end
 
         # 2D vec_add — multi-dim block IDs and shapes.
@@ -99,7 +99,7 @@ import REPL
                        TileArray{Float32, 2, spec2d},
                        TileArray{Float32, 2, spec2d},
                        Constant{Int, 32}, Constant{Int, 32}}
-            precompile_kernel(_precompile_vadd_2d, tt)
+            precompile_kernel(vadd_2d, tt)
         end
 
         # Gather/scatter path — arange, broadcast_to, gather, scatter, and
@@ -108,7 +108,7 @@ import REPL
                        TileArray{Float32, 1, spec1d},
                        TileArray{Float32, 1, spec1d},
                        Constant{Int, 1024}}
-            precompile_kernel(_precompile_vadd_gather, tt)
+            precompile_kernel(vadd_gather, tt)
         end
 
         # No-Constant path. Covers `const_argtypes::Nothing` specializations
@@ -120,9 +120,9 @@ import REPL
 
     # Explicit precompile of the launch path. The workload above covers the
     # codegen pipeline starting at `emit_julia`, but the launch entry
-    # (`_cufunction_compile`) is not exercised by the workload — its MI is
+    # (`cufunction_compile`) is not exercised by the workload — its MI is
     # precompiled here so the first user-visible launch doesn't pay its JIT cost.
-    precompile(Tuple{typeof(_cufunction_compile),
+    precompile(Tuple{typeof(cufunction_compile),
                      typeof(identity), Type{Tuple{Nothing}},
                      Type{Tuple{Nothing}}, Nothing, TileCacheKey})
 end
