@@ -377,19 +377,18 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
 end
 
 """
-    emit_function!(cache, mi, ci, res; const_argtypes=nothing) -> CuFunction
+    link(cache, mi, ci, res) -> CuFunction
 
-Cached function phase: load CUBIN into GPU memory as a CuFunction.
+GPU-side link phase: load the CUBIN cached in `res.cuda_bin` (produced by
+[`compile`](@ref)) onto the active CUDA device and return the resulting
+`CuFunction`.
 """
-function emit_function!(cache::CacheView, mi::Core.MethodInstance,
-                        ci::Core.CodeInstance, res::CuTileResults;
-                        const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    cubin = emit_binary!(cache, mi, ci, res; const_argtypes)
-
+function link(cache::CacheView, mi::Core.MethodInstance,
+              ci::Core.CodeInstance, res::CuTileResults)
     res.cuda_func !== nothing && return res.cuda_func
 
     kernel_name = sanitize_name(string(mi.def.name))
-    cumod = CuModule(cubin)
+    cumod = CuModule(res.cuda_bin::Vector{UInt8})
     cufunc = CuFunction(cumod, kernel_name)
     res.cuda_func = cufunc
     return cufunc
@@ -454,12 +453,16 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, key)::TileKernel{Core.Typeof(f), tt}
 end
 
-# Inner compilation routine; called via `invoke_frozen` so its method dispatches
-# happen in the world captured at __init__, reusing precompiled native code
-# even when later-loaded packages would otherwise have invalidated it.
-function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(argtypes),
-                             const_argtypes::Union{Vector{Any}, Nothing},
-                             key::TileCacheKey)
+"""
+    compile(f, argtypes, const_argtypes, key) -> (cache, mi, ci, res)
+
+Host-side compile phase: run inference, codegen, bytecode emission, and
+`tileiras` to produce a CUBIN. Returns the compilation cache state needed
+by [`link`](@ref) to load the result onto the GPU. No CUDA context required.
+"""
+function compile(@nospecialize(f), @nospecialize(argtypes),
+                 const_argtypes::Union{Vector{Any}, Nothing},
+                 key::TileCacheKey)
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
@@ -481,7 +484,19 @@ function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(a
     # Always walk the emit chain (each phase short-circuits on its own cached
     # field, but `emit_structured!` also fires `compile_hook` for reflection,
     # which has to run on every launch even when the cube/cufunc is cached).
-    cufunc = emit_function!(cache, mi, ci, res; const_argtypes)
+    emit_binary!(cache, mi, ci, res; const_argtypes)
+    return cache, mi, ci, res
+end
+
+# Inner compilation routine; called via `invoke_frozen` so its method dispatches
+# happen in the world captured at __init__, reusing precompiled native code
+# even when later-loaded packages would otherwise have invalidated it.
+function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(argtypes),
+                             const_argtypes::Union{Vector{Any}, Nothing},
+                             key::TileCacheKey)
+    cache, mi, ci, res = compile(f, argtypes, const_argtypes, key)
+
+    cufunc = link(cache, mi, ci, res)
 
     res.tile_kernel !== nothing && return res.tile_kernel::TileKernel{Core.Typeof(f), tt}
     kernel = TileKernel{Core.Typeof(f), tt}(f, cufunc)

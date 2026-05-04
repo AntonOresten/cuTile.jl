@@ -36,18 +36,15 @@ import REPL
         return
     end
 
+    # Drive the host-side `compile` so the precompile workload reaches
+    # `tileiras` → CUBIN without needing a CUDA context. The runtime path
+    # tacks `link` on top to load the CUBIN onto the GPU.
     function precompile_kernel(@nospecialize(f), @nospecialize(tt))
         argtypes, const_argtypes = unwrap_argtypes(f, tt)
-        # Ampere/Ada (8.0) and Blackwell (10.0) cover all supported archs;
-        # bytecode emission keys off `sm_arch` for entry-hint encoding only.
         for sm_arch in [v"8.0", v"8.6", v"8.7", v"8.9",
                         v"10.0", v"11.0", v"12.0", v"12.1"]
             key = TileCacheKey(sm_arch, DEFAULT_BYTECODE_VERSION, nothing, nothing, nothing)
-            try
-                cufunction_compile(f, tt, argtypes, const_argtypes, key)
-            catch
-                # `CuModule(cubin)` fails without a CUDA context.
-            end
+            compile(f, argtypes, const_argtypes, key)
         end
         return
     end
