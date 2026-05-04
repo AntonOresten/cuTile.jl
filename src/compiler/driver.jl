@@ -259,7 +259,11 @@ function emit_structured!(cache::CacheView, mi::Core.MethodInstance,
             end
         end
         tt = Tuple{arg_types...}
-        compile_hook[](f, tt)
+        # `cufunction` runs the codegen pipeline through `invoke_frozen` (so it
+        # can reuse precompiled native code), but the hook closure was defined
+        # at the user's latest world — invoke it via `invokelatest` so it
+        # dispatches there and not in the frozen world.
+        Base.invokelatest(compile_hook[], f, tt)
     end
 
     res.julia_ir !== nothing && return res.julia_ir

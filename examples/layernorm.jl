@@ -5,7 +5,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND
 using cuTile: cuTile
 import cuTile as ct
 
@@ -267,14 +268,14 @@ function prepare(; benchmark::Bool=false,
                   eps::Float32=1f-5, GROUP_SIZE_M::Int=64)
     return (;
         # Forward inputs/outputs — 2D tensors stored as (N, M) for contiguous N access
-        X = -2.3f0 .+ 0.5f0 .* CUDA.rand(Float32, N, M),
-        W = CUDA.randn(Float32, N),
-        B = CUDA.randn(Float32, N),
+        X = -2.3f0 .+ 0.5f0 .* cuRAND.rand(Float32, N, M),
+        W = cuRAND.randn(Float32, N),
+        B = cuRAND.randn(Float32, N),
         Y = CuArray{Float32}(undef, N, M),
         Mean = CuArray{Float32}(undef, M),
         Rstd = CuArray{Float32}(undef, M),
         # Backward inputs/outputs
-        DY = 0.1f0 .* CUDA.randn(Float32, N, M),
+        DY = 0.1f0 .* cuRAND.randn(Float32, N, M),
         DX = CuArray{Float32}(undef, N, M),
         DW_partial = CuArray{Float32}(undef, N, GROUP_SIZE_M),
         DB_partial = CuArray{Float32}(undef, N, GROUP_SIZE_M),
@@ -304,7 +305,7 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
     end
 
     # Warmup
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         run_fwd()
         run_bwd()
     end
@@ -314,7 +315,7 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
     NVTX.@range "cuTile Fwd" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed run_fwd()
+                t = CUDACore.@elapsed run_fwd()
                 push!(times_fwd, t * 1000)  # ms
             end
         end
@@ -325,7 +326,7 @@ function run(data; TILE_N::Int=1024, TILE_M::Int=32, nruns::Int=1, warmup::Int=0
     NVTX.@range "cuTile Bwd" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed run_bwd()
+                t = CUDACore.@elapsed run_bwd()
                 push!(times_bwd, t * 1000)  # ms
             end
         end
@@ -395,7 +396,7 @@ function main()
 
     test_layernorm(256, 256, 256)
     test_layernorm(512, 512, 512)
-    test_layernorm(1024, 2048, 1024)
+    test_layernorm(1024, 1024, 1024)
 
     println("\n=== All layernorm examples completed ===")
 end

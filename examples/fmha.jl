@@ -11,7 +11,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND
 using cuTile: cuTile
 import cuTile as ct
 
@@ -235,9 +236,9 @@ function prepare(; benchmark::Bool=false,
     kv_heads = heads ÷ query_group_size
 
     # Julia layout: (D, SeqLen, Heads, Batch) — D contiguous
-    Q = CUDA.rand(T, d_k, seq_q, heads, batch) .- T(0.5)
-    K = CUDA.rand(T, d_k, seq_kv, kv_heads, batch) .- T(0.5)
-    V = CUDA.rand(T, d_v, seq_kv, kv_heads, batch) .- T(0.5)
+    Q = cuRAND.rand(T, d_k, seq_q, heads, batch) .- T(0.5)
+    K = cuRAND.rand(T, d_k, seq_kv, kv_heads, batch) .- T(0.5)
+    V = cuRAND.rand(T, d_v, seq_kv, kv_heads, batch) .- T(0.5)
 
     return (;
         Q, K, V,
@@ -251,7 +252,7 @@ end
 function run(data; nruns::Int=1, warmup::Int=0)
     (; Q, K, V, causal, tile_m, tile_n, query_group_size) = data
 
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         cutile_fmha(Q, K, V; tile_m, tile_n, query_group_size, causal)
     end
 
@@ -260,7 +261,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed begin
+                t = CUDACore.@elapsed begin
                     out = cutile_fmha(Q, K, V; tile_m, tile_n, query_group_size, causal)
                 end
                 push!(times, t * 1000)  # ms

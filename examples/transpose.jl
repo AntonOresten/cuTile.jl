@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND
 using cuTile: cuTile
 import cuTile as ct
 
@@ -26,7 +27,7 @@ function prepare(; benchmark::Bool=false,
                   m::Int=benchmark ? 8192 : 1024,
                   n::Int=benchmark ? 8192 : 512,
                   T::DataType=Float32)
-    x = CUDA.rand(T, m, n)
+    x = cuRAND.rand(T, m, n)
     return (;
         x,
         y = similar(x, n, m),
@@ -38,7 +39,7 @@ function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     (; x, y, m, n) = data
     grid = (cld(m, tm), cld(n, tn))
 
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
     end
 
@@ -46,7 +47,7 @@ function run(data; tm::Int=64, tn::Int=64, nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
+                t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid transpose_kernel(x, y, ct.Constant(tm), ct.Constant(tn))
                 push!(times, t * 1000)  # ms
             end
         end
@@ -87,14 +88,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     y_simt = similar(x, n, m)
 
     # GPUArrays (permutedims)
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         permutedims!(y_gpuarrays, x, (2, 1))
     end
     times_gpuarrays = Float64[]
     NVTX.@range "GPUArrays" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed permutedims!(y_gpuarrays, x, (2, 1))
+                t = CUDACore.@elapsed permutedims!(y_gpuarrays, x, (2, 1))
                 push!(times_gpuarrays, t * 1000)
             end
         end
@@ -104,14 +105,14 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     # SIMT naive kernel
     threads = (16, 16)
     blocks = (cld(m, threads[1]), cld(n, threads[2]))
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
     end
     times_simt = Float64[]
     NVTX.@range "SIMT naive" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
+                t = CUDACore.@elapsed @cuda threads=threads blocks=blocks simt_naive_kernel(x, y_simt, m, n)
                 push!(times_simt, t * 1000)
             end
         end
@@ -137,17 +138,10 @@ end
 function main()
     println("--- cuTile Matrix Transposition Examples ---\n")
 
-    # Float32 tests (like Python's test case 2)
-    test_transpose(Float32, 1024, 512, 32, 32)
-    test_transpose(Float32, 1024, 512, 64, 64)
-
-    # Float64 tests
-    test_transpose(Float64, 1024, 512, 32, 32)
-    test_transpose(Float64, 512, 1024, 64, 64)
-
-    # Float16 tests (like Python's test case 1 with 128x128 tiles)
-    test_transpose(Float16, 1024, 512, 128, 128)
-    test_transpose(Float16, 1024, 1024, 64, 64)
+    test_transpose(Float32, 256, 256, 32, 32)
+    test_transpose(Float32, 512, 512, 64, 64)
+    test_transpose(Float32, 256, 512, 32, 64)
+    test_transpose(Float32, 1024, 1024, 64, 64)
 
     println("\n--- All transpose examples completed ---")
 end

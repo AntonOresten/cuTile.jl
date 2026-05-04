@@ -8,7 +8,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND
 using Random: randperm
 using cuTile: cuTile
 import cuTile as ct
@@ -213,12 +214,12 @@ function invoke_silu_and_mul_kernel(AB, C)
     B_half = similar(AB, inter, total)
     src_pitch = size(AB, 1) * sizeof(T)
     dst_pitch = inter * sizeof(T)
-    CUDA.unsafe_copy2d!(pointer(A_half), CUDA.DeviceMemory,
-                        pointer(AB), CUDA.DeviceMemory,
+    CUDACore.unsafe_copy2d!(pointer(A_half), CUDACore.DeviceMemory,
+                        pointer(AB), CUDACore.DeviceMemory,
                         inter, total; srcPitch=src_pitch, dstPitch=dst_pitch,
                         async=true)
-    CUDA.unsafe_copy2d!(pointer(B_half), CUDA.DeviceMemory,
-                        pointer(AB) + inter * sizeof(T), CUDA.DeviceMemory,
+    CUDACore.unsafe_copy2d!(pointer(B_half), CUDACore.DeviceMemory,
+                        pointer(AB) + inter * sizeof(T), CUDACore.DeviceMemory,
                         inter, total; srcPitch=src_pitch, dstPitch=dst_pitch,
                         async=true)
 
@@ -237,9 +238,9 @@ function cutile_moe(hidden_states::CuArray{T}, w1, w2, topk_weights, topk_ids,
 
     # Intermediate caches: reversed from Python for column-major
     # Python (num_tokens, topk, dim) → Julia (dim, topk, num_tokens)
-    cache1 = CUDA.zeros(T, intermediate_size * 2, topk, num_tokens)
-    cache2 = CUDA.zeros(T, intermediate_size, total_tokens)
-    cache3 = CUDA.zeros(T, hidden_size, topk, num_tokens)
+    cache1 = CUDACore.zeros(T, intermediate_size * 2, topk, num_tokens)
+    cache2 = CUDACore.zeros(T, intermediate_size, total_tokens)
+    cache3 = CUDACore.zeros(T, hidden_size, topk, num_tokens)
 
     sorted_token_ids, sorted_expert_ids = moe_align_tile_size(
         Array(topk_ids), tile_m, num_experts)
@@ -328,9 +329,9 @@ function prepare(; benchmark::Bool=false,
                   topk::Int = 8,
                   T::DataType = Float16)
     # hidden_states is (hidden, num_tokens): hidden contiguous
-    hidden_states = CUDA.rand(T, hidden_size, num_tokens) .- T(0.5)
-    w1 = (CUDA.rand(T, hidden_size, intermediate_size * 2, num_experts) .- T(0.5)) .* T(0.2)
-    w2 = (CUDA.rand(T, intermediate_size, hidden_size, num_experts) .- T(0.5)) .* T(0.2)
+    hidden_states = cuRAND.rand(T, hidden_size, num_tokens) .- T(0.5)
+    w1 = (cuRAND.rand(T, hidden_size, intermediate_size * 2, num_experts) .- T(0.5)) .* T(0.2)
+    w2 = (cuRAND.rand(T, intermediate_size, hidden_size, num_experts) .- T(0.5)) .* T(0.2)
 
     # Unique expert IDs per token (1-indexed)
     topk_ids = Matrix{Int}(undef, num_tokens, topk)
@@ -357,7 +358,7 @@ end
 function run(data; nruns::Int=1, warmup::Int=0)
     (; hidden_states, w1, w2, topk_weights, topk_ids, tile_m, tile_n, tile_k) = data
 
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         cutile_moe(hidden_states, w1, w2, topk_weights, topk_ids, tile_m, tile_n, tile_k)
     end
 
@@ -366,7 +367,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed begin
+                t = CUDACore.@elapsed begin
                     out = cutile_moe(hidden_states, w1, w2, topk_weights, topk_ids,
                                      tile_m, tile_n, tile_k)
                 end

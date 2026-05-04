@@ -138,12 +138,64 @@ end
 
 const tile_ir_support = PerDevice{Union{Nothing, VersionNumber}}()
 
+const toolkit_version_lock = ReentrantLock()
+const toolkit_version_ref  = Ref{Union{Nothing, String}}(nothing)
+
+# Matches the `V<major>.<minor>.<patch>` component of `tileiras --version`,
+# e.g. `V13.2.78`. That's the part that actually identifies the compiler;
+# the surrounding `Built on …` / `Build local.local.…` lines vary across
+# rebuilds of the same logical version and would over-invalidate the cache.
+const TILEIRAS_VERSION_REGEX = r"V(\d+\.\d+\.\d+)"
+
+"""
+    toolkit_version() -> String
+
+Lazy-cached `tileiras` toolkit identity, used as the toolkit-identity
+component of the disk-cache key so distinct CUDA Toolkit patches
+(e.g. `13.2.51` vs `13.2.78`) produce distinct cubins.
+
+We invoke `tileiras --version` once per process and pull out the
+`V<major>.<minor>.<patch>` token (the only thing that actually
+identifies the compiler — `Built on …` and `Build local.local.…`
+lines also vary across rebuilds of the same logical version, which
+would over-invalidate the cache).
+
+`CUDA_Compiler_jll.cuda_version` is not enough on its own: it only
+exposes major.minor, so different patches would alias. cuTile Python
+sidesteps the parsing problem by hashing the entire `--version`
+stdout (`_get_compiler_version_string` in `_compile.py`); we extract
+the V-token instead and fall back to the full stdout only if the
+regex misses, so a future format change degrades to Python-style
+over-invalidation rather than aliasing distinct compilers.
+
+Failure to invoke `tileiras` returns the string `"unknown"` so the
+cache still functions (all entries collapse into a single toolkit
+bucket); it's the caller's job to decide whether that's acceptable.
+"""
+function toolkit_version()
+    v = toolkit_version_ref[]
+    v === nothing || return v
+    Base.@lock toolkit_version_lock begin
+        if toolkit_version_ref[] === nothing
+            cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) --version`,
+                         "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
+            proc, log = run_and_collect(cmd)
+            success(proc) ||
+                error("tileiras --version failed: $(proc.exitcode), log: $log")
+
+            m = match(TILEIRAS_VERSION_REGEX, log)
+            isnothing(m) && error("tileiras --version output did not match expected format: $log")
+
+            toolkit_version_ref[] = m.captures[1]
+        end
+        return toolkit_version_ref[]
+    end
+end
+
 """
     check_tile_ir_support()
 
 Validate that the current CUDA toolkit supports Tile IR on the active device.
-Result is cached per `(capability, cuda_version)` — checking compute capability
-and toolkit version on every kernel launch is wasteful.
 """
 function check_tile_ir_support()
     @static if !CUDA_Compiler_jll.is_available()
@@ -252,6 +304,26 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
     opt_level = something(resolve_hint(unpack_hint(cache.owner.opt_level),
                                        kernel_meta, :opt_level, sm_arch), 3)
 
+    # Disk cache lookup. The hash covers every input that changes the CUBIN
+    # — bytecode + sm_arch + opt_level + tileiras toolkit version — so
+    # different toolkit versions never collide. `bytecode_version` is encoded
+    # in the bytecode itself, so it's covered transitively by the bytecode hash.
+    dc = DiskCache.global_cache()
+    cache_key = nothing
+    if dc !== nothing
+        cache_key = DiskCache.compute_key(bytecode, sm_arch, opt_level, toolkit_version())
+        cubin = try
+            DiskCache.get(dc, cache_key)
+        catch err
+            @debug "cuTile disk cache lookup failed" exception=(err, catch_backtrace())
+            nothing
+        end
+        if cubin !== nothing
+            res.cuda_bin = cubin
+            return cubin
+        end
+    end
+
     # Run tileiras to produce CUBIN
     input_path = tempname() * ".tile"
     output_path = tempname() * ".cubin"
@@ -281,23 +353,30 @@ function emit_binary!(cache::CacheView, mi::Core.MethodInstance,
         rm(output_path, force=true)
     end
 
+    if cache_key !== nothing
+        try
+            DiskCache.put!(dc, cache_key, res.cuda_bin)
+        catch err
+            @debug "cuTile disk cache store failed" exception=(err, catch_backtrace())
+        end
+    end
+
     return res.cuda_bin
 end
 
 """
-    emit_function!(cache, mi, ci, res; const_argtypes=nothing) -> CuFunction
+    link(cache, mi, ci, res) -> CuFunction
 
-Cached function phase: load CUBIN into GPU memory as a CuFunction.
+GPU-side link phase: load the CUBIN cached in `res.cuda_bin` (produced by
+[`compile`](@ref)) onto the active CUDA device and return the resulting
+`CuFunction`.
 """
-function emit_function!(cache::CacheView, mi::Core.MethodInstance,
-                        ci::Core.CodeInstance, res::CuTileResults;
-                        const_argtypes::Union{Vector{Any}, Nothing}=nothing)
-    cubin = emit_binary!(cache, mi, ci, res; const_argtypes)
-
+function link(cache::CacheView, mi::Core.MethodInstance,
+              ci::Core.CodeInstance, res::CuTileResults)
     res.cuda_func !== nothing && return res.cuda_func
 
     kernel_name = sanitize_name(string(mi.def.name))
-    cumod = CuModule(cubin)
+    cumod = CuModule(res.cuda_bin::Vector{UInt8})
     cufunc = CuFunction(cumod, kernel_name)
     res.cuda_func = cufunc
     return cufunc
@@ -355,6 +434,23 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     # specializes on `tt`, so this loop unrolls per kernel signature.
     argtypes, const_argtypes = unwrap_argtypes(f, tt)
 
+    # The compilation pipeline (typeinf!, codegen, bytecode emission) gets
+    # invalidated by any package that defines methods on Base.Compiler hooks
+    # like `OptimizationParams(::AbstractInterpreter)`. To reuse precompiled
+    # native code, run the pipeline in the world captured at __init__.
+    invoke_frozen(cufunction_compile, f, tt, argtypes, const_argtypes, key)::TileKernel{Core.Typeof(f), tt}
+end
+
+"""
+    compile(f, argtypes, const_argtypes, key) -> (cache, mi, ci, res)
+
+Host-side compile phase: run inference, codegen, bytecode emission, and
+`tileiras` to produce a CUBIN. Returns the compilation cache state needed
+by [`link`](@ref) to load the result onto the GPU. No CUDA context required.
+"""
+function compile(@nospecialize(f), @nospecialize(argtypes),
+                 const_argtypes::Union{Vector{Any}, Nothing},
+                 key::TileCacheKey)
     world = Base.get_world_counter()
     mi = method_instance(f, argtypes; world)
     mi === nothing && throw(MethodError(f, argtypes))
@@ -376,7 +472,19 @@ function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{};
     # Always walk the emit chain (each phase short-circuits on its own cached
     # field, but `emit_structured!` also fires `compile_hook` for reflection,
     # which has to run on every launch even when the cube/cufunc is cached).
-    cufunc = emit_function!(cache, mi, ci, res; const_argtypes)
+    emit_binary!(cache, mi, ci, res; const_argtypes)
+    return cache, mi, ci, res
+end
+
+# Inner compilation routine; called via `invoke_frozen` so its method dispatches
+# happen in the world captured at __init__, reusing precompiled native code
+# even when later-loaded packages would otherwise have invalidated it.
+function cufunction_compile(@nospecialize(f), @nospecialize(tt), @nospecialize(argtypes),
+                             const_argtypes::Union{Vector{Any}, Nothing},
+                             key::TileCacheKey)
+    cache, mi, ci, res = compile(f, argtypes, const_argtypes, key)
+
+    cufunc = link(cache, mi, ci, res)
 
     res.tile_kernel !== nothing && return res.tile_kernel::TileKernel{Core.Typeof(f), tt}
     kernel = TileKernel{Core.Typeof(f), tt}(f, cufunc)

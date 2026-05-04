@@ -8,7 +8,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-using CUDA, NVTX
+using CUDACore, NVTX
+import cuRAND, cuFFT
 using cuTile: cuTile
 import cuTile as ct
 using Test
@@ -198,8 +199,8 @@ function prepare(; benchmark::Bool=false,
     n = prod(factors)
     @assert (n * 2) % atom_packing_dim == 0 "N*2 must be divisible by atom_packing_dim"
 
-    CUDA.seed!(42)
-    input = CUDA.randn(ComplexF32, n, batch)
+    cuRAND.seed!(42)
+    input = cuRAND.randn(ComplexF32, n, batch)
 
     W0, W1, W2, T0, T1 = make_twiddles(factors)
     W0_gpu = CuArray(W0)
@@ -233,7 +234,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     F0F2 = F0 * F2
     grid = (batch, 1, 1)
 
-    CUDA.@sync for _ in 1:warmup
+    CUDACore.@sync for _ in 1:warmup
         @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2), ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
     end
 
@@ -241,7 +242,7 @@ function run(data; nruns::Int=1, warmup::Int=0)
     NVTX.@range "cuTile" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
-                t = CUDA.@elapsed @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2), ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
+                t = CUDACore.@elapsed @cuda backend=cuTile blocks=grid fft_kernel(x_packed, y_packed, W0_gpu, W1_gpu, W2_gpu, T0_gpu, T1_gpu, ct.Constant(n), ct.Constant(F0), ct.Constant(F1), ct.Constant(F2), ct.Constant(F0F1), ct.Constant(F1F2), ct.Constant(F0F2), ct.Constant(batch), ct.Constant(D), ct.Constant(N2D))
                 push!(times, t * 1000)  # ms
             end
         end
@@ -274,15 +275,15 @@ function run_others(data; nruns::Int=1, warmup::Int=0)
     (; input, batch, n) = data
     results = Dict{String, Vector{Float64}}()
 
-    CUDA.@sync for _ in 1:warmup
-        CUDA.CUFFT.fft!(copy(input), 1)
+    CUDACore.@sync for _ in 1:warmup
+        cuFFT.fft!(copy(input), 1)
     end
     times_cufft = Float64[]
     NVTX.@range "cuFFT" begin
         for i in 1:nruns
             NVTX.@range "run $i" begin
                 input_copy = copy(input)
-                t = CUDA.@elapsed CUDA.CUFFT.fft!(input_copy, 1)
+                t = CUDACore.@elapsed cuFFT.fft!(input_copy, 1)
                 push!(times_cufft, t * 1000)
             end
         end
@@ -296,24 +297,23 @@ end
  Main
 =============================================================================#
 
-function main()
-    println("--- Running cuTile FFT Example ---")
-
-    data = prepare()
-    println("  Configuration:")
-    println("    FFT Size (N): $(data.n)")
-    println("    Batch Size: $(data.batch)")
-    println("    FFT Factors: $(data.factors)")
-    println("    Atom Packing Dim: $(data.D)")
-    println("\nInput data shape: $(size(data.input)), dtype: $(eltype(data.input))")
-
+function test_fft(batch, factors; name=nothing)
+    n = prod(factors)
+    name = something(name, "fft batch=$batch, size=$n, factors=$factors")
+    println("--- $name ---")
+    data = prepare(; batch, factors)
     result = run(data)
-    println("cuTile FFT Output shape: $(size(result.output)), dtype: $(eltype(result.output))")
-
     verify(data, result)
-    println("\n✓ Correctness check PASSED")
+    println("  passed")
+end
 
-    println("\n--- cuTile FFT example execution complete ---")
+function main()
+    println("--- cuTile FFT Examples ---\n")
+
+    test_fft(64, (8, 8, 8))
+    test_fft(32, (8, 8, 8))
+
+    println("\n--- All FFT examples completed ---")
 end
 
 isinteractive() || main()

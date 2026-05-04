@@ -20,8 +20,6 @@ Base.union(other, ::AliasUniverse) = ALIAS_UNIVERSE
 Base.intersect(::AliasUniverse, other) = other
 Base.intersect(other, ::AliasUniverse) = other
 Base.:(==)(::AliasUniverse, ::AliasUniverse) = true
-Base.:(==)(::AliasUniverse, other) = false
-Base.:(==)(other, ::AliasUniverse) = false
 
 """
     AliasSet
