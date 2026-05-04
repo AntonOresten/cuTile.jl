@@ -1,5 +1,10 @@
 using PrecompileTools: @setup_workload, @compile_workload
 
+# Load REPL so that interactive use doesn't invalidate cuTile.jl (REPL.jl's
+# `OptimizationParams(::REPLInterpreter)` and other AbsInt methods cause
+# invalidation of cuTileInterpreter versions)
+import REPL
+
 @setup_workload begin
     # Drive the Julia → Tile IR compilation pipeline at precompile time so the
     # first user-visible kernel launch doesn't have to JIT-compile the entire
