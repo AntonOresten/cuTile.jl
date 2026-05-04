@@ -348,6 +348,11 @@ Index is 1-indexed. Shape must be compile-time constant.
   Default: `nothing` → identity `(1, 2, ..., N)`.
 
 # Padding Modes
+
+For a tile that partially extends beyond the array boundaries, out-of-bounds
+elements are filled according to `padding_mode`. If the tile lies entirely
+outside the array, the behavior is undefined regardless of `padding_mode`.
+
 - `PaddingMode.Undetermined`: Unspecified behavior for OOB access
 - `PaddingMode.Zero`: Return zero for OOB elements
 - `PaddingMode.NegZero`: Return negative zero for OOB elements
@@ -429,6 +434,10 @@ end
 
 Store a tile to a TileArray at the given index. Index is 1-indexed.
 Returns the stored tile (enables chaining and helps constant folding).
+
+For a tile that partially extends beyond the array boundaries, out-of-bounds
+elements are ignored. If the tile lies entirely outside the array, the
+behavior is undefined.
 
 # Dimension Ordering
 - `order`: Optional tuple specifying the logical-to-physical dimension mapping (1-indexed).
