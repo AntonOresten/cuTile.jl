@@ -135,8 +135,7 @@ end
 
 const tile_ir_support = PerDevice{Union{Nothing, VersionNumber}}()
 
-const toolkit_version_lock = ReentrantLock()
-const toolkit_version_ref  = Ref{Union{Nothing, String}}(nothing)
+const toolkit_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, String}}(nothing))
 
 # Bytecode versions cuTile.jl can emit, in ascending order. Each version listed
 # here is one we have explicit `cb.version >= v"X.Y"` handling for in
@@ -144,8 +143,7 @@ const toolkit_version_ref  = Ref{Union{Nothing, String}}(nothing)
 # to find the highest entry it accepts.
 const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2")
 
-const max_bytecode_version_lock = ReentrantLock()
-const max_bytecode_version_ref  = Ref{Union{Nothing, VersionNumber}}(nothing)
+const max_bytecode_version_cache = Base.Lockable(Base.RefValue{Union{Nothing, VersionNumber}}(nothing))
 
 # Matches the `V<major>.<minor>.<patch>` component of `tileiras --version`,
 # e.g. `V13.2.78`. That's the part that actually identifies the compiler;
@@ -179,22 +177,21 @@ cache still functions (all entries collapse into a single toolkit
 bucket); it's the caller's job to decide whether that's acceptable.
 """
 function toolkit_version()
-    v = toolkit_version_ref[]
-    v === nothing || return v
-    Base.@lock toolkit_version_lock begin
-        if toolkit_version_ref[] === nothing
-            cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) --version`,
-                         "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
-            proc, log = run_and_collect(cmd)
-            success(proc) ||
-                error("tileiras --version failed: $(proc.exitcode), log: $log")
+    Base.@lock toolkit_version_cache begin
+        ref = toolkit_version_cache[]
+        ref[] === nothing || return ref[]::String
 
-            m = match(TILEIRAS_VERSION_REGEX, log)
-            isnothing(m) && error("tileiras --version output did not match expected format: $log")
+        cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) --version`,
+                     "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
+        proc, log = run_and_collect(cmd)
+        success(proc) ||
+            error("tileiras --version failed: $(proc.exitcode), log: $log")
 
-            toolkit_version_ref[] = m.captures[1]
-        end
-        return toolkit_version_ref[]
+        m = match(TILEIRAS_VERSION_REGEX, log)
+        isnothing(m) && error("tileiras --version output did not match expected format: $log")
+
+        ref[] = m.captures[1]
+        return ref[]::String
     end
 end
 
@@ -215,13 +212,11 @@ capabilities. Mirrors `_get_max_supported_bytecode_version` in cuTile
 Python's `_compile.py`.
 """
 function max_supported_bytecode_version()
-    v = max_bytecode_version_ref[]
-    v === nothing || return v
-    Base.@lock max_bytecode_version_lock begin
-        if max_bytecode_version_ref[] === nothing
-            max_bytecode_version_ref[] = probe_max_bytecode_version()
-        end
-        return max_bytecode_version_ref[]::VersionNumber
+    Base.@lock max_bytecode_version_cache begin
+        ref = max_bytecode_version_cache[]
+        ref[] === nothing || return ref[]::VersionNumber
+        ref[] = probe_max_bytecode_version()
+        return ref[]::VersionNumber
     end
 end
 
