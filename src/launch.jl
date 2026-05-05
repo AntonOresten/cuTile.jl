@@ -123,9 +123,6 @@ TileCacheKey(sm_arch::VersionNumber, bytecode_version::VersionNumber,
  Toolkit / device validation (cached: once per `(capability, cuda_version)`).
 =============================================================================#
 
-const _tile_ir_support_cache = Dict{Tuple{VersionNumber, VersionNumber}, VersionNumber}()
-const _tile_ir_support_lock = ReentrantLock()
-
 function run_and_collect(cmd)
     stdout = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout, stderr=stdout), wait=false)
@@ -140,6 +137,15 @@ const tile_ir_support = PerDevice{Union{Nothing, VersionNumber}}()
 
 const toolkit_version_lock = ReentrantLock()
 const toolkit_version_ref  = Ref{Union{Nothing, String}}(nothing)
+
+# Bytecode versions cuTile.jl can emit, in ascending order. Each version listed
+# here is one we have explicit `cb.version >= v"X.Y"` handling for in
+# `bytecode/encodings.jl`. `max_supported_bytecode_version()` probes `tileiras`
+# to find the highest entry it accepts.
+const SUPPORTED_BYTECODE_VERSIONS = (v"13.1", v"13.2")
+
+const max_bytecode_version_lock = ReentrantLock()
+const max_bytecode_version_ref  = Ref{Union{Nothing, VersionNumber}}(nothing)
 
 # Matches the `V<major>.<minor>.<patch>` component of `tileiras --version`,
 # e.g. `V13.2.78`. That's the part that actually identifies the compiler;
@@ -193,9 +199,64 @@ function toolkit_version()
 end
 
 """
+    max_supported_bytecode_version() -> VersionNumber
+
+Detect the highest Tile IR bytecode version that the current `tileiras`
+binary accepts. Probes by writing a minimal empty bytecode buffer at each
+entry of [`SUPPORTED_BYTECODE_VERSIONS`] (newest first) and invoking
+`tileiras` on it; returns the first version that compiles cleanly.
+
+Result is cached for the lifetime of the process.
+
+We probe rather than reading `CUDA_Compiler_jll.cuda_version` because
+users can override `tileiras` via JLL preferences, in which case the
+JLL's static `cuda_version` no longer reflects the actual binary's
+capabilities. Mirrors `_get_max_supported_bytecode_version` in cuTile
+Python's `_compile.py`.
+"""
+function max_supported_bytecode_version()
+    v = max_bytecode_version_ref[]
+    v === nothing || return v
+    Base.@lock max_bytecode_version_lock begin
+        if max_bytecode_version_ref[] === nothing
+            max_bytecode_version_ref[] = probe_max_bytecode_version()
+        end
+        return max_bytecode_version_ref[]::VersionNumber
+    end
+end
+
+function probe_max_bytecode_version()
+    last_log = ""
+    for version in reverse(SUPPORTED_BYTECODE_VERSIONS)
+        # Empty bytecode (no functions) — just a header + section terminator.
+        probe = write_bytecode!(0; version) do writer, func_buf
+        end
+        input_path = tempname() * ".tile"
+        output_path = tempname() * ".cubin"
+        try
+            write(input_path, probe)
+            cmd = addenv(`$(CUDA_Compiler_jll.tileiras()) $input_path -o $output_path --gpu-name sm_100`,
+                         "CUDA_ROOT" => CUDA_Compiler_jll.artifact_dir)
+            proc, log = run_and_collect(cmd)
+            success(proc) && return version
+            last_log = log
+        finally
+            rm(input_path, force=true)
+            rm(output_path, force=true)
+        end
+    end
+    error("tileiras rejected every supported bytecode version " *
+          "($(join(reverse(SUPPORTED_BYTECODE_VERSIONS), ", "))); last log:\n$last_log")
+end
+
+"""
     check_tile_ir_support()
 
-Validate that the current CUDA toolkit supports Tile IR on the active device.
+Validate that the current `tileiras` toolkit supports Tile IR on the active
+device. Returns the bytecode version cuTile should emit for this device:
+the highest version `tileiras` accepts (per [`max_supported_bytecode_version`]),
+provided it meets the device's minimum requirement (Blackwell ≥ v13.1,
+Ampere/Ada ≥ v13.2).
 """
 function check_tile_ir_support()
     @static if !CUDA_Compiler_jll.is_available()
@@ -204,26 +265,21 @@ function check_tile_ir_support()
 
     dev = device()
     ver = get!(tile_ir_support, dev) do
-        if !CUDA_Compiler_jll.is_available()
-            @error "CUDA_Compiler_jll is not available; cannot compile Tile IR kernels"
-            return nothing
-        end
-        cuda_ver = CUDA_Compiler_jll.cuda_version
-        bytecode_version = VersionNumber(cuda_ver.major, cuda_ver.minor)
+        bytecode_version = max_supported_bytecode_version()
 
         cap = capability(dev)
         sm_str = format_sm_arch(cap)
         if cap >= v"10.0"       # Blackwell
-            if cuda_ver < v"13.1"
-                @error "Tile IR on Blackwell ($sm_str) requires CUDA ≥ 13.1, got $cuda_ver"
+            if bytecode_version < v"13.1"
+                @error "Tile IR on Blackwell ($sm_str) requires bytecode ≥ v13.1, detected v$bytecode_version"
                 return nothing
             end
         elseif cap >= v"9.0"    # Hopper — not supported
             @error "Tile IR is not supported on Hopper ($sm_str)"
             return nothing
         elseif cap >= v"8.0"    # Ampere / Ada
-            if cuda_ver < v"13.2"
-                @error "Tile IR on Ampere/Ada ($sm_str) requires CUDA ≥ 13.2, got $cuda_ver"
+            if bytecode_version < v"13.2"
+                @error "Tile IR on Ampere/Ada ($sm_str) requires bytecode ≥ v13.2, detected v$bytecode_version"
                 return nothing
             end
         else

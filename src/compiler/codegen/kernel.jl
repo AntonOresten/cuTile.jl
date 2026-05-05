@@ -20,7 +20,7 @@ function emit_kernel!(writer::BytecodeWriter, func_buf::Vector{UInt8},
                       cache::CacheView,
                       const_argtypes::Union{Vector{Any}, Nothing} = nothing)
     tt = writer.type_table
-    cb = CodeBuilder(writer.string_table, writer.constant_table, tt)
+    cb = CodeBuilder(writer.string_table, writer.constant_table, tt; version=writer.version)
 
     # Create debug info emitter
     debug_emitter = DebugInfoEmitter(writer.debug_attr_table)
