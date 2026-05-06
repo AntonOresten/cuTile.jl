@@ -734,7 +734,6 @@ function versioninfo(io::IO=stdout)
 
     install = tileiras_override === nothing ? "artifact installation" : "local installation"
     println(io, "- tileiras $(toolkit_version()), $install")
-    println(io, "  $(tileiras_path())")
 
     bv = max_supported_bytecode_version()
     bv_src = bytecode_version_override === nothing ? "auto-detected" : "set via preference"
