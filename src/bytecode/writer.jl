@@ -1,8 +1,5 @@
 # Bytecode file writer - handles sections and overall structure
 
-# Bytecode version
-const DEFAULT_BYTECODE_VERSION = v"13.1"
-
 # Magic number
 const MAGIC = UInt8[0x7f, 0x54, 0x69, 0x6c, 0x65, 0x49, 0x52, 0x00]  # "\x7fTileIR\x00"
 
@@ -164,7 +161,7 @@ mutable struct CodeBuilder
 end
 
 function CodeBuilder(string_table::StringTable, constant_table::ConstantTable, type_table::TypeTable;
-                     version::VersionNumber=DEFAULT_BYTECODE_VERSION)
+                     version::VersionNumber)
     CodeBuilder(
         UInt8[],
         string_table,
@@ -442,7 +439,7 @@ mutable struct BytecodeWriter
     version::VersionNumber
 end
 
-function BytecodeWriter(; version::VersionNumber=DEFAULT_BYTECODE_VERSION)
+function BytecodeWriter(; version::VersionNumber)
     string_table = StringTable()
     BytecodeWriter(
         UInt8[],
@@ -553,7 +550,7 @@ Write complete bytecode to a buffer.
 Returns the buffer with all sections.
 """
 function write_bytecode!(f::Function, num_functions::Int;
-                         version::VersionNumber=DEFAULT_BYTECODE_VERSION)
+                         version::VersionNumber)
     writer = BytecodeWriter(; version)
 
     # Function section content

@@ -617,9 +617,12 @@ end
 # Process-wide singleton
 # ===========================================================================
 
-const _global_cache             = Ref{Union{Cache, Nothing}}(nothing)
-const _global_cache_initialized = Ref(false)
-const _global_cache_lock        = ReentrantLock()
+mutable struct GlobalCacheState
+    initialized::Bool
+    cache::Union{Cache, Nothing}
+end
+
+const global_cache_state = Base.Lockable(GlobalCacheState(false, nothing))
 
 """
     global_cache() -> Union{Cache, Nothing}
@@ -630,14 +633,14 @@ scratchspace (so Pkg can clean it up when cuTile is uninstalled).
 Failures are remembered; subsequent calls don't keep retrying.
 """
 function global_cache()
-    _global_cache_initialized[] && return _global_cache[]
-    Base.@lock _global_cache_lock begin
-        if !_global_cache_initialized[]
-            _global_cache[] = try_init()
-            _global_cache_initialized[] = true
+    Base.@lock global_cache_state begin
+        st = global_cache_state[]
+        if !st.initialized
+            st.cache = try_init()
+            st.initialized = true
         end
+        return st.cache
     end
-    return _global_cache[]
 end
 
 function try_init()

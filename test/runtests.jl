@@ -1,7 +1,12 @@
 import cuTile, CUDA
 using ParallelTestRunner
+using InteractiveUtils: versioninfo
 
 CUDA.functional() || error("CUDA.jl is not functional; cuTile tests require a working GPU")
+
+@info "Julia information:\n" * sprint(io -> versioninfo(io))
+@info "CUDA information:\n" * sprint(io -> CUDA.versioninfo(io))
+@info "cuTile information:\n" * sprint(io -> cuTile.versioninfo(io))
 
 const init_code = quote
     using cuTile
