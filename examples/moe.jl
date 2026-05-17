@@ -204,24 +204,12 @@ function invoke_silu_and_mul_kernel(AB, C)
     inter = size(C, 1)  # C is (intermediate, total_tokens)
     total = size(AB, 2)
 
-    # Split AB(inter*2, total) into gate and up halves along dim 1.
-    #A_half = AB[1:inter, :]
-    #B_half = AB[inter+1:2*inter, :]
-    # FIXME: CUDA.jl's CuArray indexing (AB[1:inter, :]) uses a slow generic kernel.
-    # Use unsafe_copy2d! (cuMemcpy2D) for hardware-accelerated pitched 2D copy instead.
-    T = eltype(AB)
-    A_half = similar(AB, inter, total)
-    B_half = similar(AB, inter, total)
-    src_pitch = size(AB, 1) * sizeof(T)
-    dst_pitch = inter * sizeof(T)
-    CUDACore.unsafe_copy2d!(pointer(A_half), CUDACore.DeviceMemory,
-                        pointer(AB), CUDACore.DeviceMemory,
-                        inter, total; srcPitch=src_pitch, dstPitch=dst_pitch,
-                        async=true)
-    CUDACore.unsafe_copy2d!(pointer(B_half), CUDACore.DeviceMemory,
-                        pointer(AB) + inter * sizeof(T), CUDACore.DeviceMemory,
-                        inter, total; srcPitch=src_pitch, dstPitch=dst_pitch,
-                        async=true)
+    # Split AB(inter*2, total) into gate and up halves along dim 1 — mirrors
+    # cuTile Python's `AB.chunk(2, dim=-1)`. Views are non-contiguous along
+    # dim 2 but each block only loads a (TILE_N, 1) tile, so codegen is
+    # unaffected.
+    A_half = view(AB, 1:inter, :)
+    B_half = view(AB, (inter + 1):(2 * inter), :)
 
     tile_n = nextpow(2, inter)
     @cuda backend=cuTile blocks=total silu_and_mul_kernel(A_half, B_half, C, ct.Constant(tile_n))
