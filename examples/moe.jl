@@ -18,15 +18,16 @@ import cuTile as ct
  Helper: 2D swizzle (same pattern as matmul.jl)
 =============================================================================#
 
-@inline function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
+function swizzle_2d(M, N, tm, tn, GROUP_SIZE_M, bid)
     num_bid_m = cld(M, Int32(tm))
     num_bid_n = cld(N, Int32(tn))
     num_bid_in_group = Int32(GROUP_SIZE_M) * num_bid_n
-    group_id = fld(bid, num_bid_in_group)
+    bid0 = bid - Int32(1)
+    group_id = fld(bid0, num_bid_in_group)
     first_bid_m = group_id * Int32(GROUP_SIZE_M)
     group_size_m = min(num_bid_m - first_bid_m, Int32(GROUP_SIZE_M))
-    bid_m = first_bid_m + rem(bid, group_size_m)
-    bid_n = fld(rem(bid, num_bid_in_group), group_size_m)
+    bid_m = first_bid_m + rem(bid0, group_size_m) + Int32(1)
+    bid_n = fld(rem(bid0, num_bid_in_group), group_size_m) + Int32(1)
     return bid_m, bid_n
 end
 
@@ -53,19 +54,18 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
     K = size(B, 1)
     N = size(B, 2)
 
-    bid = ct.bid(1) - Int32(1)  # 0-indexed for swizzle
+    bid = ct.bid(1)
     bid_m, bid_n = swizzle_2d(M, N, TILE_M, TILE_N, Int32(8), bid)
 
     # Gather 1-indexed token IDs for this block
-    token_id_indices = bid_m * Int32(TILE_M) .+ ct.arange(TILE_M)
+    token_id_indices = (bid_m - Int32(1)) * Int32(TILE_M) .+ ct.arange(TILE_M)
     token_ids = ct.gather(sorted_token_ids, token_id_indices)
 
-    # Map 1-indexed flat token_id to 1-indexed column in A
-    # token_id k → original token = (k-1) ÷ num_token_replicas + 1
-    a_tok_indices = (token_ids .- Int32(1)) .÷ Int32(num_token_replicas) .+ Int32(1)
+    # 1-indexed flat token_id → 1-indexed column in A. Each original token
+    # has `num_token_replicas` consecutive ids; ceil-divide recovers it.
+    a_tok_indices = cld.(token_ids, Int32(num_token_replicas))
 
-    # Expert for this block (scalar, 1-indexed tile index for load)
-    expert_id = sorted_expert_ids[bid_m + Int32(1)]
+    expert_id = sorted_expert_ids[bid_m]
 
     acc = zeros(Float32, TILE_N, TILE_M)
     num_k = cld(K, Int32(TILE_K))
@@ -81,7 +81,7 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
         # B is (K, N, num_experts): load (TILE_N, TILE_K) slice for this expert
         # order=(2,1,3) folds the transpose into the load via dim_map, matching
         # Python cuTile's order=(0,2,1) and avoiding an explicit permute in Tile IR.
-        b = ct.load(B; index=(bid_n + Int32(1), k, expert_id),
+        b = ct.load(B; index=(bid_n, k, expert_id),
                     shape=(TILE_N, TILE_K, 1), order=(2, 1, 3),
                     padding_mode=ct.PaddingMode.Zero)
         b = reshape(b, (TILE_N, TILE_K))
@@ -97,7 +97,7 @@ function fused_moe_kernel(A::ct.TileArray{T, 2}, B::ct.TileArray{T, 3},
 
     # Scatter result to C at token_id positions
     # C is (N, total_tokens): dim 1 = N, dim 2 = tokens
-    c_n_indices = bid_n * Int32(TILE_N) .+ ct.arange(TILE_N)  # 1-indexed
+    c_n_indices = (bid_n - Int32(1)) * Int32(TILE_N) .+ ct.arange(TILE_N)  # 1-indexed
     output = convert(ct.Tile{T}, acc)
     ct.scatter(C, (reshape(c_n_indices, (TILE_N, 1)),
                    reshape(token_ids, (1, TILE_M))), output)
