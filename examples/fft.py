@@ -152,12 +152,13 @@ def run(data, *, nruns: int = 1, warmup: int = 0):
     F0, F1, F2 = data["factors"]
     batch, N, D = data["batch"], data["N"], data["D"]
 
-    grid = (batch, 1, 1)
+    BS = 1
+    grid = (batch // BS, 1, 1)
 
     # Warmup
     for _ in range(warmup):
         ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
-                  (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, batch, D))
+                  (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, BS, D))
     torch.cuda.synchronize()
 
     # Timed runs
@@ -169,7 +170,7 @@ def run(data, *, nruns: int = 1, warmup: int = 0):
                 end = torch.cuda.Event(enable_timing=True)
                 start.record()
                 ct.launch(torch.cuda.current_stream(), grid, fft_kernel,
-                          (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, batch, D))
+                          (x_packed, y_packed, W0, W1, W2, T0, T1, N, F0, F1, F2, BS, D))
                 end.record()
                 torch.cuda.synchronize()
                 times.append(start.elapsed_time(end))  # ms
