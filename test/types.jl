@@ -182,6 +182,20 @@ end
     @test_throws ArgumentError cuTile.format_sm_arch(v"10.0.1")
 end
 
+@testset "tile_ir_requirement" begin
+    # Blackwell (sm_100+) requires bytecode ≥ v13.1
+    @test cuTile.tile_ir_requirement(v"10.0") == ("Blackwell", v"13.1")
+    @test cuTile.tile_ir_requirement(v"12.1") == ("Blackwell", v"13.1")
+    # Hopper (sm_90) requires bytecode ≥ v13.3
+    @test cuTile.tile_ir_requirement(v"9.0") == ("Hopper", v"13.3")
+    # Ampere / Ada (sm_80..sm_89) requires bytecode ≥ v13.2
+    @test cuTile.tile_ir_requirement(v"8.0") == ("Ampere/Ada", v"13.2")
+    @test cuTile.tile_ir_requirement(v"8.9") == ("Ampere/Ada", v"13.2")
+    # Pre-Ampere is unsupported
+    @test cuTile.tile_ir_requirement(v"7.5") === nothing
+    @test cuTile.tile_ir_requirement(v"7.0") === nothing
+end
+
 @testset "@compiler_options validation" begin
     # Invalid num_ctas (not power of 2) should throw at definition time
     @test_throws "num_ctas must be" @eval function _test_bad_ctas(a::ct.TileArray{Float32,1})
