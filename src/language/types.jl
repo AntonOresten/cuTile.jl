@@ -377,6 +377,23 @@ similar_type(::Type{Tile{T, Shape}}, ::Type{U}, new_shape::Tuple) where {T, Shap
 similar_type(::Type{<:Tile{T}}, ::Type{U}) where {T, U} = Tile{U}
 similar_type(::Type, ::Type{T}) where {T} = T  # fallback for non-Tile types
 
+"""
+    bitwidth(::Type{T}) -> Int
+
+Number of bits a single element of `T` occupies in a Tile IR tile. Used by the
+whole-tile [`reinterpret`](@ref Base.reinterpret(::Type, ::Tile)) to scale the
+tile shape across a change of element width (e.g. `UInt8` ↔ `Float4_E2M1FN`,
+8 bits ↔ 4 bits).
+
+The default is `8 * sizeof(T)`, which is correct for the standard integer and
+floating-point types and for the byte-wide `Float8_*` formats. Sub-byte formats
+whose `sizeof` rounds up to a whole byte (e.g. `Float4_E2M1FN`, 4 bits but
+`sizeof == 1`) override this; the `Microfloats` extension forwards to
+`Microfloats.bitwidth`, which derives the true width from the format's bit
+fields. Matches the `bitwidth` convention used by `Microfloats`/`Narrow`.
+"""
+bitwidth(::Type{T}) where {T} = 8 * sizeof(T)
+
 
 """
     TFloat32 <: AbstractFloat

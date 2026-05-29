@@ -96,6 +96,8 @@ module Opcode
     const XOrIOp = 108
     const YieldOp = 109
     const Atan2Op = 110  # since 13.2
+    const PackOp = 111   # since 13.3
+    const UnpackOp = 112 # since 13.3
 end
 
 # Enums for operation attributes
@@ -1791,6 +1793,36 @@ Source and target must have the same bitwidth. Opcode: 9
 """
 function encode_BitcastOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
     encode_varint!(cb.buf, Opcode.BitcastOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_PackOp!(cb, result_type, source) -> Value
+
+Pack a rank-1 numeric tile into a rank-1 `tile<i8>`. Unlike `bitcast`, this is
+not element-wise: the whole tile is reinterpreted as a byte array, so the result
+length is the input's total byte count. The source must not be an 8-bit type
+(use `bitcast`). Since 13.3. Opcode: 111
+"""
+function encode_PackOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.PackOp)
+    encode_typeid!(cb.buf, result_type)
+    encode_operand!(cb.buf, source)
+    return new_op!(cb)
+end
+
+"""
+    encode_UnpackOp!(cb, result_type, source) -> Value
+
+Unpack a rank-1 `tile<i8>` into a rank-1 numeric tile (the inverse of
+[`encode_PackOp!`](@ref)). The input byte count must equal the output's total
+byte count. The result must not be an 8-bit type (use `bitcast`). Since 13.3.
+Opcode: 112
+"""
+function encode_UnpackOp!(cb::CodeBuilder, result_type::TypeId, source::Value)
+    encode_varint!(cb.buf, Opcode.UnpackOp)
     encode_typeid!(cb.buf, result_type)
     encode_operand!(cb.buf, source)
     return new_op!(cb)

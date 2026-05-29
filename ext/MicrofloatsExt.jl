@@ -1,6 +1,7 @@
 module MicrofloatsExt
 
 import cuTile as ct
+import Microfloats
 
 using Microfloats: Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN
 
@@ -13,6 +14,13 @@ ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E4M3FN}) = ct.F8E4M3F
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E5M2})   = ct.F8E5M2(table)
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float8_E8M0FNU}) = ct.F8E8M0FNU(table)
 ct.julia_to_tile_dtype!(table::ct.TypeTable, ::Type{Float4_E2M1FN})  = ct.F4E2M1FN(table)
+
+# Microfloats are byte-storage primitives (`sizeof == 1`), so cuTile's default
+# `bitwidth` (8 * sizeof) over-counts the sub-byte formats. Forward to
+# `Microfloats.bitwidth`, which derives the true width from the format's bit
+# fields (e.g. `Float4_E2M1FN` → 4), so whole-tile `reinterpret` packs/unpacks
+# them through `UInt8` correctly.
+ct.bitwidth(::Type{T}) where {T<:Microfloats.Microfloat} = Microfloats.bitwidth(T)
 
 # E8M0FNU has no sign bit and represents a power of two; tileiras rejects
 # nearest-even on f32→E8M0FNU (only `zero` and `positive_inf` are valid).

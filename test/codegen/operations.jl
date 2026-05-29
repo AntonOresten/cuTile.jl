@@ -1140,6 +1140,59 @@ end
         end
     end
 
+    @testset "reinterpret (whole-tile)" begin
+        # Equal width, different Tile IR dtype (Float16 -> Int16): whole-tile
+        # reinterpret is a plain bitcast — no pack/unpack, shape preserved.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float16,1,spec1d}, ct.TileArray{Int16,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "bitcast"
+                @check_not "pack"
+                ct.store(b, pid, reinterpret(Int16, tile))
+                return
+            end
+        end
+
+        # Widen UInt8 -> UInt16 (1D): lowers to a single unpack, identity reshapes
+        # folded away.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "unpack"
+                ct.store(b, pid, reinterpret(UInt16, tile))
+                return
+            end
+        end
+
+        # Narrow UInt16 -> UInt8 (1D): lowers to a single pack.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt16,1,spec1d}, ct.TileArray{UInt8,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (8,))
+                @check "pack"
+                ct.store(b, pid, reinterpret(UInt8, tile))
+                return
+            end
+        end
+
+        # pack/unpack require v13.3 — older bytecode rejects with a clear error.
+        let kernel = (a, b) -> begin
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                ct.store(b, pid, reinterpret(UInt16, tile))
+                return
+            end
+            @test_throws "v13.3+" code_tiled(devnull, kernel,
+                Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}};
+                bytecode_version=v"13.2")
+        end
+    end
+
     # TODO: exti - sign/zero extend integer
     # TODO: ftoi - float to integer
     # TODO: itof - integer to float

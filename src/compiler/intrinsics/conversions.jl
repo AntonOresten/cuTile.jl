@@ -53,6 +53,218 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
+@inline lookup_bitwidth(@nospecialize(T::Type)) =
+    Base.invokelatest(bitwidth, T)::Int
+
+# ── Low-level pack / unpack intrinsics (1:1 with cuda_tile.pack / unpack) ──────
+#
+# Both Tile IR ops are rank-1 → rank-1 and reinterpret the *whole tile* as a byte
+# array (not element-wise like bitcast). They are the primitives that the
+# whole-tile `Base.reinterpret` below composes (with `reshape`/`bitcast`) into a
+# Julia-semantics reinterpret of any rank. The 8-bit element types are handled by
+# `bitcast`, never pack/unpack — matching cutile-python's `pack_to_bytes` /
+# `unpack_from_bytes`.
+
+"""
+    Intrinsics.pack(x::Tile{S,Tuple{N}}) -> Tile{UInt8,Tuple{N*bitwidth(S)÷8}}
+
+Pack a rank-1 numeric tile into a rank-1 `UInt8` tile (the tile's bits viewed as
+a byte array); lowers to `cuda_tile.pack`. `S` must not be 8-bit (use `bitcast`).
+Requires Tile IR bytecode v13.3+.
+"""
+@intrinsic pack(x)
+function tfunc(𝕃, ::typeof(Intrinsics.pack), @nospecialize(x))
+    src = CC.widenconst(x)
+    src <: Tile || return nothing
+    S = src.parameters[1]
+    Shape = src.parameters[2]
+    (S isa Type && Shape isa Type) || return nothing
+    dims = Shape.parameters
+    length(dims) == 1 || return nothing
+    n = dims[1]::Int
+    bs = lookup_bitwidth(S)
+    (n * bs) % 8 == 0 || return nothing
+    return Tile{UInt8, Tuple{(n * bs) ÷ 8}}
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pack), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    source = @something emit_value!(ctx, args[1]) throw(IRError("pack: cannot resolve source"))
+    tt.version >= v"13.3" ||
+        throw(IRError("cuda_tile.pack requires Tile IR bytecode v13.3+, got v$(tt.version)"))
+    length(source.shape) == 1 ||
+        throw(IRError("pack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
+
+    src_type = CC.widenconst(source.jltype)
+    S = eltype(src_type)
+    sbits = lookup_bitwidth(S)
+    sbits == 8 &&
+        throw(IRError("pack: 8-bit element type $S should be reinterpreted via bitcast, not packed"))
+    n = source.shape[1]
+    (n * sbits) % 8 == 0 ||
+        throw(IRError("pack: a $n-element $S tile ($(n * sbits) bits) is not a whole number of bytes"))
+    new_n = (n * sbits) ÷ 8
+
+    new_shape = RowMajorShape([new_n])
+    result_type_id = tile_type!(tt, lookup_dtype!(tt, UInt8), new_shape)
+    result_v = encode_PackOp!(cb, result_type_id, source.v)
+    CGVal(result_v, result_type_id, Tile{UInt8, Tuple{new_n}}, new_shape)
+end
+
+"""
+    Intrinsics.unpack(x::Tile{UInt8,Tuple{N}}, ::Type{T}) -> Tile{T,Tuple{N*8÷bitwidth(T)}}
+
+Unpack a rank-1 `UInt8` tile into a rank-1 numeric tile of element type `T` (the
+inverse of [`pack`](@ref Intrinsics.pack)); lowers to `cuda_tile.unpack`. `T`
+must be a compile-time constant and must not be 8-bit (use `bitcast`). Requires
+Tile IR bytecode v13.3+.
+"""
+@intrinsic unpack(x, ::Type{T}) where {T}
+function tfunc(𝕃, ::typeof(Intrinsics.unpack), @nospecialize(x), @nospecialize(target_type))
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
+    src = CC.widenconst(x)
+    src <: Tile || return nothing
+    Shape = src.parameters[2]
+    Shape isa Type || return nothing
+    dims = Shape.parameters
+    length(dims) == 1 || return nothing
+    n = dims[1]::Int
+    bt = lookup_bitwidth(T)
+    (n * 8) % bt == 0 || return nothing
+    return Tile{T, Tuple{(n * 8) ÷ bt}}
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    source = @something emit_value!(ctx, args[1]) throw(IRError("unpack: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("unpack: requires compile-time target type"))
+    tt.version >= v"13.3" ||
+        throw(IRError("cuda_tile.unpack requires Tile IR bytecode v13.3+, got v$(tt.version)"))
+    length(source.shape) == 1 ||
+        throw(IRError("unpack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
+
+    src_type = CC.widenconst(source.jltype)
+    eltype(src_type) === UInt8 ||
+        throw(IRError("unpack: requires a UInt8 tile, got $(eltype(src_type))"))
+    tbits = lookup_bitwidth(target_type)
+    tbits == 8 &&
+        throw(IRError("unpack: 8-bit target $target_type should be reinterpreted via bitcast, not unpacked"))
+    n = source.shape[1]
+    (n * 8) % tbits == 0 ||
+        throw(IRError("unpack: $n bytes ($(n * 8) bits) do not evenly divide into $target_type ($tbits-bit) elements"))
+    new_n = (n * 8) ÷ tbits
+
+    new_shape = RowMajorShape([new_n])
+    result_type_id = tile_type!(tt, lookup_dtype!(tt, target_type), new_shape)
+    result_v = encode_UnpackOp!(cb, result_type_id, source.v)
+    CGVal(result_v, result_type_id, Tile{target_type, Tuple{new_n}}, new_shape)
+end
+
+# ── Whole-tile reinterpret (Julia semantics, any rank) ────────────────────────
+#
+# A tile's row-major byte stream equals the column-major stream of its Julia
+# shape (we store the reversed shape), so flatten → width-convert → reshape
+# reproduces `Base.reinterpret` element-for-element. Equal widths bitcast;
+# crossing 8 bits goes through `pack`/`unpack`; a non-byte → non-byte change
+# routes through bytes (pack then unpack). All the shape arithmetic is
+# compile-time constant, so the intermediate `reshape`s fold away (identity
+# reshapes are eliminated by the canonicalizer) — a rank-1 FP4 reinterpret lowers
+# to a single pack/unpack.
+
+# Width-convert a rank-1 tile to element type `T` (rank-1 in, rank-1 out).
+@inline function reinterpret_width(::Type{T}, flat::Tile{S}) where {T, S}
+    bs = bitwidth(S)
+    bt = bitwidth(T)
+    if bs == bt
+        return Intrinsics.bitcast(flat, T)                          # same width
+    elseif bt == 8
+        return Intrinsics.bitcast(Intrinsics.pack(flat), T)         # S → bytes → T8
+    elseif bs == 8
+        return Intrinsics.unpack(Intrinsics.bitcast(flat, UInt8), T)  # S8 → bytes → T
+    else
+        return Intrinsics.unpack(Intrinsics.pack(flat), T)          # S → bytes → T
+    end
+end
+
+# Result shape for `reinterpret(T, x)`: rescale the leading (column-major)
+# dimension by the element-width ratio, like `reinterpret(T, ::AbstractArray)`.
+@inline function reinterpret_scaled_shape(::Type{T}, ::Type{S}, sz::NTuple{N, Int}) where {T, S, N}
+    bs = bitwidth(S)
+    bt = bitwidth(T)
+    if N == 0
+        bs == bt || throw(ArgumentError("reinterpret: a 0-D $S tile ($bs bits) cannot be reinterpreted as $T ($bt bits)"))
+        return ()
+    end
+    (sz[1] * bs) % bt == 0 ||
+        throw(ArgumentError("reinterpret: leading dimension $(sz[1]) of a $S tile ($(sz[1] * bs) bits) is not divisible by $bt-bit $T"))
+    return (div(sz[1] * bs, bt), Base.tail(sz)...)
+end
+
+# Result shape for `reinterpret(reshape, T, x)`: drop the leading dim on widening
+# (it must equal the ratio), prepend one on narrowing, like the array version.
+@inline function reinterpret_reshape_shape(::Type{T}, ::Type{S}, sz::NTuple{N, Int}) where {T, S, N}
+    bs = bitwidth(S)
+    bt = bitwidth(T)
+    bs == bt && return sz
+    if bt > bs
+        bt % bs == 0 ||
+            throw(ArgumentError("reinterpret(reshape, $T, x): $T ($bt bits) is not a whole multiple of $S ($bs bits)"))
+        r = div(bt, bs)
+        (N >= 1 && sz[1] == r) ||
+            throw(ArgumentError("reinterpret(reshape, $T, x): leading dimension must be $r, got $(N == 0 ? () : sz[1])"))
+        return Base.tail(sz)
+    else
+        bs % bt == 0 ||
+            throw(ArgumentError("reinterpret(reshape, $T, x): $S ($bs bits) is not a whole multiple of $T ($bt bits)"))
+        return (div(bs, bt), sz...)
+    end
+end
+
+"""
+    Base.reinterpret(::Type{T}, x::Tile) -> Tile{T}
+
+Reinterpret the *whole tile* `x` as a tile of element type `T`, like
+`reinterpret(T, ::AbstractArray)`: the underlying bits are viewed as a contiguous
+(column-major) block and the leading dimension is rescaled by the ratio of
+element widths. Lowers to `cuda_tile.bitcast` for equal widths and to
+`cuda_tile.pack`/`unpack` (via `reshape` to rank-1) when widths differ.
+
+This is how sub-byte formats move through global memory: a `Tile{UInt8,(N,)}`
+reinterprets to a `Tile{Float4_E2M1FN,(2N,)}` and back, so FP4 data can be stored
+in a `UInt8` array. The total bit-width is preserved, so it must divide evenly.
+
+Note `reinterpret.(T, x)` (with a dot) is the unrelated *element-wise* broadcast,
+which keeps the shape and requires `T` to be the same width as `eltype(x)`.
+
+```julia
+bytes = ct.load(a, pid, (8,))                 # Tile{UInt8,(8,)}
+fp4   = reinterpret(Float4_E2M1FN, bytes)     # Tile{Float4_E2M1FN,(16,)}
+vals  = convert(ct.Tile{Float32}, fp4)        # widen for compute
+```
+"""
+@inline function Base.reinterpret(::Type{T}, x::Tile) where {T}
+    rshape = reinterpret_scaled_shape(T, eltype(x), size(x))
+    flat = Intrinsics.reshape(x, (prod(size(x)),))
+    return Intrinsics.reshape(reinterpret_width(T, flat), rshape)
+end
+
+"""
+    Base.reinterpret(reshape, ::Type{T}, x::Tile) -> Tile{T}
+
+The `reshape`-form whole-tile reinterpret, mirroring
+`reinterpret(reshape, T, ::AbstractArray)`: instead of rescaling the leading
+dimension it *removes* it when widening (the leading dim must equal
+`bitwidth(T) ÷ bitwidth(eltype(x))`) and *prepends* one when narrowing.
+"""
+@inline function Base.reinterpret(::typeof(reshape), ::Type{T}, x::Tile) where {T}
+    rshape = reinterpret_reshape_shape(T, eltype(x), size(x))
+    flat = Intrinsics.reshape(x, (prod(size(x)),))
+    return Intrinsics.reshape(reinterpret_width(T, flat), rshape)
+end
+
 """
     Intrinsics.exti(x::Tile{<:Integer}, ::Type{T}, s::Signedness.T) -> Tile{T}     where {T<:Integer}
 
