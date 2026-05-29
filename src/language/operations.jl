@@ -1394,6 +1394,8 @@ end
  Block-scaled matrix multiply-accumulate
 =============================================================================#
 
+public muladd_scaled
+
 """
     muladd_scaled(a, a_scale, b, b_scale, acc) -> Tile
 
