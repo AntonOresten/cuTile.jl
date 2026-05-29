@@ -83,8 +83,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.pack), @nospecialize(x))
     length(dims) == 1 || return nothing
     n = dims[1]::Int
     bs = lookup_bitwidth(S)
-    (n * bs) % 8 == 0 || return nothing
-    return Tile{UInt8, Tuple{(n * bs) ÷ 8}}
+    return Tile{UInt8, Tuple{fld(n * bs, 8)}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pack), args)
     cb = ctx.cb
@@ -132,8 +131,7 @@ function tfunc(𝕃, ::typeof(Intrinsics.unpack), @nospecialize(x), @nospecializ
     length(dims) == 1 || return nothing
     n = dims[1]::Int
     bt = lookup_bitwidth(T)
-    (n * 8) % bt == 0 || return nothing
-    return Tile{T, Tuple{(n * 8) ÷ bt}}
+    return Tile{T, Tuple{fld(n * 8, bt)}}
 end
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
     cb = ctx.cb
@@ -194,13 +192,8 @@ end
 @inline function reinterpret_scaled_shape(::Type{T}, ::Type{S}, sz::NTuple{N, Int}) where {T, S, N}
     bs = bitwidth(S)
     bt = bitwidth(T)
-    if N == 0
-        bs == bt || throw(ArgumentError("reinterpret: a 0-D $S tile ($bs bits) cannot be reinterpreted as $T ($bt bits)"))
-        return ()
-    end
-    (sz[1] * bs) % bt == 0 ||
-        throw(ArgumentError("reinterpret: leading dimension $(sz[1]) of a $S tile ($(sz[1] * bs) bits) is not divisible by $bt-bit $T"))
-    return (div(sz[1] * bs, bt), Base.tail(sz)...)
+    N == 0 && return ()   # 0-D: only equal-width is valid; cross-width caught at emit
+    return (fld(sz[1] * bs, bt), Base.tail(sz)...)
 end
 
 # Result shape for `reinterpret(reshape, T, x)`: drop the leading dim on widening
@@ -209,18 +202,8 @@ end
     bs = bitwidth(S)
     bt = bitwidth(T)
     bs == bt && return sz
-    if bt > bs
-        bt % bs == 0 ||
-            throw(ArgumentError("reinterpret(reshape, $T, x): $T ($bt bits) is not a whole multiple of $S ($bs bits)"))
-        r = div(bt, bs)
-        (N >= 1 && sz[1] == r) ||
-            throw(ArgumentError("reinterpret(reshape, $T, x): leading dimension must be $r, got $(N == 0 ? () : sz[1])"))
-        return Base.tail(sz)
-    else
-        bs % bt == 0 ||
-            throw(ArgumentError("reinterpret(reshape, $T, x): $S ($bs bits) is not a whole multiple of $T ($bt bits)"))
-        return (div(bs, bt), sz...)
-    end
+    N == 0 && return ()   # cross-width on a 0-D tile is invalid; caught at emit
+    return bt > bs ? Base.tail(sz) : (div(bs, bt), sz...)
 end
 
 """
