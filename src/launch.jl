@@ -291,12 +291,32 @@ function probe_max_bytecode_version()
 end
 
 """
+    tile_ir_requirement(cap::VersionNumber) -> Union{Tuple{String,VersionNumber}, Nothing}
+
+The architecture-family name and the minimum bytecode version Tile IR requires
+on a device of compute capability `cap`, or `nothing` if Tile IR is not
+supported on that capability at all. Pure (no device access) so the gate logic
+in [`check_tile_ir_support`] can be unit-tested without a GPU.
+"""
+function tile_ir_requirement(cap::VersionNumber)
+    if cap >= v"10.0"       # Blackwell
+        return ("Blackwell", v"13.1")
+    elseif cap >= v"9.0"    # Hopper
+        return ("Hopper", v"13.3")
+    elseif cap >= v"8.0"    # Ampere / Ada
+        return ("Ampere/Ada", v"13.2")
+    else
+        return nothing
+    end
+end
+
+"""
     check_tile_ir_support()
 
 Validate that the current `tileiras` toolkit supports Tile IR on the active
 device. Returns the bytecode version cuTile should emit for this device
 (per [`bytecode_version`]), provided it meets the device's minimum
-requirement (Blackwell ≥ v13.1, Ampere/Ada ≥ v13.2).
+requirement (Blackwell ≥ v13.1, Hopper ≥ v13.3, Ampere/Ada ≥ v13.2).
 """
 function check_tile_ir_support()
     if tileiras_override === nothing && !CUDA_Compiler_jll.is_available()
@@ -310,21 +330,14 @@ function check_tile_ir_support()
 
         cap = capability(dev)
         sm_str = format_sm_arch(cap)
-        if cap >= v"10.0"       # Blackwell
-            if ver < v"13.1"
-                @error "Tile IR on Blackwell ($sm_str) requires bytecode ≥ v13.1, detected v$ver"
-                return nothing
-            end
-        elseif cap >= v"9.0"    # Hopper — not supported
-            @error "Tile IR is not supported on Hopper ($sm_str)"
-            return nothing
-        elseif cap >= v"8.0"    # Ampere / Ada
-            if ver < v"13.2"
-                @error "Tile IR on Ampere/Ada ($sm_str) requires bytecode ≥ v13.2, detected v$ver"
-                return nothing
-            end
-        else
+        req = tile_ir_requirement(cap)
+        if req === nothing
             @error "Tile IR is not supported on compute capability $cap ($sm_str)"
+            return nothing
+        end
+        arch, min_ver = req
+        if ver < min_ver
+            @error "Tile IR on $arch ($sm_str) requires bytecode ≥ v$min_ver, detected v$ver"
             return nothing
         end
 
