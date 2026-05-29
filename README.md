@@ -17,10 +17,9 @@ julia> Pkg.add("cuTile")
 ```
 
 Execution of cuTile kernels requires CUDA.jl to be installed and imported.
-cuTile generates kernels based on [Tile IR](https://docs.nvidia.com/cuda/tile-ir/), which requires an NVIDIA Driver that supports CUDA 13 (580 or later).
+cuTile generates kernels based on [Tile IR](https://docs.nvidia.com/cuda/tile-ir/), which requires an NVIDIA Driver that supports CUDA 13 (580 or later),
+and runs on GPUs with a [Compute Capability (CC)](https://developer.nvidia.com/cuda/gpus) of at least 8.0 (Ampere).
 CUDA.jl automatically downloads the appropriate CUDA toolkit artifacts, so no manual CUDA installation is needed.
-Only Ampere, Ada, and Blackwell GPUs are supported at this time, with Hopper support expected
-in a future release of CUDA.
 
 ## Quick Start
 
@@ -120,13 +119,14 @@ uses standard Julia syntax and is overlaid on `Base`.
 
 ### Supported Types
 
-**Integers:** `Int8`, `UInt8`, `Int16`, `UInt16`, `Int32`, `UInt32`, `Int64`, `UInt64`
-**Floats:** `Float16`, `BFloat16`, `Float32`, `Float64`, `TFloat32`
-**FP8:** `Float8_E4M3FN`, `Float8_E5M2` (requires [DLFP8Types.jl](https://github.com/JuliaGPU/DLFP8Types.jl))
-**Boolean:** `Bool`
+- **Integers:** `Int8`, `UInt8`, `Int16`, `UInt16`, `Int32`, `UInt32`, `Int64`, `UInt64`
+- **Boolean:** `Bool`
+- **Arithmetic Floats:** `Float16`, `BFloat16`, `Float32`, `Float64`
+- **Numeric Floats:** `TFloat32`\*, `Float8_E4M3FN`\*\*, `Float8_E5M2`\*\*, `Float8_E8M0FNU`\*\*, `Float4_E2M1FN`\*\*
 
-`TFloat32` is a 32-bit floating-point type with reduced mantissa precision (10 bits),
-optimized for tensor core operations.
+\* `cuTile.TFloat32` is a public 32-bit floating-point numeric type with truncated mantissa (10 bits), made for tensor core operations.
+
+\*\* [Microscaling (MX)](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) numeric types, exported by [Microfloats.jl](https://github.com/MurrellGroup/Microfloats.jl). `Float8_E4M3FN` and `Float8_E5M2` (FP8) are also exported by [DLFP8Types.jl](https://github.com/JuliaGPU/DLFP8Types.jl).
 
 ### Memory
 | Operation | Description |
