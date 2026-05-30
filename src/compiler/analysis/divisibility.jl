@@ -87,7 +87,7 @@ function transfer(a::DivByAnalysis, r::DataflowResult, @nospecialize(func),
     end
 
     # Pointer offset: result is divisible by gcd(ptr_div, off_div * elem_bytes).
-    # The base may be either `Tile{Ptr{T}, ()}` (post-canonicalize tile form)
+    # The base may be either `Tile{Ptr{T}, Tuple{}}` (post-canonicalize tile form)
     # or raw `Ptr{T}` (the SCI annotation on `getfield(arg, :ptr)`); both
     # lower to a 0-D pointer Value at codegen.
     #
@@ -198,7 +198,7 @@ function tilearray_field_divby(ref::TileArrayFieldRef)
 end
 
 # Pointee element type of a 0-D pointer base, accepting both `Ptr{T}` and
-# `Tile{Ptr{T}, ()}`. Returns `nothing` for shapes that don't fit (tile-of-
+# `Tile{Ptr{T}, Tuple{}}`. Returns `nothing` for shapes that don't fit (tile-of-
 # pointers, non-pointer types, …).
 function ptr_pointee(@nospecialize(T))
     if T <: Tile

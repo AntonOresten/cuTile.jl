@@ -236,7 +236,7 @@ end
     Tile{T, Shape}
 
 Represents a tile of data with element type `T` and static shape `Shape`.
-Shape is a tuple of integers representing the tile dimensions.
+Shape is a tuple type encoding the tile dimensions (e.g. `Tuple{16, 32}`).
 
 This is a compile-time abstraction - at runtime in kernel code, tiles are
 represented as Tile IR values. The struct exists to enable proper type
