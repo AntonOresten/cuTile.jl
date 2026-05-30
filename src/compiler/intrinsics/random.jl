@@ -18,9 +18,9 @@
 #
 # State-accessor intrinsics take a stream as their first operand:
 #
-#   rng_counter(h)      -> Tile{UInt32, ()}  — read h's counter
+#   rng_counter(h)      -> Tile{UInt32, Tuple{}}  — read h's counter
 #   rng_advance(h, n)   -> Nothing           — add n to h's counter
-#   rng_seed(h)         -> Tile{UInt32, ()}  — read h's seed
+#   rng_seed(h)         -> Tile{UInt32, Tuple{}}  — read h's seed
 #   rng_set_seed(h, s)  -> Nothing           — overwrite h's seed
 
 # ---- allocation ------------------------------------------------------------

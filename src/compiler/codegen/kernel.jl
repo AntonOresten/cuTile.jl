@@ -330,7 +330,7 @@ maps `block_args` to the function's positional arguments, emits the body, and re
 the yielded result values.
 
 - `func`: the Julia function to compile (e.g., `+`, `max`, a lambda)
-- `arg_types`: Julia types for each block arg (e.g., `[Tile{Float32,()}]` repeated)
+- `arg_types`: Julia types for each block arg (e.g., `[Tile{Float32, Tuple{}}]` repeated)
 - `block_args`: IR `Value`s from the enclosing region (e.g., `[acc, elem]`)
 - `block_type_ids`: `TypeId`s corresponding to each block arg
 

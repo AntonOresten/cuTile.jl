@@ -703,7 +703,7 @@ public arange
 
 """
     arange(shape; dtype=Int32) -> Tile{dtype, shape}
-    arange(n; dtype=Int32) -> Tile{dtype, (n,)}
+    arange(n; dtype=Int32) -> Tile{dtype, Tuple{n}}
 
 Create a 1D tile with values [1, 2, 3, ..., n] (1-indexed).
 
@@ -804,7 +804,7 @@ permuted = permutedims(tile, (3, 1, 2))    # Shape (4, 2, 3)
     Intrinsics.permute(tile, map(p -> p - 1, Perm))
 
 """
-    permutedims(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
+    permutedims(tile::Tile{T, Tuple{M, N}}) -> Tile{T, Tuple{N, M}}
 
 Permute a 2D tile, swapping its dimensions. Defaults to permutation `(2, 1)`.
 
@@ -812,7 +812,7 @@ Equivalent to `transpose`.
 
 ---
 
-    permutedims(tile::Tile{T, (N,)}) -> Tile{T, (1, N)}
+    permutedims(tile::Tile{T, Tuple{N}}) -> Tile{T, Tuple{1, N}}
 
 Reshape a 1D tile into a `1 × N` row tile.
 
@@ -832,13 +832,13 @@ Equivalent to `transpose`.
 end
 
 """
-    transpose(tile::Tile{T, (M, N)}) -> Tile{T, (N, M)}
+    transpose(tile::Tile{T, Tuple{M, N}}) -> Tile{T, Tuple{N, M}}
 
 Transpose a 2D tile, swapping its dimensions.
 
 ---
 
-    transpose(tile::Tile{T, (N,)}) -> Tile{T, (1, N)}
+    transpose(tile::Tile{T, Tuple{N}}) -> Tile{T, Tuple{1, N}}
 
 Reshape a 1D tile into a `1 × N` row tile.
 
