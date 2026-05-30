@@ -1233,78 +1233,89 @@ end
     end
 end
 
-# Whole-tile `reinterpret` (cuda_tile.pack/unpack, 13.3+) must match Julia's own
-# `reinterpret` element-for-element — not merely round-trip. An asymmetric check
-# (kernel result vs host `reinterpret`) is what actually pins down the byte order
-# and the column-major dimension scaling; a symmetric X→Y→X round-trip would pass
-# under any self-consistent convention.
 @testset "reinterpret matches Base.reinterpret" begin
-    # 2-D widen→narrow: UInt16 (2,4) → UInt8 (4,4). Exercises both the column-major
-    # leading-dim scaling and the within-element (little-endian) byte order.
-    function u16_to_u8(a::ct.TileArray{UInt16,2}, b::ct.TileArray{UInt8,2})
-        pid = ct.bid(1)
-        ct.store(b, pid, reinterpret(UInt8, ct.load(a, pid, (2, 4))))
-        return
-    end
-    let M = reshape(UInt16[0x0102, 0x0304, 0x0506, 0x0708,
-                           0x090a, 0x0b0c, 0x0d0e, 0x0f10], 2, 4)
-        a = CuArray(M)
-        b = CUDA.zeros(UInt8, 4, 4)
-        @cuda backend=cuTile blocks=1 u16_to_u8(a, b)
-        @test Array(b) == Array(reinterpret(UInt8, M))
-    end
-
-    # 1-D narrow→widen the other direction: UInt8 (8,) → UInt16 (4,).
-    function u8_to_u16(a::ct.TileArray{UInt8,1}, b::ct.TileArray{UInt16,1})
-        pid = ct.bid(1)
-        ct.store(b, pid, reinterpret(UInt16, ct.load(a, pid, (8,))))
-        return
-    end
-    let v = UInt8[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-        a = CuArray(v)
-        b = CUDA.zeros(UInt16, 4)
-        @cuda backend=cuTile blocks=1 u8_to_u16(a, b)
-        @test Array(b) == reinterpret(UInt16, v)
+    @testset "2D narrowing" begin
+        function u16_to_u8(a::ct.TileArray{UInt16,2}, b::ct.TileArray{UInt8,2})
+            pid = ct.bid(1)
+            ct.store(b, pid, reinterpret(UInt8, ct.load(a, pid, (2, 4))))
+            return
+        end
+        let M = reshape(UInt16[0x0102, 0x0304, 0x0506, 0x0708,
+                            0x090a, 0x0b0c, 0x0d0e, 0x0f10], 2, 4)
+            a = CuArray(M)
+            b = CUDA.zeros(UInt8, 4, 4)
+            @cuda backend=cuTile blocks=1 u16_to_u8(a, b)
+            @test Array(b) == Array(reinterpret(UInt8, M))
+        end
     end
 
-    # `reshape`-form: widening drops the leading dim. UInt8 (2,4) → UInt16 (4,).
-    function u8_reshape_u16(a::ct.TileArray{UInt8,2}, b::ct.TileArray{UInt16,1})
-        pid = ct.bid(1)
-        ct.store(b, pid, reinterpret(reshape, UInt16, ct.load(a, pid, (2, 4))))
-        return
-    end
-    let M = reshape(UInt8[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], 2, 4)
-        a = CuArray(M)
-        b = CUDA.zeros(UInt16, 4)
-        @cuda backend=cuTile blocks=1 u8_reshape_u16(a, b)
-        @test Array(b) == reinterpret(reshape, UInt16, M)
-    end
-
-    # Equal-width route lowers to `bitcast` (shape preserved), not pack/unpack.
-    # UInt32 → Float32 is a real bitcast (distinct Tile IR dtypes i32 vs f32).
-    function u32_to_f32(a::ct.TileArray{UInt32,1}, b::ct.TileArray{Float32,1})
-        pid = ct.bid(1)
-        ct.store(b, pid, reinterpret(Float32, ct.load(a, pid, (16,))))
-        return
-    end
-    let v = rand(UInt32, 16)
-        a = CuArray(v)
-        b = CUDA.zeros(Float32, 16)
-        @cuda backend=cuTile blocks=1 u32_to_f32(a, b)
-        @test reinterpret(UInt32, Array(b)) == v   # bit-exact (avoids NaN ≠ NaN)
+    @testset "1D widening" begin
+        function u8_to_u16(a::ct.TileArray{UInt8,1}, b::ct.TileArray{UInt16,1})
+            pid = ct.bid(1)
+            ct.store(b, pid, reinterpret(UInt16, ct.load(a, pid, (8,))))
+            return
+        end
+        let v = UInt8[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+            a = CuArray(v)
+            b = CUDA.zeros(UInt16, 4)
+            @cuda backend=cuTile blocks=1 u8_to_u16(a, b)
+            @test Array(b) == reinterpret(UInt16, v)
+        end
     end
 
-    # Signless integer no-op (Int32 ↔ UInt32 are both i32): emits no op, but the
-    # result must still equal Julia's reinterpret, with the 2-D shape preserved.
-    function i32_to_u32_2d(a::ct.TileArray{Int32,2}, b::ct.TileArray{UInt32,2})
-        pid = ct.bid(1)
-        ct.store(b, pid, reinterpret(UInt32, ct.load(a, pid, (4, 4))))
-        return
+    @testset "narrowing: reshape argument drops dim" begin
+        function u8_reshape_u16(a::ct.TileArray{UInt8,2}, b::ct.TileArray{UInt16,1})
+            pid = ct.bid(1)
+            ct.store(b, pid, reinterpret(reshape, UInt16, ct.load(a, pid, (2, 4))))
+            return
+        end
+        let M = reshape(UInt8[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], 2, 4)
+            a = CuArray(M)
+            b = CUDA.zeros(UInt16, 4)
+            @cuda backend=cuTile blocks=1 u8_reshape_u16(a, b)
+            @test Array(b) == reinterpret(reshape, UInt16, M)
+        end
     end
-    let M = reshape(Int32.(-8:7), 4, 4)
-        a = CuArray(M)
-        b = CUDA.zeros(UInt32, 4, 4)
-        @cuda backend=cuTile blocks=1 i32_to_u32_2d(a, b)
-        @test Array(b) == reinterpret(UInt32, M)
+
+    @testset "widening: reshape argument inserts dim" begin
+        function u16_reshape_u8(a::ct.TileArray{UInt16,1}, b::ct.TileArray{UInt8,2})
+            pid = ct.bid(1)
+            ct.store(b, pid, reinterpret(reshape, UInt8, ct.load(a, pid, (4,))))
+            return
+        end
+        let M = UInt16[0x0201, 0x0403, 0x0605, 0x0807]
+            a = CuArray(M)
+            b = CUDA.zeros(UInt8, 2, 4)
+            @cuda backend=cuTile blocks=1 u16_reshape_u8(a, b)
+            @test Array(b) == reinterpret(reshape, UInt8, M)
+        end
+    end
+
+    @testset "Equal-with round-trip preserves values and shape" begin
+        function u32_to_f32(a::ct.TileArray{UInt32,1}, b::ct.TileArray{Float32,1})
+            pid = ct.bid(1)
+            ct.store(b, pid, reinterpret(Float32, ct.load(a, pid, (16,))))
+            return
+        end
+        let v = rand(UInt32, 16)
+            a = CuArray(v)
+            b = CUDA.zeros(Float32, 16)
+            @cuda backend=cuTile blocks=1 u32_to_f32(a, b)
+            @test reinterpret(UInt32, Array(b)) == v   # bit-exact (avoids NaN ≠ NaN)
+        end
+    end
+
+    @testset "Int32 to UInt32" begin
+        function i32_to_u32_2d(a::ct.TileArray{Int32,2}, b::ct.TileArray{UInt32,2})
+            pid = ct.bid(1)
+            ct.store(b, pid, reinterpret(UInt32, ct.load(a, pid, (4, 4))))
+            return
+        end
+        let M = reshape(Int32.(-8:7), 4, 4)
+            a = CuArray(M)
+            b = CUDA.zeros(UInt32, 4, 4)
+            @cuda backend=cuTile blocks=1 i32_to_u32_2d(a, b)
+            @test Array(b) == reinterpret(UInt32, M)
+        end
     end
 end

@@ -56,15 +56,6 @@ end
 @inline lookup_bitwidth(@nospecialize(T::Type)) =
     Base.invokelatest(bitwidth, T)::Int
 
-# ── Low-level pack / unpack intrinsics (1:1 with cuda_tile.pack / unpack) ──────
-#
-# Both Tile IR ops are rank-1 → rank-1 and reinterpret the *whole tile* as a byte
-# array (not element-wise like bitcast). They are the primitives that the
-# whole-tile `Base.reinterpret` below composes (with `reshape`/`bitcast`) into a
-# Julia-semantics reinterpret of any rank. The 8-bit element types are handled by
-# `bitcast`, never pack/unpack — matching cutile-python's `pack_to_bytes` /
-# `unpack_from_bytes`.
-
 """
     Intrinsics.pack(x::Tile{S,Tuple{N}}) -> Tile{UInt8,Tuple{N*bitwidth(S)÷8}}
 
@@ -160,17 +151,6 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
     result_v = encode_UnpackOp!(cb, result_type_id, source.v)
     CGVal(result_v, result_type_id, Tile{target_type, Tuple{new_n}}, new_shape)
 end
-
-# ── Whole-tile reinterpret (Julia semantics, any rank) ────────────────────────
-#
-# A tile's row-major byte stream equals the column-major stream of its Julia
-# shape (we store the reversed shape), so flatten → width-convert → reshape
-# reproduces `Base.reinterpret` element-for-element. Equal widths bitcast;
-# crossing 8 bits goes through `pack`/`unpack`; a non-byte → non-byte change
-# routes through bytes (pack then unpack). All the shape arithmetic is
-# compile-time constant, so the intermediate `reshape`s fold away (identity
-# reshapes are eliminated by the canonicalizer) — a rank-1 FP4 reinterpret lowers
-# to a single pack/unpack.
 
 # Width-convert a rank-1 tile to element type `T` (rank-1 in, rank-1 out).
 @inline function reinterpret_width(::Type{T}, flat::Tile{S}) where {T, S}

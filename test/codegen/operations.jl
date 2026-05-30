@@ -1181,15 +1181,36 @@ end
         end
 
         # pack/unpack require v13.3 — older bytecode rejects with a clear error.
-        let kernel = (a, b) -> begin
+        # (`literal` since the `+` in the message is a regex metachar to FileCheck.)
+        @test @filecheck throws=ct.IRError begin
+            @check literal=true "v13.3+"
+            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}};
+                       bytecode_version=v"13.2") do a, b
                 pid = ct.bid(1)
                 tile = ct.load(a, pid, (16,))
                 ct.store(b, pid, reinterpret(UInt16, tile))
                 return
             end
-            @test_throws "v13.3+" code_tiled(devnull, kernel,
-                Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}};
-                bytecode_version=v"13.2")
+        end
+
+        # Rank-1 scaled: one UInt8 (8 bits) can't fill a UInt16; caught by unpack.
+        @test @filecheck throws=ct.IRError begin
+            @check "do not evenly divide"
+            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                ct.store(b, pid, reinterpret(UInt16, ct.load(a, pid, (1,))))
+                return
+            end
+        end
+
+        # reshape-widen: leading dim must equal the ratio (2); 1 fails the final reshape.
+        @test @filecheck throws=ct.IRError begin
+            @check "same number of elements"
+            code_tiled(Tuple{ct.TileArray{UInt8,2,spec2d}, ct.TileArray{UInt16,2,spec2d}}) do a, b
+                pid = ct.bid(1)
+                ct.store(b, pid, reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
+                return
+            end
         end
     end
 
