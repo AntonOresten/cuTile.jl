@@ -1140,6 +1140,80 @@ end
         end
     end
 
+    @testset "reinterpret (whole-tile)" begin
+        # Equal width, different Tile IR dtype (Float16 -> Int16): whole-tile
+        # reinterpret is a plain bitcast — no pack/unpack, shape preserved.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{Float16,1,spec1d}, ct.TileArray{Int16,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "bitcast"
+                @check_not "pack"
+                ct.store(b, pid, reinterpret(Int16, tile))
+                return
+            end
+        end
+
+        # Widen UInt8 -> UInt16 (1D): lowers to a single unpack, identity reshapes
+        # folded away.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                @check "unpack"
+                ct.store(b, pid, reinterpret(UInt16, tile))
+                return
+            end
+        end
+
+        # Narrow UInt16 -> UInt8 (1D): lowers to a single pack.
+        @test @filecheck begin
+            @check_label "entry"
+            code_tiled(Tuple{ct.TileArray{UInt16,1,spec1d}, ct.TileArray{UInt8,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (8,))
+                @check "pack"
+                ct.store(b, pid, reinterpret(UInt8, tile))
+                return
+            end
+        end
+
+        # pack/unpack require v13.3 — older bytecode rejects with a clear error.
+        # (`literal` since the `+` in the message is a regex metachar to FileCheck.)
+        @test @filecheck throws=ct.IRError begin
+            @check literal=true "v13.3+"
+            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}};
+                       bytecode_version=v"13.2") do a, b
+                pid = ct.bid(1)
+                tile = ct.load(a, pid, (16,))
+                ct.store(b, pid, reinterpret(UInt16, tile))
+                return
+            end
+        end
+
+        # Rank-1 scaled: one UInt8 (8 bits) can't fill a UInt16; caught by unpack.
+        @test @filecheck throws=ct.IRError begin
+            @check "do not evenly divide"
+            code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{UInt16,1,spec1d}}) do a, b
+                pid = ct.bid(1)
+                ct.store(b, pid, reinterpret(UInt16, ct.load(a, pid, (1,))))
+                return
+            end
+        end
+
+        # reshape-widen: leading dim must equal the ratio (2); 1 fails the final reshape.
+        @test @filecheck throws=ct.IRError begin
+            @check "same number of elements"
+            code_tiled(Tuple{ct.TileArray{UInt8,2,spec2d}, ct.TileArray{UInt16,2,spec2d}}) do a, b
+                pid = ct.bid(1)
+                ct.store(b, pid, reinterpret(reshape, UInt16, ct.load(a, pid, (1, 4))))
+                return
+            end
+        end
+    end
+
     # TODO: exti - sign/zero extend integer
     # TODO: ftoi - float to integer
     # TODO: itof - integer to float

@@ -53,6 +53,105 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.bitcast), args)
     CGVal(result_v, result_type_id, result_jltype, source.shape)
 end
 
+@inline lookup_bitwidth(@nospecialize(T::Type)) =
+    Base.invokelatest(bitwidth, T)::Int
+
+"""
+    Intrinsics.pack(x::Tile{S,Tuple{N}}) -> Tile{UInt8,Tuple{N*bitwidth(S)÷8}}
+
+Pack a rank-1 numeric tile into a rank-1 `UInt8` tile (the tile's bits viewed as
+a byte array); lowers to `cuda_tile.pack`. `S` must not be 8-bit (use `bitcast`).
+Requires Tile IR bytecode v13.3+.
+"""
+@intrinsic pack(x)
+function tfunc(𝕃, ::typeof(Intrinsics.pack), @nospecialize(x))
+    src = CC.widenconst(x)
+    src <: Tile || return nothing
+    S = src.parameters[1]
+    Shape = src.parameters[2]
+    (S isa Type && Shape isa Type) || return nothing
+    dims = Shape.parameters
+    length(dims) == 1 || return nothing
+    n = dims[1]::Int
+    bs = lookup_bitwidth(S)
+    return Tile{UInt8, Tuple{fld(n * bs, 8)}}
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.pack), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    source = @something emit_value!(ctx, args[1]) throw(IRError("pack: cannot resolve source"))
+    tt.version >= v"13.3" ||
+        throw(IRError("cuda_tile.pack requires Tile IR bytecode v13.3+, got v$(tt.version)"))
+    length(source.shape) == 1 ||
+        throw(IRError("pack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
+
+    src_type = CC.widenconst(source.jltype)
+    S = eltype(src_type)
+    sbits = lookup_bitwidth(S)
+    sbits == 8 &&
+        throw(IRError("pack: 8-bit element type $S should be reinterpreted via bitcast, not packed"))
+    n = source.shape[1]
+    (n * sbits) % 8 == 0 ||
+        throw(IRError("pack: a $n-element $S tile ($(n * sbits) bits) is not a whole number of bytes"))
+    new_n = (n * sbits) ÷ 8
+
+    new_shape = RowMajorShape([new_n])
+    result_type_id = tile_type!(tt, lookup_dtype!(tt, UInt8), new_shape)
+    result_v = encode_PackOp!(cb, result_type_id, source.v)
+    CGVal(result_v, result_type_id, Tile{UInt8, Tuple{new_n}}, new_shape)
+end
+
+"""
+    Intrinsics.unpack(x::Tile{UInt8,Tuple{N}}, ::Type{T}) -> Tile{T,Tuple{N*8÷bitwidth(T)}}
+
+Unpack a rank-1 `UInt8` tile into a rank-1 numeric tile of element type `T` (the
+inverse of [`pack`](@ref Intrinsics.pack)); lowers to `cuda_tile.unpack`. `T`
+must be a compile-time constant and must not be 8-bit (use `bitcast`). Requires
+Tile IR bytecode v13.3+.
+"""
+@intrinsic unpack(x, ::Type{T}) where {T}
+function tfunc(𝕃, ::typeof(Intrinsics.unpack), @nospecialize(x), @nospecialize(target_type))
+    T = instanceof_tfunc(target_type)
+    T === nothing && return nothing
+    src = CC.widenconst(x)
+    src <: Tile || return nothing
+    Shape = src.parameters[2]
+    Shape isa Type || return nothing
+    dims = Shape.parameters
+    length(dims) == 1 || return nothing
+    n = dims[1]::Int
+    bt = lookup_bitwidth(T)
+    return Tile{T, Tuple{fld(n * 8, bt)}}
+end
+function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.unpack), args)
+    cb = ctx.cb
+    tt = ctx.tt
+
+    source = @something emit_value!(ctx, args[1]) throw(IRError("unpack: cannot resolve source"))
+    target_type = @something get_constant(ctx, args[2]) throw(IRError("unpack: requires compile-time target type"))
+    tt.version >= v"13.3" ||
+        throw(IRError("cuda_tile.unpack requires Tile IR bytecode v13.3+, got v$(tt.version)"))
+    length(source.shape) == 1 ||
+        throw(IRError("unpack: requires a rank-1 tile, got a $(length(source.shape))-D tile"))
+
+    src_type = CC.widenconst(source.jltype)
+    eltype(src_type) === UInt8 ||
+        throw(IRError("unpack: requires a UInt8 tile, got $(eltype(src_type))"))
+    tbits = lookup_bitwidth(target_type)
+    tbits == 8 &&
+        throw(IRError("unpack: 8-bit target $target_type should be reinterpreted via bitcast, not unpacked"))
+    n = source.shape[1]
+    (n * 8) % tbits == 0 ||
+        throw(IRError("unpack: $n bytes ($(n * 8) bits) do not evenly divide into $target_type ($tbits-bit) elements"))
+    new_n = (n * 8) ÷ tbits
+
+    new_shape = RowMajorShape([new_n])
+    result_type_id = tile_type!(tt, lookup_dtype!(tt, target_type), new_shape)
+    result_v = encode_UnpackOp!(cb, result_type_id, source.v)
+    CGVal(result_v, result_type_id, Tile{target_type, Tuple{new_n}}, new_shape)
+end
+
 """
     Intrinsics.exti(x::Tile{<:Integer}, ::Type{T}, s::Signedness.T) -> Tile{T}     where {T<:Integer}
 
