@@ -975,16 +975,16 @@ Reinterpret the *whole tile* `x` as a tile of element type `T`, like
 element widths. Lowers to `cuda_tile.bitcast` for equal widths and to
 `cuda_tile.pack`/`unpack` (via `reshape` to rank-1) when widths differ.
 
-This is how sub-byte formats move through global memory: a `Tile{UInt8,(N,)}`
-reinterprets to a `Tile{Float4_E2M1FN,(2N,)}` and back, so FP4 data can be stored
+This is how sub-byte formats move through global memory: a `Tile{UInt8,Tuple{N}}`
+reinterprets to a `Tile{Float4_E2M1FN,Tuple{2N}}` and back, so FP4 data can be stored
 in a `UInt8` array. The total bit-width is preserved, so it must divide evenly.
 
 Note `reinterpret.(T, x)` (with a dot) is the unrelated *element-wise* broadcast,
 which keeps the shape and requires `T` to be the same width as `eltype(x)`.
 
 ```julia
-bytes = ct.load(a, pid, (8,))                 # Tile{UInt8,(8,)}
-fp4   = reinterpret(Float4_E2M1FN, bytes)     # Tile{Float4_E2M1FN,(16,)}
+bytes = ct.load(a, pid, (8,))                 # Tile{UInt8,Tuple{8}}
+fp4   = reinterpret(Float4_E2M1FN, bytes)     # Tile{Float4_E2M1FN,Tuple{16}}
 vals  = convert(ct.Tile{Float32}, fp4)        # widen for compute
 ```
 """

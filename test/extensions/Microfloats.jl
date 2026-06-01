@@ -72,16 +72,16 @@ let kernel = (a, b) -> begin
 end
 
 # Whole-tile `reinterpret` between UInt8 and Float4_E2M1FN packs/unpacks two FP4
-# per byte: a `Tile{UInt8,(8,)}` unpacks to a `Tile{Float4_E2M1FN,(16,)}`,
+# per byte: a `Tile{UInt8,Tuple{8}}` unpacks to a `Tile{Float4_E2M1FN,Tuple{16}}`,
 # lowering to `cuda_tile.unpack` (13.3+).
 @test @filecheck begin
     @check_label "entry"
     code_tiled(Tuple{ct.TileArray{UInt8,1,spec1d}, ct.TileArray{Float32,1,spec1d}};
                bytecode_version=v"13.3") do a, b
         pid = ct.bid(1)
-        bytes = ct.load(a, pid, (8,))            # Tile{UInt8,(8,)}
+        bytes = ct.load(a, pid, (8,))            # Tile{UInt8,Tuple{8}}
         @check "unpack"
-        fp4 = reinterpret(Float4_E2M1FN, bytes)  # Tile{Float4_E2M1FN,(16,)}
+        fp4 = reinterpret(Float4_E2M1FN, bytes)  # Tile{Float4_E2M1FN,Tuple{16}}
         ct.store(b, pid, convert(ct.Tile{Float32}, fp4))
         return
     end
@@ -94,9 +94,9 @@ end
                bytecode_version=v"13.3") do a, b
         pid = ct.bid(1)
         vals = ct.load(a, pid, (16,))
-        fp4 = convert(ct.Tile{Float4_E2M1FN}, vals)  # Tile{Float4_E2M1FN,(16,)}
+        fp4 = convert(ct.Tile{Float4_E2M1FN}, vals)  # Tile{Float4_E2M1FN,Tuple{16}}
         @check "pack"
-        ct.store(b, pid, reinterpret(UInt8, fp4))    # Tile{UInt8,(8,)}
+        ct.store(b, pid, reinterpret(UInt8, fp4))    # Tile{UInt8,Tuple{8}}
         return
     end
 end
