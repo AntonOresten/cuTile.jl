@@ -23,6 +23,16 @@ ct.bitwidth(::Type{T}) where {T<:Microfloats.Microfloat} = Microfloats.bitwidth(
 # nearest-even on f32→E8M0FNU (only `zero` and `positive_inf` are valid).
 ct.ftof_rounding_mode(::Type{Float8_E8M0FNU}) = ct.RoundingMode.Zero
 
+# Non-scaled `mma`/`matmul` (`cuda_tile.mmaf`) accepts f8e4m3fn and f8e5m2
+# operands with an f16 or f32 accumulator — f16 first/preferred, mirroring
+# cuda-tile's mmaf type table and cutile-python's `_mma_supported_dtypes`.
+ct.mma_allowed_acc_dtypes(::Type{Float8_E4M3FN}) = (Float16, Float32)
+ct.mma_allowed_acc_dtypes(::Type{Float8_E5M2})   = (Float16, Float32)
+
+# `fast_acc` (lower-precision MMA accumulation) is an FP8-only throughput hint.
+ct.mma_supports_fast_acc(::Type{Float8_E4M3FN}) = true
+ct.mma_supports_fast_acc(::Type{Float8_E5M2})   = true
+
 # Float ↔ microfloat scalar constructor overlays (for map/convert dispatch).
 # Mirrors DLFP8TypesExt: route to `Intrinsics.ftof` so kernel-side conversions
 # lower to the FToFOp Tile IR intrinsic instead of Microfloats' Float32-fallback
