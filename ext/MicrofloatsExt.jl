@@ -30,19 +30,26 @@ ct.ftof_rounding_mode(::Type{Float8_E8M0FNU}) = ct.RoundingMode.Zero
 const MicrofloatTypes = (Float8_E4M3FN, Float8_E5M2, Float8_E8M0FNU, Float4_E2M1FN)
 const StandardFloats = (Float16, ct.BFloat16, Float32, ct.TFloat32, Float64)
 
+# Each direction gets a no-mode form (uses `ftof_rounding_mode` default) and an
+# explicit-mode form (`$T(x, RoundToZero)`) routing the mode onto the ftof op.
+# The explicit form is what makes directed rounding reachable for the formats
+# whose verifier accepts it (e.g. E8M0FNU's `Zero`/`PositiveInf`).
 for MF in MicrofloatTypes
     # standard float → microfloat
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$F) = ct.Intrinsics.ftof(x, $MF)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$F, m::Base.RoundingMode) = ct.Intrinsics.ftof(x, $MF, m)
     end
     # microfloat → standard float
     for F in StandardFloats
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F(x::$MF) = ct.Intrinsics.ftof(x, $F)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $F(x::$MF, m::Base.RoundingMode) = ct.Intrinsics.ftof(x, $F, m)
     end
     # microfloat → microfloat
     for MFb in MicrofloatTypes
         MF === MFb && continue
         @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$MFb) = ct.Intrinsics.ftof(x, $MF)
+        @eval Base.Experimental.@consistent_overlay ct.cuTileMethodTable Base.@assume_effects :foldable $MF(x::$MFb, m::Base.RoundingMode) = ct.Intrinsics.ftof(x, $MF, m)
     end
 end
 

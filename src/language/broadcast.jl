@@ -34,6 +34,14 @@ struct TypeRef{T} end
 Base.Broadcast.BroadcastStyle(::Type{<:TypeRef}) = Base.Broadcast.DefaultArrayStyle{0}()
 Base.Broadcast.broadcastable(a::TypeRef) = a
 
+# Same idea for `RoundingMode` values (e.g. `RoundToZero`), which Base would
+# otherwise wrap in a `RefValue` that the cuTile compiler can't construct. The
+# mode singleton is isbits, so it rides along in the type parameter.
+struct RoundRef{R} end
+
+Base.Broadcast.BroadcastStyle(::Type{<:RoundRef}) = Base.Broadcast.DefaultArrayStyle{0}()
+Base.Broadcast.broadcastable(a::RoundRef) = a
+
 
 #=============================================================================
  Broadcast materialization via copy
@@ -81,6 +89,7 @@ end
 @inline _promote_to_tiles(a::T, rest...) where {T <: Number} =
     (Tile(a), _promote_to_tiles(rest...)...)
 @inline _promote_to_tiles(a::TypeRef, rest...) = (a, _promote_to_tiles(rest...)...)
+@inline _promote_to_tiles(a::RoundRef, rest...) = (a, _promote_to_tiles(rest...)...)
 
 # Compute combined broadcast shape across all Tile arguments via tuple peeling.
 # Shape is always a tuple TYPE (e.g., Tuple{16, 32}). Convert to value for broadcast_shape.
@@ -91,6 +100,8 @@ end
     broadcast_shape(_tile_shape(t), _broadcast_shapes(rest...))
 @inline _broadcast_shapes(::TypeRef, rest...) = _broadcast_shapes(rest...)
 @inline _broadcast_shapes(::TypeRef) = ()
+@inline _broadcast_shapes(::RoundRef, rest...) = _broadcast_shapes(rest...)
+@inline _broadcast_shapes(::RoundRef) = ()
 
 # Broadcast all tiles to shape S via tuple peeling.
 # TypeRef arguments pass through unchanged.
@@ -98,6 +109,8 @@ end
 @inline _broadcast_all(S::Tuple, a::Tile, rest...) =
     (broadcast_to(a, S), _broadcast_all(S, rest...)...)
 @inline _broadcast_all(S::Tuple, a::TypeRef, rest...) =
+    (a, _broadcast_all(S, rest...)...)
+@inline _broadcast_all(S::Tuple, a::RoundRef, rest...) =
     (a, _broadcast_all(S, rest...)...)
 
 # Convert args to scalars, apply f, wrap result back into a Tile.
@@ -118,3 +131,11 @@ end
     rest_scalars, S = _to_scalars(rest...)
     ((T, rest_scalars...), S)
 end
+# `RoundRef{R}` extracts the rounding-mode singleton `R` as a scalar argument.
+# The base case handles a trailing mode (its shape is unused — the leading Tile
+# supplies `S`).
+@inline function _to_scalars(::RoundRef{R}, rest...) where R
+    rest_scalars, S = _to_scalars(rest...)
+    ((R, rest_scalars...), S)
+end
+@inline _to_scalars(::RoundRef{R}) where R = ((R,), ())

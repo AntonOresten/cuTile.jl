@@ -771,6 +771,27 @@ end
     @test Array(b) == Float32.(Array(a))
 end
 
+@testset "Float16.(tile, RoundNearest)" begin
+    # Broadcasting a conversion with an explicit rounding mode. The mode reaches
+    # dispatch via the RoundRef broadcast wrapper (Base would otherwise wrap it
+    # in a RefValue, which Tile IR can't construct). nearest_even is the only
+    # rounding mode tileiras accepts for f32->f16, so it's the executable case.
+    function convert_round_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Float16,1})
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, Float16.(tile, RoundNearest))
+        return
+    end
+
+    n = 1024
+    a = CUDA.rand(Float32, n)
+    b = CUDA.zeros(Float16, n)
+
+    @cuda backend=cuTile blocks=cld(n, 16) convert_round_kernel(a, b)
+
+    @test Array(b) == Float16.(Array(a), RoundNearest)
+end
+
 @testset "unsafe_trunc.(Int32, float_tile)" begin
     function unsafe_trunc_i32_kernel(a::ct.TileArray{Float32,1}, b::ct.TileArray{Int32,1})
         pid = ct.bid(1)

@@ -45,6 +45,47 @@ end
     end
 end
 
+# Explicit rounding mode on a f32 -> E8M0FNU conversion rides onto the `ftof`
+# op. E8M0FNU's verifier accepts only `zero` and `positive_inf`, so RoundToZero
+# and RoundUp are the meaningful knobs (RoundUp -> positive_inf differs from the
+# `ftof_rounding_mode` default of `zero`, proving the mode isn't ignored).
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float8_E8M0FNU,1,spec1d}};
+               bytecode_version=v"13.2") do a, b
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        @check "rounding<zero>"
+        ct.store(b, pid, Float8_E8M0FNU.(tile, RoundToZero))
+        return
+    end
+end
+
+@test @filecheck begin
+    @check_label "entry"
+    code_tiled(Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float8_E8M0FNU,1,spec1d}};
+               bytecode_version=v"13.2") do a, b
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        @check "rounding<positive_inf>"
+        ct.store(b, pid, Float8_E8M0FNU.(tile, RoundUp))
+        return
+    end
+end
+
+# A Base RoundingMode with no Tile IR equivalent fails at codegen with a clear
+# message rather than emitting a bogus op.
+let kernel = (a, b) -> begin
+        pid = ct.bid(1)
+        tile = ct.load(a, pid, (16,))
+        ct.store(b, pid, Float8_E8M0FNU.(tile, RoundFromZero))
+        return
+    end
+    @test_throws "unsupported rounding mode" code_tiled(devnull, kernel,
+        Tuple{ct.TileArray{Float32,1,spec1d}, ct.TileArray{Float8_E8M0FNU,1,spec1d}};
+        bytecode_version=v"13.2")
+end
+
 # Float8_E8M0FNU rejected on bytecode 13.1 with a clear version error
 let kernel = (a, b) -> begin
         pid = ct.bid(1)

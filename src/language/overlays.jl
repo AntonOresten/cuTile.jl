@@ -38,6 +38,10 @@ end
 # Route Type values through TypeRef instead of RefValue (which can't be constructed in Tile IR).
 @overlay Base.Broadcast.broadcastable(::Type{T}) where T = TypeRef{T}()
 
+# Likewise route RoundingMode values through RoundRef so e.g. `Float32.(tile, RoundToZero)`
+# doesn't try to construct a RefValue{RoundingMode} in Tile IR.
+@overlay Base.Broadcast.broadcastable(r::Base.RoundingMode) = RoundRef{r}()
+
 
 #=============================================================================
  Type Conversions
@@ -86,6 +90,10 @@ end
 for T in Floats, S in Floats
     T === S && continue
     @eval @overlay $T(x::$S) = Intrinsics.ftof(x, $T)
+    # With an explicit rounding mode (e.g. `Float16(x, RoundToZero)`). The mode
+    # rides directly on the ftof op, so CSE keeps conversions of differing modes
+    # distinct (unlike an ambient `@fpmode` scope).
+    @eval @overlay $T(x::$S, m::Base.RoundingMode) = Intrinsics.ftof(x, $T, m)
 end
 
 # Integer to float

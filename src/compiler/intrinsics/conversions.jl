@@ -199,23 +199,43 @@ ftof_rounding_mode(::Type) = RoundingMode.NearestEven
 @inline lookup_ftof_rounding_mode(@nospecialize(T::Type)) =
     Base.invokelatest(ftof_rounding_mode, T)::RoundingMode.T
 
+# Map the four directed `Base.RoundingMode`s that have a Tile IR equivalent onto
+# the bytecode `RoundingMode` enum. `RoundUp`/`RoundDown` are "toward ±∞", which
+# the hardware spells as PosInf/NegInf. Modes without a hardware mapping
+# (`NearestTiesAway`, `FromZero`) fall through to the error method.
+_ftof_mode(::Base.RoundingMode{:Nearest}) = RoundingMode.NearestEven
+_ftof_mode(::Base.RoundingMode{:ToZero})  = RoundingMode.Zero
+_ftof_mode(::Base.RoundingMode{:Up})      = RoundingMode.PositiveInf
+_ftof_mode(::Base.RoundingMode{:Down})    = RoundingMode.NegativeInf
+_ftof_mode(m::Base.RoundingMode) =
+    throw(IRError("ftof: unsupported rounding mode $m (use RoundNearest, RoundToZero, RoundUp, or RoundDown)"))
+
 """
     Intrinsics.ftof(x::Tile{<:AbstractFloat}, ::Type{F2}) -> Tile{F2}     where {F2<:AbstractFloat}
+    Intrinsics.ftof(x::Tile{<:AbstractFloat}, ::Type{F2}, mode::RoundingMode) -> Tile{F2}
 
 Element-wise floating-point to floating-point conversion; lowers to
 `cuda_tile.ftof`.
 
 Also invocable with a scalar, promoted to a 0-D tile before codegen. `F2`
-must be a compile-time constant. The rounding mode is picked from
-[`ftof_rounding_mode`](@ref); the default is `NearestEven`.
+must be a compile-time constant. Without an explicit `mode`, the rounding
+mode is picked from [`ftof_rounding_mode`](@ref) (default `NearestEven`).
+The `mode` argument — a compile-time-constant `Base.RoundingMode` — carries
+the rounding mode directly on the op (so CSE distinguishes conversions that
+differ only in mode); supported values are `RoundNearest`, `RoundToZero`,
+`RoundUp`, and `RoundDown`.
 """
 @intrinsic ftof(x::F1, ::Type{F2}) where {F1<:AbstractFloat, F2<:AbstractFloat}
+@intrinsic ftof(x::F1, ::Type{F2}, ::Base.RoundingMode) where {F1<:AbstractFloat, F2<:AbstractFloat}
 function tfunc(𝕃, ::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type))
     T = instanceof_tfunc(target_type)
     T === nothing && return nothing
     src = CC.widenconst(x)
     convert_result_type(src, T)
 end
+# The rounding mode does not affect the result type.
+tfunc(𝕃, f::typeof(Intrinsics.ftof), @nospecialize(x), @nospecialize(target_type), @nospecialize(mode)) =
+    tfunc(𝕃, f, x, target_type)
 function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     cb = ctx.cb
     tt = ctx.tt
@@ -226,7 +246,12 @@ function emit_intrinsic!(ctx::CGCtx, ::typeof(Intrinsics.ftof), args)
     dtype = lookup_dtype!(tt, target_type)
     result_type_id = tile_type!(tt, dtype, source.shape)
 
-    rounding_mode = lookup_ftof_rounding_mode(target_type)
+    rounding_mode = if length(args) >= 3
+        mode = @something get_constant(ctx, args[3]) throw(IRError("ftof: rounding mode must be a compile-time constant"))
+        _ftof_mode(mode)
+    else
+        lookup_ftof_rounding_mode(target_type)
+    end
     result_v = encode_FToFOp!(cb, result_type_id, source.v; rounding_mode)
     src_type = CC.widenconst(source.jltype)
     result_jltype = similar_type(src_type, target_type)
